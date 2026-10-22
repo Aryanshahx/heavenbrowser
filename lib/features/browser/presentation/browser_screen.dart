@@ -20,6 +20,8 @@ import '../../settings/settings_screen.dart';
 import '../../shield/native_shield_bridge.dart';
 import '../../tabs/tab_manager.dart';
 import '../../tabs/tabs_screen.dart';
+import '../../vpn/vpn_controller.dart';
+import '../../vpn/vpn_screen.dart';
 import '../engine/browser_engine.dart';
 import 'widgets/library_screen.dart';
 import 'widgets/reader_mode_sheet.dart';
@@ -35,6 +37,7 @@ class BrowserScreen extends StatefulWidget {
     required this.downloads,
     required this.newsService,
     required this.interests,
+    required this.vpn,
   });
 
   final BrowserSettingsController settings;
@@ -43,6 +46,7 @@ class BrowserScreen extends StatefulWidget {
   final DownloadsController downloads;
   final HeavenNewsFeedService newsService;
   final InterestProfileController interests;
+  final VpnController vpn;
 
   @override
   State<BrowserScreen> createState() => _BrowserScreenState();
@@ -57,6 +61,7 @@ class _BrowserScreenState extends State<BrowserScreen>
   Timer? _suggestDebounce;
   List<String> _liveSuggestions = <String>[];
   bool _isEditingOmnibox = false;
+  bool _showLinkActionsCard = false;
   bool _showFindBar = false;
   int _findMatches = 0;
 
@@ -66,7 +71,6 @@ class _BrowserScreenState extends State<BrowserScreen>
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
-    _omniboxFocusNode.addListener(_handleOmniboxFocusChange);
     widget.downloads.onDownloadToast = (String msg) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
@@ -89,7 +93,6 @@ class _BrowserScreenState extends State<BrowserScreen>
       widget.downloads.onDownloadToast = null;
     }
     WidgetsBinding.instance.removeObserver(this);
-    _omniboxFocusNode.removeListener(_handleOmniboxFocusChange);
     _omniboxController.dispose();
     _omniboxFocusNode.dispose();
     _findController.dispose();
@@ -100,20 +103,6 @@ class _BrowserScreenState extends State<BrowserScreen>
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.paused && widget.settings.clearOnExit) {
       unawaited(widget.tabManager.burnAllSessionsAndData());
-    }
-  }
-
-  void _handleOmniboxFocusChange() {
-    // Keep overlay open slightly if user taps Copy / Edit / Share buttons
-    if (!_omniboxFocusNode.hasFocus && _isEditingOmnibox) {
-      Future<void>.delayed(const Duration(milliseconds: 120), () {
-        if (mounted && !_omniboxFocusNode.hasFocus && _isEditingOmnibox) {
-          setState(() {
-            _isEditingOmnibox = false;
-            _liveSuggestions = <String>[];
-          });
-        }
-      });
     }
   }
 
@@ -129,16 +118,17 @@ class _BrowserScreenState extends State<BrowserScreen>
     final String? url = engine.currentUrl;
     if (OmniboxParser.isHeavenSearchUrl(url)) {
       final String q = OmniboxParser.extractHeavenQuery(url);
-      return 'https://duckduckgo.com/?q=${Uri.encodeQueryComponent(q)}';
+      return 'https://www.google.com/search?q=${Uri.encodeQueryComponent(q)}';
     }
     return url ?? '';
   }
 
   void _beginOmniboxEdit() {
-    // Start fresh input so user can type immediately OR tap Copy / Edit / Share below!
+    final bool hasActiveLink = !_activeEngine.isShowingStartPage;
     _omniboxController.clear();
     setState(() {
       _isEditingOmnibox = true;
+      _showLinkActionsCard = hasActiveLink;
       _liveSuggestions = <String>[];
     });
     WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -154,7 +144,11 @@ class _BrowserScreenState extends State<BrowserScreen>
     _omniboxController.selection = TextSelection.collapsed(
       offset: editable.length,
     );
-    setState(() {});
+    // Hide Copy/Edit/Share card and keep wide full-width bar open for easy URL editing!
+    setState(() {
+      _isEditingOmnibox = true;
+      _showLinkActionsCard = false;
+    });
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted) {
         _omniboxFocusNode.requestFocus();
@@ -165,14 +159,23 @@ class _BrowserScreenState extends State<BrowserScreen>
   void _closeOmniboxOverlay() {
     _suggestDebounce?.cancel();
     _omniboxFocusNode.unfocus();
-    setState(() {
-      _isEditingOmnibox = false;
-      _liveSuggestions = <String>[];
-    });
+    if (_isEditingOmnibox ||
+        _showLinkActionsCard ||
+        _liveSuggestions.isNotEmpty) {
+      setState(() {
+        _isEditingOmnibox = false;
+        _showLinkActionsCard = false;
+        _liveSuggestions = <String>[];
+      });
+    }
   }
 
   void _onOmniboxTextChanged(String text) {
-    setState(() {});
+    setState(() {
+      if (text.isNotEmpty && _showLinkActionsCard) {
+        _showLinkActionsCard = false;
+      }
+    });
     _suggestDebounce?.cancel();
     final String trimmed = text.trim();
     if (trimmed.length < 2) {
@@ -233,6 +236,7 @@ class _BrowserScreenState extends State<BrowserScreen>
         widget.tabManager,
         widget.settings,
         widget.downloads,
+        widget.vpn,
       ]),
       builder: (BuildContext context, _) {
         final bool incognito = widget.tabManager.isActiveIncognito;
@@ -243,7 +247,9 @@ class _BrowserScreenState extends State<BrowserScreen>
         final bool bottomBar = widget.settings.bottomOmnibox;
         final BrowserEngine engine = _activeEngine;
         final bool showLinkActions =
-            _isEditingOmnibox && !engine.isShowingStartPage;
+            _isEditingOmnibox &&
+            _showLinkActionsCard &&
+            !engine.isShowingStartPage;
         final bool showOverlayPanel =
             showLinkActions ||
             (_isEditingOmnibox && _liveSuggestions.isNotEmpty);
@@ -251,12 +257,16 @@ class _BrowserScreenState extends State<BrowserScreen>
         return Theme(
           data: effectiveTheme,
           child: PopScope<void>(
-            canPop: !engine.canGoBack && !_isEditingOmnibox && !_showFindBar,
+            canPop:
+                !engine.canGoBack &&
+                !_isEditingOmnibox &&
+                !_showLinkActionsCard &&
+                !_showFindBar,
             onPopInvokedWithResult: (bool didPop, void _) async {
               if (didPop) {
                 return;
               }
-              if (_isEditingOmnibox) {
+              if (_isEditingOmnibox || _showLinkActionsCard) {
                 _closeOmniboxOverlay();
                 return;
               }
@@ -287,7 +297,6 @@ class _BrowserScreenState extends State<BrowserScreen>
                       child: Stack(
                         children: <Widget>[
                           _buildTabsViewport(colors),
-                          // Visual Pull-Down-to-Refresh indicator on WebView pages
                           if (engine.pullProgress > 0.02)
                             Positioned(
                               top: 10 + (engine.pullProgress * 46),
@@ -297,6 +306,19 @@ class _BrowserScreenState extends State<BrowserScreen>
                                 child: _buildPullRefreshBadge(
                                   colors,
                                   engine.pullProgress,
+                                ),
+                              ),
+                            ),
+                          // Full-screen tap-anywhere barrier so tapping outside Copy/Edit/Share
+                          // or outside the editing bar dismisses it immediately (even over WebView)!
+                          if (_isEditingOmnibox || _showLinkActionsCard)
+                            Positioned.fill(
+                              child: GestureDetector(
+                                key: const Key('omnibox_outside_dismiss_scrim'),
+                                behavior: HitTestBehavior.opaque,
+                                onTap: _closeOmniboxOverlay,
+                                child: Container(
+                                  color: Colors.black.withValues(alpha: 0.18),
                                 ),
                               ),
                             ),
@@ -467,9 +489,9 @@ class _BrowserScreenState extends State<BrowserScreen>
     return WebViewWidget(controller: engine.controller!);
   }
 
-  /// Overlay card shown when tapping the address/search bar:
-  /// - Shows Copy, Edit, Share options for the active link!
-  /// - Plus live search autocomplete suggestions as the user types!
+  /// Overlay card shown when tapping the address/search bar on an active link:
+  /// - Shows Copy, Edit, Share options!
+  /// - Disappears immediately when tapping anywhere outside or tapping Edit!
   Widget _buildOmniboxOverlayPanel(
     BuildContext context,
     ColorScheme colors,
@@ -537,7 +559,6 @@ class _BrowserScreenState extends State<BrowserScreen>
                       ],
                     ),
                     const SizedBox(height: 8),
-                    // Copy, Edit, Share buttons — equal width so zero overflow on any phone!
                     Row(
                       children: <Widget>[
                         Expanded(
@@ -622,15 +643,53 @@ class _BrowserScreenState extends State<BrowserScreen>
     );
   }
 
-  /// Responsive Top/Bottom Dock Bar (Refresh button removed from search bar!):
-  /// [ Home ] [ Forward -> ] [ Shield | Search / URL Pill | Mic ] [ Tabs ] [ Menu ]
+  /// Responsive Top/Bottom Dock Bar:
+  /// - When `_isEditingOmnibox` is true: Expands Search/URL bar across FULL WIDTH for easy link editing!
+  /// - When displaying normally: `[Home] [Forward?] [Shield | Search/URL Pill] [+ New Tab] [Tabs] [Menu]`!
   Widget _buildCommandCapsuleBar(BuildContext context, ColorScheme colors) {
     final BrowserEngine engine = _activeEngine;
     final bool incognito = widget.tabManager.isActiveIncognito;
     final bool isDark = Theme.of(context).brightness == Brightness.dark;
 
+    if (_isEditingOmnibox) {
+      return Container(
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+        decoration: BoxDecoration(
+          color: incognito
+              ? const Color(0xFF061015)
+              : (isDark ? AppTheme.deepNavyBg : Colors.white),
+          border: Border(
+            top: widget.settings.bottomOmnibox
+                ? BorderSide(
+                    color: colors.outlineVariant.withValues(alpha: 0.35),
+                  )
+                : BorderSide.none,
+            bottom: !widget.settings.bottomOmnibox
+                ? BorderSide(
+                    color: colors.outlineVariant.withValues(alpha: 0.35),
+                  )
+                : BorderSide.none,
+          ),
+        ),
+        child: Container(
+          key: const Key('wide_editing_omnibox_container'),
+          height: 46,
+          decoration: BoxDecoration(
+            color: incognito
+                ? const Color(0xFF0D1B22)
+                : (isDark
+                      ? AppTheme.navySurface
+                      : colors.surfaceContainerHighest.withValues(alpha: 0.7)),
+            borderRadius: BorderRadius.circular(23),
+            border: Border.all(color: colors.primary, width: 1.6),
+          ),
+          child: _buildWideEditingField(colors, engine),
+        ),
+      );
+    }
+
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 6),
+      padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 6),
       decoration: BoxDecoration(
         color: incognito
             ? const Color(0xFF061015)
@@ -652,16 +711,17 @@ class _BrowserScreenState extends State<BrowserScreen>
             tooltip: 'Home',
             visualDensity: VisualDensity.compact,
             padding: EdgeInsets.zero,
-            constraints: const BoxConstraints(minWidth: 34, minHeight: 36),
-          ),
-          IconButton(
-            onPressed: engine.canGoForward ? engine.goForward : null,
-            icon: const Icon(Icons.arrow_forward_rounded, size: 20),
-            tooltip: 'Forward',
-            visualDensity: VisualDensity.compact,
-            padding: EdgeInsets.zero,
             constraints: const BoxConstraints(minWidth: 32, minHeight: 36),
           ),
+          if (engine.canGoForward)
+            IconButton(
+              onPressed: engine.goForward,
+              icon: const Icon(Icons.arrow_forward_rounded, size: 19),
+              tooltip: 'Forward',
+              visualDensity: VisualDensity.compact,
+              padding: EdgeInsets.zero,
+              constraints: const BoxConstraints(minWidth: 30, minHeight: 36),
+            ),
           const SizedBox(width: 2),
           Expanded(
             child: Container(
@@ -676,31 +736,40 @@ class _BrowserScreenState extends State<BrowserScreen>
                             )),
                 borderRadius: BorderRadius.circular(21),
                 border: Border.all(
-                  color: _isEditingOmnibox
-                      ? colors.primary
-                      : colors.outlineVariant.withValues(alpha: 0.4),
-                  width: _isEditingOmnibox ? 1.5 : 1,
+                  color: colors.outlineVariant.withValues(alpha: 0.4),
                 ),
               ),
-              child: _isEditingOmnibox
-                  ? _buildEditingField(colors)
-                  : _buildDisplayPill(context, colors, engine, incognito),
+              child: _buildDisplayPill(context, colors, engine, incognito),
             ),
           ),
-          const SizedBox(width: 6),
+          const SizedBox(width: 2),
+          // + Button right in the search bar area to add more tabs!
+          GestureDetector(
+            onLongPress: () => widget.tabManager.openNewTab(incognito: true),
+            child: IconButton(
+              key: const Key('bar_new_tab_button'),
+              onPressed: () =>
+                  widget.tabManager.openNewTab(incognito: incognito),
+              icon: const Icon(Icons.add_rounded, size: 21),
+              tooltip: 'New Tab',
+              visualDensity: VisualDensity.compact,
+              padding: EdgeInsets.zero,
+              constraints: const BoxConstraints(minWidth: 32, minHeight: 36),
+            ),
+          ),
           InkWell(
-            borderRadius: BorderRadius.circular(10),
+            borderRadius: BorderRadius.circular(9),
             onTap: _openTabsScreen,
             onLongPress: () =>
                 widget.tabManager.openNewTab(incognito: incognito),
             child: Tooltip(
               message: 'Switch Tabs',
               child: Container(
-                width: 30,
-                height: 30,
+                width: 28,
+                height: 28,
                 alignment: Alignment.center,
                 decoration: BoxDecoration(
-                  borderRadius: BorderRadius.circular(9),
+                  borderRadius: BorderRadius.circular(8),
                   border: Border.all(
                     color: incognito
                         ? AppTheme.incognitoCyan
@@ -715,7 +784,7 @@ class _BrowserScreenState extends State<BrowserScreen>
                     child: Text(
                       '${widget.tabManager.totalTabCount}',
                       style: TextStyle(
-                        fontSize: 12,
+                        fontSize: 11.5,
                         fontWeight: FontWeight.w900,
                         color: incognito
                             ? AppTheme.incognitoCyan
@@ -733,19 +802,19 @@ class _BrowserScreenState extends State<BrowserScreen>
             children: <Widget>[
               IconButton(
                 onPressed: () => _openBrowserMenu(context),
-                icon: const Icon(Icons.more_vert_rounded, size: 21),
+                icon: const Icon(Icons.more_vert_rounded, size: 20),
                 tooltip: 'Browser Menu',
                 visualDensity: VisualDensity.compact,
                 padding: EdgeInsets.zero,
-                constraints: const BoxConstraints(minWidth: 34, minHeight: 36),
+                constraints: const BoxConstraints(minWidth: 32, minHeight: 36),
               ),
-              if (widget.downloads.hasActiveDownloads)
+              if (widget.downloads.hasActiveDownloads || widget.vpn.isConnected)
                 Positioned(
-                  right: 6,
+                  right: 5,
                   top: 6,
                   child: Container(
-                    width: 8,
-                    height: 8,
+                    width: 7.5,
+                    height: 7.5,
                     decoration: const BoxDecoration(
                       color: AppTheme.shieldEmerald,
                       shape: BoxShape.circle,
@@ -759,12 +828,22 @@ class _BrowserScreenState extends State<BrowserScreen>
     );
   }
 
-  Widget _buildEditingField(ColorScheme colors) {
+  /// Full-width wide search/URL editing field (shown when tapping the search bar or tapping Edit!)
+  Widget _buildWideEditingField(ColorScheme colors, BrowserEngine engine) {
+    final bool hasText = _omniboxController.text.isNotEmpty;
+    // Only show Mic when on Start Page AND nothing searched/typed!
+    final bool showMic = engine.isShowingStartPage && !hasText;
+
     return Row(
       children: <Widget>[
-        const SizedBox(width: 10),
-        Icon(Icons.search_rounded, size: 17, color: colors.primary),
-        const SizedBox(width: 6),
+        IconButton(
+          onPressed: _closeOmniboxOverlay,
+          icon: const Icon(Icons.arrow_back_rounded, size: 19),
+          visualDensity: VisualDensity.compact,
+          padding: EdgeInsets.zero,
+          constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
+          tooltip: 'Cancel',
+        ),
         Expanded(
           child: TextField(
             key: const Key('top_omnibox_textfield'),
@@ -776,7 +855,7 @@ class _BrowserScreenState extends State<BrowserScreen>
             enableSuggestions: false,
             onChanged: _onOmniboxTextChanged,
             onSubmitted: _submitOmnibox,
-            style: const TextStyle(fontSize: 14),
+            style: const TextStyle(fontSize: 14.5),
             decoration: InputDecoration(
               hintText:
                   'Search ${widget.settings.searchEngine.shortLabel} or enter URL',
@@ -785,26 +864,36 @@ class _BrowserScreenState extends State<BrowserScreen>
             ),
           ),
         ),
-        IconButton(
-          onPressed: _triggerVoiceSearch,
-          icon: Icon(Icons.mic_rounded, size: 19, color: colors.primary),
-          visualDensity: VisualDensity.compact,
-          padding: EdgeInsets.zero,
-          constraints: const BoxConstraints(minWidth: 30, minHeight: 32),
-          tooltip: 'Voice Search',
-        ),
-        if (_omniboxController.text.isNotEmpty)
+        if (showMic)
+          IconButton(
+            onPressed: _triggerVoiceSearch,
+            icon: Icon(Icons.mic_rounded, size: 19, color: colors.primary),
+            visualDensity: VisualDensity.compact,
+            padding: EdgeInsets.zero,
+            constraints: const BoxConstraints(minWidth: 32, minHeight: 34),
+            tooltip: 'Voice Search',
+          ),
+        if (hasText) ...<Widget>[
           IconButton(
             onPressed: () {
               _omniboxController.clear();
               setState(() => _liveSuggestions = <String>[]);
             },
-            icon: const Icon(Icons.cancel_rounded, size: 17),
+            icon: const Icon(Icons.cancel_rounded, size: 18),
             visualDensity: VisualDensity.compact,
             padding: EdgeInsets.zero,
-            constraints: const BoxConstraints(minWidth: 30, minHeight: 32),
+            constraints: const BoxConstraints(minWidth: 32, minHeight: 34),
             tooltip: 'Clear',
           ),
+          IconButton(
+            onPressed: _submitOmnibox,
+            icon: Icon(Icons.search_rounded, size: 20, color: colors.primary),
+            visualDensity: VisualDensity.compact,
+            padding: EdgeInsets.zero,
+            constraints: const BoxConstraints(minWidth: 34, minHeight: 34),
+            tooltip: 'Go',
+          ),
+        ],
         const SizedBox(width: 4),
       ],
     );
@@ -825,21 +914,25 @@ class _BrowserScreenState extends State<BrowserScreen>
           child: Padding(
             padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 6),
             child: Icon(
-              incognito
-                  ? Icons.shield_moon_rounded
-                  : (engine.isShowingStartPage
-                        ? Icons.shield_outlined
-                        : (engine.isSecure
-                              ? Icons.lock_outline_rounded
-                              : Icons.warning_amber_rounded)),
+              widget.vpn.isConnected
+                  ? Icons.vpn_lock_rounded
+                  : (incognito
+                        ? Icons.shield_moon_rounded
+                        : (engine.isShowingStartPage
+                              ? Icons.shield_outlined
+                              : (engine.isSecure
+                                    ? Icons.lock_outline_rounded
+                                    : Icons.warning_amber_rounded))),
               size: 16.5,
-              color: incognito
-                  ? AppTheme.incognitoCyan
-                  : (engine.isShowingStartPage
-                        ? colors.primary
-                        : (engine.isSecure
-                              ? AppTheme.shieldEmerald
-                              : AppTheme.warningAmber)),
+              color: widget.vpn.isConnected
+                  ? AppTheme.shieldEmerald
+                  : (incognito
+                        ? AppTheme.incognitoCyan
+                        : (engine.isShowingStartPage
+                              ? colors.primary
+                              : (engine.isSecure
+                                    ? AppTheme.shieldEmerald
+                                    : AppTheme.warningAmber))),
             ),
           ),
         ),
@@ -870,7 +963,7 @@ class _BrowserScreenState extends State<BrowserScreen>
           GestureDetector(
             onTap: () => _openShieldSheet(context),
             child: Container(
-              margin: const EdgeInsets.only(right: 2),
+              margin: const EdgeInsets.only(right: 4),
               padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
               decoration: BoxDecoration(
                 color: AppTheme.shieldEmerald.withValues(alpha: 0.16),
@@ -886,16 +979,19 @@ class _BrowserScreenState extends State<BrowserScreen>
               ),
             ),
           ),
-        // Voice Search Mic Button (Refresh button removed as requested!)
-        IconButton(
-          onPressed: _triggerVoiceSearch,
-          icon: Icon(Icons.mic_rounded, size: 18.5, color: colors.primary),
-          visualDensity: VisualDensity.compact,
-          padding: EdgeInsets.zero,
-          constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
-          tooltip: 'Voice Search',
-        ),
-        const SizedBox(width: 4),
+        // Only show Mic when on Start Page — NEVER when we already searched something!
+        if (engine.isShowingStartPage) ...<Widget>[
+          IconButton(
+            onPressed: _triggerVoiceSearch,
+            icon: Icon(Icons.mic_rounded, size: 18.5, color: colors.primary),
+            visualDensity: VisualDensity.compact,
+            padding: EdgeInsets.zero,
+            constraints: const BoxConstraints(minWidth: 30, minHeight: 32),
+            tooltip: 'Voice Search',
+          ),
+          const SizedBox(width: 2),
+        ] else
+          const SizedBox(width: 8),
       ],
     );
   }
@@ -987,12 +1083,22 @@ class _BrowserScreenState extends State<BrowserScreen>
     );
   }
 
+  void _openVpnScreen() {
+    Navigator.of(context).push(
+      MaterialPageRoute<void>(builder: (_) => HeavenVpnScreen(vpn: widget.vpn)),
+    );
+  }
+
   Future<void> _openShieldSheet(BuildContext context) async {
     await showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,
-      builder: (_) =>
-          ShieldSheet(engine: _activeEngine, settings: widget.settings),
+      builder: (_) => ShieldSheet(
+        engine: _activeEngine,
+        settings: widget.settings,
+        vpn: widget.vpn,
+        onOpenVpnScreen: _openVpnScreen,
+      ),
     );
   }
 
@@ -1081,7 +1187,7 @@ class _BrowserScreenState extends State<BrowserScreen>
         return SafeArea(
           child: ConstrainedBox(
             constraints: BoxConstraints(
-              maxHeight: MediaQuery.sizeOf(sheetContext).height * 0.82,
+              maxHeight: MediaQuery.sizeOf(sheetContext).height * 0.84,
             ),
             child: SingleChildScrollView(
               padding: const EdgeInsets.fromLTRB(16, 4, 16, 16),
@@ -1176,18 +1282,22 @@ class _BrowserScreenState extends State<BrowserScreen>
                           crossAxisCount: 4,
                           mainAxisSpacing: 10,
                           crossAxisSpacing: 10,
-                          mainAxisExtent: 74,
+                          mainAxisExtent: 72,
                         ),
                     itemCount: 8,
                     itemBuilder: (BuildContext _, int idx) {
                       return switch (idx) {
                         0 => _DeckActionTile(
-                          icon: Icons.add_box_outlined,
-                          label: 'New Tab',
-                          accent: colors.primary,
+                          icon: widget.vpn.isConnected
+                              ? Icons.vpn_lock_rounded
+                              : Icons.vpn_key_outlined,
+                          label: widget.vpn.isConnected ? 'VPN: ON' : 'VPN',
+                          accent: widget.vpn.isConnected
+                              ? AppTheme.shieldEmerald
+                              : colors.primary,
                           onTap: () {
                             Navigator.pop(sheetContext);
-                            widget.tabManager.openNewTab(incognito: false);
+                            _openVpnScreen();
                           },
                         ),
                         1 => _DeckActionTile(

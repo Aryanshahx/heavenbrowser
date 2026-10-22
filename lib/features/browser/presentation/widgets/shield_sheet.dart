@@ -3,13 +3,22 @@ import 'package:flutter/material.dart';
 import '../../../../core/theme/app_theme.dart';
 import '../../../../core/widgets/site_logo.dart';
 import '../../../settings/browser_settings.dart';
+import '../../../vpn/vpn_controller.dart';
 import '../../engine/browser_engine.dart';
 
 class ShieldSheet extends StatelessWidget {
-  const ShieldSheet({super.key, required this.engine, required this.settings});
+  const ShieldSheet({
+    super.key,
+    required this.engine,
+    required this.settings,
+    required this.vpn,
+    required this.onOpenVpnScreen,
+  });
 
   final BrowserEngine engine;
   final BrowserSettingsController settings;
+  final VpnController vpn;
+  final VoidCallback onOpenVpnScreen;
 
   @override
   Widget build(BuildContext context) {
@@ -17,7 +26,7 @@ class ShieldSheet extends StatelessWidget {
     final ColorScheme colors = theme.colorScheme;
 
     return ListenableBuilder(
-      listenable: Listenable.merge(<Listenable>[engine, settings]),
+      listenable: Listenable.merge(<Listenable>[engine, settings, vpn]),
       builder: (BuildContext context, _) {
         final String? host = engine.currentHost;
         final bool hostTrusted = settings.isHostTrusted(host);
@@ -101,6 +110,82 @@ class ShieldSheet extends StatelessWidget {
                       ),
                     ),
                   ],
+                ),
+                const SizedBox(height: 12),
+                // Heaven VPN Quick Banner inside Shield Sheet
+                Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 12,
+                    vertical: 10,
+                  ),
+                  decoration: BoxDecoration(
+                    color:
+                        (vpn.isConnected
+                                ? AppTheme.shieldEmerald
+                                : colors.primary)
+                            .withValues(alpha: 0.12),
+                    borderRadius: BorderRadius.circular(16),
+                    border: Border.all(
+                      color:
+                          (vpn.isConnected
+                                  ? AppTheme.shieldEmerald
+                                  : colors.primary)
+                              .withValues(alpha: 0.35),
+                    ),
+                  ),
+                  child: Row(
+                    children: <Widget>[
+                      Icon(
+                        vpn.isConnected
+                            ? Icons.vpn_lock_rounded
+                            : Icons.vpn_key_outlined,
+                        color: vpn.isConnected
+                            ? AppTheme.shieldEmerald
+                            : colors.primary,
+                        size: 22,
+                      ),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: InkWell(
+                          onTap: () {
+                            Navigator.pop(context);
+                            onOpenVpnScreen();
+                          },
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: <Widget>[
+                              Text(
+                                vpn.isConnected
+                                    ? 'Heaven VPN Connected'
+                                    : 'Heaven Free VPN (Off)',
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: const TextStyle(
+                                  fontWeight: FontWeight.w800,
+                                  fontSize: 13.5,
+                                ),
+                              ),
+                              Text(
+                                vpn.selectedProfile.countryLabel,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: TextStyle(
+                                  fontSize: 11.5,
+                                  color: colors.onSurfaceVariant,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                      Switch.adaptive(
+                        value: vpn.isConnected,
+                        onChanged: vpn.isBusy
+                            ? null
+                            : (_) => vpn.toggleConnection(),
+                      ),
+                    ],
+                  ),
                 ),
                 if (blockedDomains.isNotEmpty) ...<Widget>[
                   const SizedBox(height: 14),

@@ -18,15 +18,16 @@ enum HeavenSearchTab {
 }
 
 enum HeavenTimeFilter {
-  any('Any time', ''),
-  day('Past 24h', 'd'),
-  week('Past week', 'w'),
-  month('Past month', 'm'),
-  year('Past year', 'y');
+  any('Any time', '', ''),
+  day('Past 24h', 'd', 'ex1:"ez1"'),
+  week('Past week', 'w', 'ex1:"ez2"'),
+  month('Past month', 'm', 'ex1:"ez3"'),
+  year('Past year', 'y', '');
 
-  const HeavenTimeFilter(this.label, this.ddgCode);
+  const HeavenTimeFilter(this.label, this.ddgCode, this.bingFilter);
   final String label;
   final String ddgCode;
+  final String bingFilter;
 }
 
 enum HeavenRegionFilter {
@@ -48,13 +49,20 @@ enum HeavenRegionFilter {
 }
 
 enum HeavenSafeFilter {
-  off('Safe: Off', '-2'),
-  moderate('Safe: Moderate', '-1'),
-  strict('Safe: Strict', '1');
+  off('Safe: Off', '-2', 'off', 'OFF'),
+  moderate('Safe: Moderate', '-1', 'demote', 'DEMOTE'),
+  strict('Safe: Strict', '1', 'strict', 'STRICT');
 
-  const HeavenSafeFilter(this.label, this.ddgCode);
+  const HeavenSafeFilter(
+    this.label,
+    this.ddgCode,
+    this.bingParam,
+    this.bingCookie,
+  );
   final String label;
   final String ddgCode;
+  final String bingParam;
+  final String bingCookie;
 }
 
 class HeavenSearchFilters {
@@ -276,7 +284,7 @@ class HeavenMathEvaluator {
       final double inside = _parseExpression();
       _skipSpaces();
       if (_pos >= _src.length || _src[_pos] != ')') {
-        throw const FormatException('Missing closing parenthesis');
+        throw const FormatException('Unbalanced parentheses');
       }
       _pos++;
       return inside;
@@ -303,7 +311,13 @@ class HeavenSearchService {
 
   static const Map<String, String> _browserHeaders = <String, String>{
     'User-Agent': AppConstants.desktopUserAgent,
+    'Accept':
+        'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
     'Accept-Language': 'en-US,en;q=0.9',
+    'Sec-Fetch-Dest': 'document',
+    'Sec-Fetch-Mode': 'navigate',
+    'Sec-Fetch-Site': 'none',
+    'Upgrade-Insecure-Requests': '1',
   };
 
   Future<HeavenSearchResponse> search(
@@ -323,9 +337,9 @@ class HeavenSearchService {
       HeavenKnowledgeCard? ddgCard,
     ) = await (
       _fetchOrganicWebResults(query, filters: filters),
-      _fetchCommonsImages(query),
+      _fetchWebImages(query, filters: filters),
       _fetchVideoResults(query, filters: filters),
-      _fetchGoogleNewsRss(query, filters: filters),
+      _fetchNewsResults(query, filters: filters),
       _fetchWikipediaResults(query),
       _fetchKnowledgeCard(query),
     ).wait;
@@ -337,7 +351,7 @@ class HeavenSearchService {
 
     final List<HeavenSearchResult> mergedWeb = web.isNotEmpty
         ? web
-        : <HeavenSearchResult>[...wiki, ...news.take(6)];
+        : <HeavenSearchResult>[...news.take(8), ...wiki.take(6)];
 
     stopwatch.stop();
     return HeavenSearchResponse(
@@ -392,7 +406,77 @@ class HeavenSearchService {
     };
   }
 
+  Map<String, String> _bingHeaders(HeavenSearchFilters filters) {
+    final String mkt = filters.region == HeavenRegionFilter.global
+        ? 'en-US'
+        : filters.region.langCode;
+    return <String, String>{
+      ..._browserHeaders,
+      'Cookie': 'SRCHHPGUSR=ADLT=${filters.safe.bingCookie}; _EDGE_S=mkt=$mkt',
+    };
+  }
+
+  /// Multi-engine unrestricted Web Search:
+  /// Runs Bing Organic Web (`adlt=off`) + DuckDuckGo HTML (`kp=-2`) in parallel
+  /// and deduplicates results so searches NEVER come back empty or censored!
   Future<List<HeavenSearchResult>> _fetchOrganicWebResults(
+    String query, {
+    required HeavenSearchFilters filters,
+  }) async {
+    final (
+      List<HeavenSearchResult> bingResults,
+      List<HeavenSearchResult> ddgResults,
+    ) = await (
+      _fetchBingOrganicWeb(query, filters: filters),
+      _fetchDdgOrganicWeb(query, filters: filters),
+    ).wait;
+
+    final List<HeavenSearchResult> merged = <HeavenSearchResult>[];
+    final Set<String> seen = <String>{};
+
+    for (final HeavenSearchResult r in <HeavenSearchResult>[
+      ...bingResults,
+      ...ddgResults,
+    ]) {
+      final String key = _normalizeDedupeKey(r.url);
+      if (seen.add(key)) {
+        merged.add(r);
+      }
+      if (merged.length >= 26) {
+        break;
+      }
+    }
+    return merged;
+  }
+
+  Future<List<HeavenSearchResult>> _fetchBingOrganicWeb(
+    String query, {
+    required HeavenSearchFilters filters,
+  }) async {
+    try {
+      final String ccPart = filters.region == HeavenRegionFilter.global
+          ? ''
+          : '&cc=${filters.region.countryCode}';
+      final String timePart = filters.time.bingFilter.isNotEmpty
+          ? '&filters=${Uri.encodeQueryComponent(filters.time.bingFilter)}'
+          : '';
+      final Uri uri = Uri.parse(
+        'https://www.bing.com/search?q=${Uri.encodeQueryComponent(query)}'
+        '&adlt=${filters.safe.bingParam}&setlang=en&count=20$ccPart$timePart',
+      );
+      final http.Response res = await _client
+          .get(uri, headers: _bingHeaders(filters))
+          .timeout(const Duration(seconds: 7));
+      if (res.statusCode != 200 || res.body.isEmpty) {
+        return const <HeavenSearchResult>[];
+      }
+      return parseBingOrganicResults(res.body, maxItems: 20);
+    } catch (_) {
+      return const <HeavenSearchResult>[];
+    }
+  }
+
+  Future<List<HeavenSearchResult>> _fetchDdgOrganicWeb(
     String query, {
     required HeavenSearchFilters filters,
   }) async {
@@ -410,13 +494,276 @@ class HeavenSearchService {
       if (res.statusCode != 200 || res.body.isEmpty) {
         return const <HeavenSearchResult>[];
       }
-      return parseOrganicHtmlResults(res.body, maxItems: 22);
+      return parseOrganicHtmlResults(res.body, maxItems: 18);
     } catch (_) {
       return const <HeavenSearchResult>[];
     }
   }
 
+  static List<HeavenSearchResult> parseBingOrganicResults(
+    String html, {
+    int maxItems = 20,
+  }) {
+    final List<HeavenSearchResult> results = <HeavenSearchResult>[];
+    final Set<String> seen = <String>{};
+
+    final RegExp algoBlock = RegExp(
+      r'<li[^>]*class="[^"]*\bb_algo\b[^"]*"[^>]*>([\s\S]*?)<\/li>',
+      caseSensitive: false,
+    );
+    final RegExp h2Link = RegExp(
+      r'<h2[^>]*>[\s\S]*?<a[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>',
+      caseSensitive: false,
+    );
+    final RegExp paraSnippet = RegExp(
+      r'<p[^>]*>([\s\S]*?)<\/p>',
+      caseSensitive: false,
+    );
+
+    for (final RegExpMatch match in algoBlock.allMatches(html)) {
+      final String block = match.group(1) ?? '';
+      final RegExpMatch? linkMatch = h2Link.firstMatch(block);
+      if (linkMatch == null) continue;
+
+      final String rawHref = decodeHtmlEntities(linkMatch.group(1) ?? '');
+      if (rawHref.contains('bing.com/aclick') || rawHref.contains('/aclick?')) {
+        continue;
+      }
+      final String cleanUrl = unwrapBingTrackingUrl(rawHref);
+      if (!cleanUrl.startsWith('http://') && !cleanUrl.startsWith('https://')) {
+        continue;
+      }
+      if (!seen.add(_normalizeDedupeKey(cleanUrl))) {
+        continue;
+      }
+
+      final String title = stripHtmlTags(linkMatch.group(2) ?? '').trim();
+      if (title.isEmpty) continue;
+
+      String snippet = '';
+      for (final RegExpMatch pm in paraSnippet.allMatches(block)) {
+        final String candidate = stripHtmlTags(
+          pm.group(1) ?? '',
+        ).replaceFirst(RegExp(r'^Web\s*'), '').trim();
+        if (candidate.length > snippet.length) {
+          snippet = candidate;
+        }
+      }
+
+      results.add(
+        HeavenSearchResult(
+          title: title,
+          url: cleanUrl,
+          snippet: snippet.isEmpty
+              ? OmniboxParser.cleanDomain(cleanUrl)
+              : snippet,
+          sourceLabel: OmniboxParser.cleanDomain(cleanUrl),
+        ),
+      );
+      if (results.length >= maxItems) {
+        break;
+      }
+    }
+    return results;
+  }
+
+  /// Decodes Bing `ck/a?!...&u=a1<base64url>` redirect URLs directly to clean web URLs!
+  static String unwrapBingTrackingUrl(String rawHref) {
+    final String unescaped = decodeHtmlEntities(rawHref).trim();
+    final Uri? parsed = Uri.tryParse(unescaped);
+    if (parsed != null && parsed.host.toLowerCase().contains('bing.com')) {
+      final String? uParam = parsed.queryParameters['u'];
+      if (uParam != null && uParam.startsWith('a1') && uParam.length > 4) {
+        String b64 = uParam.substring(2);
+        final int rem = b64.length % 4;
+        if (rem != 0) {
+          b64 = b64.padRight(b64.length + (4 - rem), '=');
+        }
+        try {
+          final String decoded = utf8.decode(
+            base64Url.decode(b64),
+            allowMalformed: true,
+          );
+          if (decoded.startsWith('http://') || decoded.startsWith('https://')) {
+            return decoded;
+          }
+        } catch (_) {
+          // Fall back to original href.
+        }
+      }
+    }
+    return unwrapRedirectUrl(unescaped);
+  }
+
+  static String _normalizeDedupeKey(String url) {
+    return url
+        .trim()
+        .toLowerCase()
+        .replaceFirst(RegExp(r'^https?:\/\/(www\.)?'), '')
+        .replaceFirst(RegExp(r'\/+$'), '');
+  }
+
+  /// Web-wide Google-Images-style search (Bing Images Async with `adlt=off`,
+  /// falling back to Wikimedia Commons if empty).
+  Future<List<HeavenImageResult>> _fetchWebImages(
+    String query, {
+    required HeavenSearchFilters filters,
+  }) async {
+    final List<HeavenImageResult> bingImages = await _fetchBingImages(
+      query,
+      filters: filters,
+    );
+    if (bingImages.isNotEmpty) {
+      return bingImages;
+    }
+    return _fetchCommonsImages(query);
+  }
+
+  Future<List<HeavenImageResult>> _fetchBingImages(
+    String query, {
+    required HeavenSearchFilters filters,
+  }) async {
+    try {
+      final Uri uri = Uri.parse(
+        'https://www.bing.com/images/async?q=${Uri.encodeQueryComponent(query)}'
+        '&first=0&count=36&adlt=${filters.safe.bingParam}',
+      );
+      final http.Response res = await _client
+          .get(uri, headers: _bingHeaders(filters))
+          .timeout(const Duration(seconds: 7));
+      if (res.statusCode != 200 || res.body.isEmpty) {
+        return const <HeavenImageResult>[];
+      }
+
+      final RegExp metaAttr = RegExp(r'\bm="(\{[^"]+\})"');
+      final List<HeavenImageResult> out = <HeavenImageResult>[];
+      final Set<String> seen = <String>{};
+
+      for (final RegExpMatch m in metaAttr.allMatches(res.body)) {
+        final String jsonText = decodeHtmlEntities(m.group(1) ?? '');
+        try {
+          final Object? obj = jsonDecode(jsonText);
+          if (obj is Map<String, Object?>) {
+            final String full = (obj['murl']?.toString() ?? '').trim();
+            final String thumb = (obj['turl']?.toString() ?? '').trim();
+            final String page =
+                (obj['purl']?.toString() ?? obj['pur']?.toString() ?? full)
+                    .trim();
+            final String title = stripHtmlTags(
+              obj['t']?.toString() ?? query,
+            ).trim();
+
+            if (full.startsWith('http') &&
+                thumb.startsWith('http') &&
+                seen.add(full)) {
+              out.add(
+                HeavenImageResult(
+                  title: title.isEmpty ? query : title,
+                  thumbUrl: thumb,
+                  fullUrl: full,
+                  pageUrl: page.startsWith('http') ? page : full,
+                ),
+              );
+              if (out.length >= 36) break;
+            }
+          }
+        } catch (_) {
+          // Skip malformed metadata tile.
+        }
+      }
+      return out;
+    } catch (_) {
+      return const <HeavenImageResult>[];
+    }
+  }
+
+  /// Web-wide Video Search with real thumbnails & durations (`adlt=off`),
+  /// plus fallback to DDG video search so mock tests and fallback networks succeed.
   Future<List<HeavenSearchResult>> _fetchVideoResults(
+    String query, {
+    required HeavenSearchFilters filters,
+  }) async {
+    final List<HeavenSearchResult> bingVids = await _fetchBingVideos(
+      query,
+      filters: filters,
+    );
+    if (bingVids.isNotEmpty) {
+      return bingVids;
+    }
+    return _fetchDdgFallbackVideos(query, filters: filters);
+  }
+
+  Future<List<HeavenSearchResult>> _fetchBingVideos(
+    String query, {
+    required HeavenSearchFilters filters,
+  }) async {
+    try {
+      final Uri uri = Uri.parse(
+        'https://www.bing.com/videos/search?q=${Uri.encodeQueryComponent(query)}'
+        '&adlt=${filters.safe.bingParam}',
+      );
+      final http.Response res = await _client
+          .get(uri, headers: _bingHeaders(filters))
+          .timeout(const Duration(seconds: 7));
+      if (res.statusCode != 200 || res.body.isEmpty) {
+        return const <HeavenSearchResult>[];
+      }
+
+      final RegExp vrhmAttr = RegExp(r'vrhm="(\{[^"]+\})"');
+      final List<HeavenSearchResult> videos = <HeavenSearchResult>[];
+      final Set<String> seen = <String>{};
+
+      for (final RegExpMatch m in vrhmAttr.allMatches(res.body)) {
+        final String rawJson = decodeHtmlEntities(m.group(1) ?? '');
+        try {
+          final Object? obj = jsonDecode(rawJson);
+          if (obj is Map<String, Object?>) {
+            final String watchUrl =
+                (obj['murl']?.toString() ?? obj['pgurl']?.toString() ?? '')
+                    .trim();
+            final String title = stripHtmlTags(
+              obj['vt']?.toString() ?? '',
+            ).trim();
+            final String duration = (obj['du']?.toString() ?? '').trim();
+            final String thid = (obj['thid']?.toString() ?? '').trim();
+
+            if (!watchUrl.startsWith('http') ||
+                title.isEmpty ||
+                !seen.add(watchUrl)) {
+              continue;
+            }
+            final String? ytId = extractYouTubeVideoId(watchUrl);
+            final String? thumb = ytId != null
+                ? 'https://i.ytimg.com/vi/$ytId/hqdefault.jpg'
+                : (thid.isNotEmpty
+                      ? 'https://tse2.mm.bing.net/th?id=${Uri.encodeQueryComponent(thid)}&pid=Api'
+                      : null);
+
+            videos.add(
+              HeavenSearchResult(
+                title: title,
+                url: watchUrl,
+                snippet: duration.isNotEmpty
+                    ? '${OmniboxParser.cleanDomain(watchUrl)} • Duration $duration'
+                    : OmniboxParser.cleanDomain(watchUrl),
+                sourceLabel: OmniboxParser.cleanDomain(watchUrl),
+                metaBadge: duration.isNotEmpty ? duration : 'Video',
+                thumbnailUrl: thumb,
+              ),
+            );
+            if (videos.length >= 20) break;
+          }
+        } catch (_) {
+          // Skip invalid video entry.
+        }
+      }
+      return videos;
+    } catch (_) {
+      return const <HeavenSearchResult>[];
+    }
+  }
+
+  Future<List<HeavenSearchResult>> _fetchDdgFallbackVideos(
     String query, {
     required HeavenSearchFilters filters,
   }) async {
@@ -514,7 +861,7 @@ class HeavenSearchService {
       final List<HeavenImageResult> images = <HeavenImageResult>[];
       for (final Object? pageVal in pagesObj.values) {
         if (pageVal is Map<String, Object?>) {
-          String rawTitle = (pageVal['title']?.toString() ?? '')
+          final String rawTitle = (pageVal['title']?.toString() ?? '')
               .replaceFirst('File:', '')
               .replaceAll(RegExp(r'\.[a-zA-Z0-9]{3,4}$'), '')
               .replaceAll('_', ' ')
@@ -547,6 +894,107 @@ class HeavenSearchService {
     } catch (_) {
       return const <HeavenImageResult>[];
     }
+  }
+
+  Future<List<HeavenSearchResult>> _fetchNewsResults(
+    String query, {
+    required HeavenSearchFilters filters,
+  }) async {
+    final (
+      List<HeavenSearchResult> bingNews,
+      List<HeavenSearchResult> googleNews,
+    ) = await (
+      _fetchBingNewsCards(query, filters: filters),
+      _fetchGoogleNewsRss(query, filters: filters),
+    ).wait;
+
+    final List<HeavenSearchResult> merged = <HeavenSearchResult>[];
+    final Set<String> seenTitles = <String>{};
+    for (final HeavenSearchResult item in <HeavenSearchResult>[
+      ...bingNews,
+      ...googleNews,
+    ]) {
+      final String key = item.title.toLowerCase().trim();
+      if (seenTitles.add(key)) {
+        merged.add(item);
+      }
+      if (merged.length >= 22) break;
+    }
+    return merged;
+  }
+
+  Future<List<HeavenSearchResult>> _fetchBingNewsCards(
+    String query, {
+    required HeavenSearchFilters filters,
+  }) async {
+    try {
+      final Uri uri = Uri.parse(
+        'https://www.bing.com/news/infinitescrollajax?InfiniteScroll=1'
+        '&q=${Uri.encodeQueryComponent(query)}&IG=1&IID=news.1&sfx=1',
+      );
+      final http.Response res = await _client
+          .get(uri, headers: _bingHeaders(filters))
+          .timeout(const Duration(seconds: 6));
+      if (res.statusCode != 200 || res.body.isEmpty) {
+        return const <HeavenSearchResult>[];
+      }
+      return parseBingNewsCards(res.body);
+    } catch (_) {
+      return const <HeavenSearchResult>[];
+    }
+  }
+
+  static List<HeavenSearchResult> parseBingNewsCards(String html) {
+    final List<HeavenSearchResult> out = <HeavenSearchResult>[];
+    final List<String> chunks = html.split('<div class="news-card');
+    final RegExp dataUrlReg = RegExp(r'data-url="([^"]+)"');
+    final RegExp dataTitleReg = RegExp(r'data-title="([^"]+)"');
+    final RegExp dataAuthorReg = RegExp(r'data-author="([^"]+)"');
+    final RegExp heroImgReg = RegExp(
+      r'src="((?:https:\/\/www\.bing\.com)?\/th\?id=(?:ONUT|OVFT)\.[^"]+)"',
+      caseSensitive: false,
+    );
+
+    for (int i = 1; i < chunks.length; i++) {
+      final String card = chunks[i];
+      final String url = decodeHtmlEntities(
+        dataUrlReg.firstMatch(card)?.group(1) ?? '',
+      ).trim();
+      final String title = stripHtmlTags(
+        dataTitleReg.firstMatch(card)?.group(1) ?? '',
+      ).trim();
+      final String author = stripHtmlTags(
+        dataAuthorReg.firstMatch(card)?.group(1) ?? 'News',
+      ).trim();
+
+      if (!url.startsWith('http') || title.isEmpty) continue;
+
+      String? imageUrl;
+      final RegExpMatch? imgM = heroImgReg.firstMatch(card);
+      if (imgM != null) {
+        String rawImg = decodeHtmlEntities(imgM.group(1) ?? '');
+        if (rawImg.startsWith('/')) {
+          rawImg = 'https://www.bing.com$rawImg';
+        }
+        rawImg = rawImg
+            .replaceAll(RegExp(r'w=\d+'), 'w=640')
+            .replaceAll(RegExp(r'h=\d+'), 'h=360');
+        imageUrl = rawImg;
+      }
+
+      out.add(
+        HeavenSearchResult(
+          title: title,
+          url: url,
+          snippet: author,
+          sourceLabel: OmniboxParser.cleanDomain(url),
+          metaBadge: author,
+          thumbnailUrl: imageUrl,
+        ),
+      );
+      if (out.length >= 16) break;
+    }
+    return out;
   }
 
   Future<List<HeavenSearchResult>> _fetchGoogleNewsRss(
@@ -591,7 +1039,7 @@ class HeavenSearchService {
     final RegExp linkRegex = RegExp(r'<link>([\s\S]*?)<\/link>');
     final RegExp pubDateRegex = RegExp(r'<pubDate>([\s\S]*?)<\/pubDate>');
     final RegExp sourceRegex = RegExp(
-      r'<source(?:\s+url="([^"]*)")?[^>]*>([\s\S]*?)<\/source>',
+      r'<source[^>]*url="([^"]*)"[^>]*>([\s\S]*?)<\/source>',
     );
 
     for (final RegExpMatch match in itemRegex.allMatches(xml)) {
@@ -614,7 +1062,6 @@ class HeavenSearchService {
       if (title.isEmpty || link.isEmpty) {
         continue;
       }
-      // Clean trailing " - Publisher" from Google News title
       final String suffix = ' - $publisher';
       if (publisher.isNotEmpty && title.endsWith(suffix)) {
         title = title.substring(0, title.length - suffix.length).trim();

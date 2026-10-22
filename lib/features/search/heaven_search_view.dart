@@ -248,13 +248,27 @@ class _HeavenSearchViewState extends State<HeavenSearchView> {
             ),
             child: Row(
               children: <Widget>[
-                const SizedBox(width: 12),
-                Icon(Icons.search_rounded, size: 19, color: colors.primary),
-                const SizedBox(width: 8),
+                const SizedBox(width: 4),
+                IconButton(
+                  icon: Icon(
+                    Icons.search_rounded,
+                    size: 19,
+                    color: colors.primary,
+                  ),
+                  visualDensity: VisualDensity.compact,
+                  tooltip: 'Search',
+                  onPressed: () {
+                    final String val = _searchController.text.trim();
+                    if (val.isNotEmpty) {
+                      widget.onSubmitNewQuery(val);
+                    }
+                  },
+                ),
                 Expanded(
                   child: TextField(
                     controller: _searchController,
                     textInputAction: TextInputAction.search,
+                    onChanged: (_) => setState(() {}),
                     onSubmitted: (String value) {
                       if (value.trim().isNotEmpty) {
                         widget.onSubmitNewQuery(value.trim());
@@ -268,27 +282,17 @@ class _HeavenSearchViewState extends State<HeavenSearchView> {
                     ),
                   ),
                 ),
-                IconButton(
-                  icon: Icon(
-                    Icons.mic_rounded,
-                    size: 20,
-                    color: colors.primary,
+                if (_searchController.text.isNotEmpty)
+                  IconButton(
+                    icon: const Icon(Icons.cancel_rounded, size: 18),
+                    visualDensity: VisualDensity.compact,
+                    tooltip: 'Clear',
+                    onPressed: () {
+                      _searchController.clear();
+                      setState(() {});
+                    },
                   ),
-                  visualDensity: VisualDensity.compact,
-                  tooltip: 'Voice Search',
-                  onPressed: widget.onVoiceSearch,
-                ),
-                IconButton(
-                  icon: const Icon(Icons.arrow_forward_rounded, size: 19),
-                  visualDensity: VisualDensity.compact,
-                  tooltip: 'Search',
-                  onPressed: () {
-                    final String val = _searchController.text.trim();
-                    if (val.isNotEmpty) {
-                      widget.onSubmitNewQuery(val);
-                    }
-                  },
-                ),
+                const SizedBox(width: 4),
               ],
             ),
           ),
@@ -363,6 +367,15 @@ class _HeavenSearchViewState extends State<HeavenSearchView> {
                   label: _filters.safe.label,
                   active: _filters.safe != HeavenSafeFilter.off,
                   onTap: () => _pickSafeFilter(context),
+                ),
+                const SizedBox(width: 6),
+                _FilterPillButton(
+                  icon: Icons.open_in_new_rounded,
+                  label: 'Google Web',
+                  active: false,
+                  onTap: () => widget.onOpenUrl(
+                    'https://www.google.com/search?q=${Uri.encodeQueryComponent(widget.query)}&safe=off',
+                  ),
                 ),
                 if (_filters.hasActiveCustomFilter) ...<Widget>[
                   const SizedBox(width: 6),
@@ -739,6 +752,23 @@ class _HeavenSearchViewState extends State<HeavenSearchView> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: <Widget>[
+              if (item.thumbnailUrl != null &&
+                  item.thumbnailUrl!.isNotEmpty) ...<Widget>[
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 10),
+                  child: ClipRRect(
+                    borderRadius: BorderRadius.circular(12),
+                    child: AspectRatio(
+                      aspectRatio: 16 / 9,
+                      child: Image.network(
+                        item.thumbnailUrl!,
+                        fit: BoxFit.cover,
+                        errorBuilder: (_, _, _) => const SizedBox.shrink(),
+                      ),
+                    ),
+                  ),
+                ),
+              ],
               Row(
                 children: <Widget>[
                   SiteLogo(

@@ -2,8 +2,8 @@ import 'dart:async';
 import 'dart:ui';
 
 import 'package:flutter/material.dart';
-import 'package:http/testing.dart';
 import 'package:http/http.dart' as http;
+import 'package:http/testing.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'core/constants/app_constants.dart';
@@ -14,6 +14,7 @@ import 'features/news/interest_news_service.dart';
 import 'features/search/heaven_search_service.dart';
 import 'features/settings/browser_settings.dart';
 import 'features/tabs/tab_manager.dart';
+import 'features/vpn/vpn_controller.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -25,6 +26,7 @@ Future<void> main() async {
     prefs: prefs,
     interests: interests,
   );
+  final VpnController vpn = VpnController(prefs);
 
   runApp(
     HeavenBrowserApp(
@@ -32,6 +34,7 @@ Future<void> main() async {
       downloads: downloads,
       interests: interests,
       newsService: newsService,
+      vpn: vpn,
     ),
   );
 }
@@ -43,6 +46,7 @@ class HeavenBrowserApp extends StatefulWidget {
     this.downloads,
     this.interests,
     this.newsService,
+    this.vpn,
     this.enablePlatformWebView = true,
     this.searchService,
   });
@@ -51,6 +55,7 @@ class HeavenBrowserApp extends StatefulWidget {
   final DownloadsController? downloads;
   final InterestProfileController? interests;
   final HeavenNewsFeedService? newsService;
+  final VpnController? vpn;
   final bool enablePlatformWebView;
   final HeavenSearchService? searchService;
 
@@ -65,6 +70,7 @@ class _HeavenBrowserAppState extends State<HeavenBrowserApp>
   DownloadsController? _ownedDownloads;
   InterestProfileController? _ownedInterests;
   HeavenNewsFeedService? _ownedNewsService;
+  VpnController? _ownedVpn;
 
   DownloadsController get _effectiveDownloads =>
       widget.downloads ?? _ownedDownloads!;
@@ -72,6 +78,7 @@ class _HeavenBrowserAppState extends State<HeavenBrowserApp>
       widget.interests ?? _ownedInterests!;
   HeavenNewsFeedService get _effectiveNews =>
       widget.newsService ?? _ownedNewsService!;
+  VpnController get _effectiveVpn => widget.vpn ?? _ownedVpn!;
 
   @override
   void initState() {
@@ -101,6 +108,18 @@ class _HeavenBrowserAppState extends State<HeavenBrowserApp>
             : MockClient((_) async => http.Response('<rss></rss>', 200)),
       );
     }
+    if (widget.vpn == null) {
+      _ownedVpn = VpnController(
+        widget.settings.prefs,
+        enableNativePolling: widget.enablePlatformWebView,
+        client: widget.enablePlatformWebView
+            ? null
+            : MockClient(
+                (_) async =>
+                    http.Response('ip=104.28.14.9\nloc=SG\nwarp=on\n', 200),
+              ),
+      );
+    }
 
     final String initialRoute = PlatformDispatcher.instance.defaultRouteName;
     if (initialRoute.startsWith('http://') ||
@@ -128,6 +147,7 @@ class _HeavenBrowserAppState extends State<HeavenBrowserApp>
     _ownedDownloads?.dispose();
     _ownedInterests?.dispose();
     _ownedNewsService?.dispose();
+    _ownedVpn?.dispose();
     super.dispose();
   }
 
@@ -151,6 +171,7 @@ class _HeavenBrowserAppState extends State<HeavenBrowserApp>
                 downloads: _effectiveDownloads,
                 newsService: _effectiveNews,
                 interests: _effectiveInterests,
+                vpn: _effectiveVpn,
               ),
             ),
           ],
@@ -170,6 +191,7 @@ class _HeavenBrowserAppState extends State<HeavenBrowserApp>
                 downloads: _effectiveDownloads,
                 newsService: _effectiveNews,
                 interests: _effectiveInterests,
+                vpn: _effectiveVpn,
               ),
             );
           },

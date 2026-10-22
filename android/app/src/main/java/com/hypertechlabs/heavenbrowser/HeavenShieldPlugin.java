@@ -195,6 +195,7 @@ public class HeavenShieldPlugin
   private FlutterPluginBinding pluginBinding;
   private MethodChannel channel;
   private MethodChannel.Result pendingVoiceResult;
+  private HeavenVpnManager vpnManager;
 
   private final ExecutorService downloadPool = Executors.newCachedThreadPool();
   private final Map<Long, DownloadJob> downloadJobs = new ConcurrentHashMap<>();
@@ -229,6 +230,7 @@ public class HeavenShieldPlugin
   @Override
   public void onAttachedToEngine(FlutterPluginBinding binding) {
     this.pluginBinding = binding;
+    this.vpnManager = new HeavenVpnManager(binding.getApplicationContext());
     this.channel = new MethodChannel(binding.getBinaryMessenger(), CHANNEL_NAME);
     this.channel.setMethodCallHandler(this);
     setupServiceWorkerShield();
@@ -359,6 +361,9 @@ public class HeavenShieldPlugin
 
   @Override
   public boolean onActivityResult(int requestCode, int resultCode, Intent data) {
+    if (vpnManager != null && vpnManager.onActivityResult(requestCode, resultCode)) {
+      return true;
+    }
     if (requestCode == VOICE_SEARCH_REQUEST_CODE) {
       MethodChannel.Result callback = this.pendingVoiceResult;
       this.pendingVoiceResult = null;
@@ -520,6 +525,55 @@ public class HeavenShieldPlugin
 
       case "openDownloadedFile":
         handleOpenDownloadedFile(call, result);
+        break;
+
+      case "provisionFreeWarpConfig":
+        if (vpnManager != null) {
+          vpnManager.provisionFreeWarpConfig(result);
+        } else {
+          result.success(Collections.singletonMap("ok", false));
+        }
+        break;
+
+      case "validateWireGuardConfig":
+        if (vpnManager != null) {
+          String rawCfg = call.argument("configText");
+          vpnManager.validateWireGuardConfig(rawCfg != null ? rawCfg : "", result);
+        } else {
+          result.success(Collections.singletonMap("valid", false));
+        }
+        break;
+
+      case "connectVpn":
+        if (vpnManager != null) {
+          String cfgText = call.argument("configText");
+          String profName = call.argument("profileName");
+          Boolean bOnly = call.argument("browserOnly");
+          vpnManager.connectVpn(
+              this.activity,
+              cfgText != null ? cfgText : "",
+              profName != null ? profName : "Heaven Free VPN",
+              bOnly == null || bOnly,
+              result);
+        } else {
+          result.success(Collections.singletonMap("ok", false));
+        }
+        break;
+
+      case "disconnectVpn":
+        if (vpnManager != null) {
+          vpnManager.disconnectVpn(result);
+        } else {
+          result.success(Collections.singletonMap("ok", true));
+        }
+        break;
+
+      case "getVpnStatus":
+        if (vpnManager != null) {
+          vpnManager.getVpnStatus(result);
+        } else {
+          result.success(Collections.singletonMap("connected", false));
+        }
         break;
 
       default:

@@ -117,6 +117,15 @@ class _StartPageState extends State<StartPage> {
     });
   }
 
+  void _onSearchIconTap() {
+    final String query = _homeSearchController.text.trim();
+    if (query.isEmpty) {
+      _homeSearchFocus.requestFocus();
+      return;
+    }
+    _submitHomeSearch(query);
+  }
+
   void _submitHomeSearch([String? overrideValue]) {
     final String query = (overrideValue ?? _homeSearchController.text).trim();
     _suggestDebounce?.cancel();
@@ -156,7 +165,6 @@ class _StartPageState extends State<StartPage> {
                 sliver: SliverToBoxAdapter(
                   child: Column(
                     children: <Widget>[
-                      // Clean Heaven Blue Wordmark
                       ShaderMask(
                         shaderCallback: (Rect bounds) =>
                             (widget.isIncognito
@@ -175,7 +183,7 @@ class _StartPageState extends State<StartPage> {
                         ),
                       ),
                       const SizedBox(height: 18),
-                      // Working Home Screen Search Bar!
+                      // Working Home Screen Search Bar (Search icon submits + Keyboard Enter; Enter arrow button removed!)
                       _buildWorkingHomeSearchBar(context, colors, isDark),
                       if (_suggestions.isNotEmpty) ...<Widget>[
                         const SizedBox(height: 6),
@@ -223,7 +231,7 @@ class _StartPageState extends State<StartPage> {
                 ),
               if (!widget.isIncognito) ...<Widget>[
                 SliverPadding(
-                  padding: const EdgeInsets.fromLTRB(18, 8, 18, 8),
+                  padding: const EdgeInsets.fromLTRB(18, 8, 18, 10),
                   sliver: SliverToBoxAdapter(
                     child: _buildNewsSectionHeader(context, colors),
                   ),
@@ -242,9 +250,9 @@ class _StartPageState extends State<StartPage> {
                     padding: const EdgeInsets.fromLTRB(18, 0, 18, 28),
                     sliver: SliverList.separated(
                       itemCount: _newsItems.length,
-                      separatorBuilder: (_, _) => const SizedBox(height: 10),
+                      separatorBuilder: (_, _) => const SizedBox(height: 14),
                       itemBuilder: (BuildContext context, int index) {
-                        return _buildNewsCard(
+                        return _buildGoogleDiscoverCard(
                           context,
                           colors,
                           isDark,
@@ -266,9 +274,11 @@ class _StartPageState extends State<StartPage> {
     ColorScheme colors,
     bool isDark,
   ) {
+    final bool hasTyped = _homeSearchController.text.isNotEmpty;
+
     return Container(
       height: 52,
-      padding: const EdgeInsets.only(left: 14, right: 6),
+      padding: const EdgeInsets.symmetric(horizontal: 6),
       decoration: BoxDecoration(
         color: isDark
             ? (widget.isIncognito
@@ -292,8 +302,17 @@ class _StartPageState extends State<StartPage> {
       ),
       child: Row(
         children: <Widget>[
-          Icon(Icons.search_rounded, color: colors.primary, size: 21),
-          const SizedBox(width: 10),
+          // Clickable Search Icon submits query (or focuses when empty)!
+          IconButton(
+            key: const Key('home_search_icon_button'),
+            onPressed: _onSearchIconTap,
+            icon: Icon(Icons.search_rounded, color: colors.primary, size: 22),
+            tooltip: 'Search',
+            visualDensity: VisualDensity.compact,
+            padding: EdgeInsets.zero,
+            constraints: const BoxConstraints(minWidth: 38, minHeight: 38),
+          ),
+          const SizedBox(width: 2),
           Expanded(
             child: TextField(
               key: const Key('home_search_textfield'),
@@ -312,46 +331,27 @@ class _StartPageState extends State<StartPage> {
               ),
             ),
           ),
-          if (_homeSearchController.text.isNotEmpty)
+          if (hasTyped)
             IconButton(
               tooltip: 'Clear',
               visualDensity: VisualDensity.compact,
               padding: EdgeInsets.zero,
-              constraints: const BoxConstraints(minWidth: 32, minHeight: 34),
+              constraints: const BoxConstraints(minWidth: 34, minHeight: 36),
               onPressed: () {
                 _homeSearchController.clear();
                 setState(() => _suggestions = <String>[]);
               },
               icon: const Icon(Icons.cancel_rounded, size: 18),
+            )
+          else
+            IconButton(
+              onPressed: widget.onVoiceSearch,
+              icon: Icon(Icons.mic_rounded, color: colors.primary, size: 20),
+              tooltip: 'Voice Search',
+              visualDensity: VisualDensity.compact,
+              padding: EdgeInsets.zero,
+              constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
             ),
-          IconButton(
-            onPressed: widget.onVoiceSearch,
-            icon: Icon(Icons.mic_rounded, color: colors.primary, size: 20),
-            tooltip: 'Voice Search',
-            visualDensity: VisualDensity.compact,
-            padding: EdgeInsets.zero,
-            constraints: const BoxConstraints(minWidth: 34, minHeight: 36),
-          ),
-          IconButton(
-            onPressed: _submitHomeSearch,
-            icon: Container(
-              width: 32,
-              height: 32,
-              decoration: BoxDecoration(
-                color: colors.primary,
-                shape: BoxShape.circle,
-              ),
-              child: Icon(
-                Icons.arrow_forward_rounded,
-                size: 17,
-                color: colors.onPrimary,
-              ),
-            ),
-            tooltip: 'Search Now',
-            visualDensity: VisualDensity.compact,
-            padding: EdgeInsets.zero,
-            constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
-          ),
         ],
       ),
     );
@@ -387,11 +387,8 @@ class _StartPageState extends State<StartPage> {
     );
   }
 
+  /// Header with zero 'Reset Interests' button as requested!
   Widget _buildNewsSectionHeader(BuildContext context, ColorScheme colors) {
-    final List<InterestEntry> learned = widget.interests.rankedInterests
-        .take(4)
-        .toList(growable: false);
-
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: <Widget>[
@@ -401,10 +398,10 @@ class _StartPageState extends State<StartPage> {
             const SizedBox(width: 6),
             const Expanded(
               child: Text(
-                'Daily Feed',
+                'Discover',
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
-                style: TextStyle(fontSize: 15.5, fontWeight: FontWeight.w800),
+                style: TextStyle(fontSize: 16, fontWeight: FontWeight.w800),
               ),
             ),
             if (_loadingNews)
@@ -413,35 +410,9 @@ class _StartPageState extends State<StartPage> {
                 height: 14,
                 child: CircularProgressIndicator(strokeWidth: 2),
               ),
-            if (learned.isNotEmpty)
-              TextButton(
-                style: TextButton.styleFrom(
-                  visualDensity: VisualDensity.compact,
-                  padding: const EdgeInsets.symmetric(horizontal: 8),
-                ),
-                onPressed: () async {
-                  await widget.interests.clearInterests();
-                  await _refreshNews();
-                },
-                child: const Text(
-                  'Reset Interests',
-                  style: TextStyle(fontSize: 11.5),
-                ),
-              ),
           ],
         ),
-        if (_selectedNewsTab == NewsCategoryTab.forYou && learned.isNotEmpty)
-          Padding(
-            padding: const EdgeInsets.only(top: 2, bottom: 6),
-            child: Text(
-              'Tailored to you: ${learned.map((InterestEntry e) => e.label).join(' • ')}',
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: TextStyle(fontSize: 11.5, color: colors.primary),
-            ),
-          )
-        else
-          const SizedBox(height: 6),
+        const SizedBox(height: 8),
         SingleChildScrollView(
           scrollDirection: Axis.horizontal,
           child: Row(
@@ -493,17 +464,22 @@ class _StartPageState extends State<StartPage> {
     );
   }
 
-  Widget _buildNewsCard(
+  /// Google Discover-style Card:
+  /// Edge-to-edge 16:9 top cover photo + publisher favicon + bold headline + time!
+  Widget _buildGoogleDiscoverCard(
     BuildContext context,
     ColorScheme colors,
     bool isDark,
     PersonalizedNewsItem item,
   ) {
+    final bool hasImage = item.imageUrl != null && item.imageUrl!.isNotEmpty;
+
     return Material(
       color: isDark ? AppTheme.navySurface : Colors.white,
-      borderRadius: BorderRadius.circular(16),
+      borderRadius: BorderRadius.circular(20),
+      clipBehavior: Clip.antiAlias,
       child: InkWell(
-        borderRadius: BorderRadius.circular(16),
+        borderRadius: BorderRadius.circular(20),
         onTap: () {
           unawaited(
             widget.interests.recordActivity(
@@ -515,83 +491,157 @@ class _StartPageState extends State<StartPage> {
         },
         onLongPress: () => _showNewsMenu(context, item),
         child: Container(
-          padding: const EdgeInsets.all(14),
           decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(16),
+            borderRadius: BorderRadius.circular(20),
             border: Border.all(
-              color: colors.outlineVariant.withValues(alpha: 0.38),
+              color: colors.outlineVariant.withValues(alpha: 0.35),
             ),
           ),
           child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
             children: <Widget>[
-              Row(
-                children: <Widget>[
-                  SiteLogo(
-                    urlOrDomain: item.sourceUrl,
-                    fallbackLabel: item.sourceName,
-                    size: 18,
-                    borderRadius: 5,
-                  ),
-                  const SizedBox(width: 7),
-                  Expanded(
-                    child: Text(
-                      item.sourceName,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: TextStyle(
-                        fontSize: 11.5,
-                        fontWeight: FontWeight.w700,
-                        color: colors.onSurfaceVariant,
-                      ),
-                    ),
-                  ),
-                  if (item.matchedTopic != null &&
-                      item.matchedTopic!.isNotEmpty) ...<Widget>[
-                    Container(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 6,
-                        vertical: 2,
-                      ),
-                      decoration: BoxDecoration(
-                        color: colors.primary.withValues(alpha: 0.14),
-                        borderRadius: BorderRadius.circular(6),
-                      ),
-                      child: Text(
-                        item.matchedTopic!,
-                        style: TextStyle(
-                          fontSize: 10,
-                          fontWeight: FontWeight.w700,
-                          color: colors.primary,
-                        ),
-                      ),
-                    ),
-                    const SizedBox(width: 6),
-                  ],
-                  if (item.timeLabel.isNotEmpty)
-                    Text(
-                      item.timeLabel,
-                      style: TextStyle(
-                        fontSize: 11,
-                        color: colors.onSurfaceVariant,
-                      ),
-                    ),
-                ],
+              // 16:9 Google Discover Cover Image
+              ClipRRect(
+                borderRadius: const BorderRadius.vertical(
+                  top: Radius.circular(19),
+                ),
+                child: AspectRatio(
+                  aspectRatio: 16 / 9,
+                  child: hasImage
+                      ? Image.network(
+                          item.imageUrl!,
+                          fit: BoxFit.cover,
+                          errorBuilder: (_, _, _) =>
+                              _buildFallbackHeroBanner(colors, item),
+                        )
+                      : _buildFallbackHeroBanner(colors, item),
+                ),
               ),
-              const SizedBox(height: 8),
-              Text(
-                item.title,
-                maxLines: 3,
-                overflow: TextOverflow.ellipsis,
-                style: const TextStyle(
-                  fontSize: 14.5,
-                  fontWeight: FontWeight.w700,
-                  height: 1.32,
+              Padding(
+                padding: const EdgeInsets.fromLTRB(14, 12, 14, 14),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: <Widget>[
+                    Text(
+                      item.title,
+                      maxLines: 3,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.w700,
+                        height: 1.32,
+                      ),
+                    ),
+                    const SizedBox(height: 10),
+                    Row(
+                      children: <Widget>[
+                        SiteLogo(
+                          urlOrDomain: item.sourceUrl,
+                          fallbackLabel: item.sourceName,
+                          size: 18,
+                          borderRadius: 5,
+                        ),
+                        const SizedBox(width: 7),
+                        Expanded(
+                          child: Text(
+                            item.timeLabel.isNotEmpty
+                                ? '${item.sourceName} • ${item.timeLabel}'
+                                : item.sourceName,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: TextStyle(
+                              fontSize: 12,
+                              fontWeight: FontWeight.w600,
+                              color: colors.onSurfaceVariant,
+                            ),
+                          ),
+                        ),
+                        if (item.matchedTopic != null &&
+                            item.matchedTopic!.isNotEmpty) ...<Widget>[
+                          const SizedBox(width: 6),
+                          Container(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 7,
+                              vertical: 2,
+                            ),
+                            decoration: BoxDecoration(
+                              color: colors.primary.withValues(alpha: 0.14),
+                              borderRadius: BorderRadius.circular(6),
+                            ),
+                            child: Text(
+                              item.matchedTopic!,
+                              style: TextStyle(
+                                fontSize: 10.5,
+                                fontWeight: FontWeight.w700,
+                                color: colors.primary,
+                              ),
+                            ),
+                          ),
+                        ],
+                        const SizedBox(width: 4),
+                        InkWell(
+                          borderRadius: BorderRadius.circular(12),
+                          onTap: () => _showNewsMenu(context, item),
+                          child: Padding(
+                            padding: const EdgeInsets.all(2),
+                            child: Icon(
+                              Icons.more_horiz_rounded,
+                              size: 18,
+                              color: colors.onSurfaceVariant,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
                 ),
               ),
             ],
           ),
         ),
+      ),
+    );
+  }
+
+  Widget _buildFallbackHeroBanner(
+    ColorScheme colors,
+    PersonalizedNewsItem item,
+  ) {
+    return Container(
+      decoration: BoxDecoration(
+        gradient: LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: <Color>[
+            AppTheme.navyElevated,
+            colors.primary.withValues(alpha: 0.35),
+          ],
+        ),
+      ),
+      alignment: Alignment.center,
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: <Widget>[
+          SiteLogo(
+            urlOrDomain: item.sourceUrl,
+            fallbackLabel: item.sourceName,
+            size: 32,
+            borderRadius: 9,
+          ),
+          const SizedBox(width: 10),
+          Flexible(
+            child: Text(
+              item.sourceName,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(
+                color: Colors.white,
+                fontWeight: FontWeight.w800,
+                fontSize: 15,
+              ),
+            ),
+          ),
+        ],
       ),
     );
   }

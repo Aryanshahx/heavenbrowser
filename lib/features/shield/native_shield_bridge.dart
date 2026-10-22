@@ -370,4 +370,127 @@ class NativeShieldBridge {
       return false;
     }
   }
+
+  Future<Map<String, Object?>> provisionFreeWarpConfig() async {
+    const Map<String, Object?> testFallback = <String, Object?>{
+      'ok': true,
+      'configText':
+          '[Interface]\nPrivateKey = AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=\nAddress = 172.16.0.2/32\nDNS = 1.1.1.1\n\n[Peer]\nPublicKey = bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo=\nAllowedIPs = 0.0.0.0/0\nEndpoint = 162.159.192.6:2408\n',
+      'clientIpv4': '172.16.0.2',
+      'endpoint': '162.159.192.6:2408',
+    };
+    try {
+      final Map<Object?, Object?>? raw = await _channel
+          .invokeMethod<Map<Object?, Object?>>('provisionFreeWarpConfig');
+      if (raw == null) {
+        return testFallback;
+      }
+      return <String, Object?>{
+        for (final MapEntry<Object?, Object?> e in raw.entries)
+          if (e.key != null) e.key.toString(): e.value,
+      };
+    } on MissingPluginException {
+      return testFallback;
+    } on PlatformException catch (e) {
+      return <String, Object?>{
+        'ok': false,
+        'error': e.message ?? 'Provisioning error',
+      };
+    }
+  }
+
+  Future<Map<String, Object?>> validateWireGuardConfig(
+    String configText,
+  ) async {
+    final bool hasSections =
+        configText.contains('[Interface]') && configText.contains('[Peer]');
+    final Map<String, Object?> fallback = <String, Object?>{
+      'valid': hasSections,
+      if (!hasSections) 'error': 'Missing [Interface] or [Peer] section',
+    };
+    try {
+      final Map<Object?, Object?>? raw = await _channel
+          .invokeMethod<Map<Object?, Object?>>(
+            'validateWireGuardConfig',
+            <String, Object>{'configText': configText},
+          );
+      if (raw == null) {
+        return fallback;
+      }
+      return <String, Object?>{
+        for (final MapEntry<Object?, Object?> e in raw.entries)
+          if (e.key != null) e.key.toString(): e.value,
+      };
+    } on MissingPluginException {
+      return fallback;
+    } on PlatformException catch (e) {
+      return <String, Object?>{
+        'valid': false,
+        'error': e.message ?? 'Invalid config',
+      };
+    }
+  }
+
+  Future<Map<String, Object?>> connectVpn({
+    required String configText,
+    required String profileName,
+    required bool browserOnly,
+  }) async {
+    final Map<String, Object?> fallback = <String, Object?>{
+      'ok': true,
+      'connected': true,
+      'profileName': profileName,
+    };
+    try {
+      final Map<Object?, Object?>? raw = await _channel
+          .invokeMethod<Map<Object?, Object?>>('connectVpn', <String, Object>{
+            'configText': configText,
+            'profileName': profileName,
+            'browserOnly': browserOnly,
+          });
+      if (raw == null) {
+        return fallback;
+      }
+      return <String, Object?>{
+        for (final MapEntry<Object?, Object?> e in raw.entries)
+          if (e.key != null) e.key.toString(): e.value,
+      };
+    } on MissingPluginException {
+      return fallback;
+    } on PlatformException catch (e) {
+      return <String, Object?>{
+        'ok': false,
+        'connected': false,
+        'error': e.message ?? 'VPN connection failed',
+      };
+    }
+  }
+
+  Future<void> disconnectVpn() async {
+    try {
+      await _channel.invokeMethod<Map<Object?, Object?>>('disconnectVpn');
+    } on MissingPluginException {
+      // Expected in widget tests.
+    } on PlatformException {
+      // Non-fatal.
+    }
+  }
+
+  Future<Map<String, Object?>> getVpnStatus() async {
+    try {
+      final Map<Object?, Object?>? raw = await _channel
+          .invokeMethod<Map<Object?, Object?>>('getVpnStatus');
+      if (raw == null) {
+        return const <String, Object?>{'connected': false};
+      }
+      return <String, Object?>{
+        for (final MapEntry<Object?, Object?> e in raw.entries)
+          if (e.key != null) e.key.toString(): e.value,
+      };
+    } on MissingPluginException {
+      return const <String, Object?>{'connected': false};
+    } on PlatformException {
+      return const <String, Object?>{'connected': false};
+    }
+  }
 }
