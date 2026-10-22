@@ -1,45 +1,128 @@
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
-import 'package:heavenbrowser/core/utils/omnibox_parser.dart';
-import 'package:heavenbrowser/features/shield/heaven_shield.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
-enum OmniboxPosition {
-  bottom('Bottom (Thumb-friendly)'),
-  top('Top (Classic)');
+import '../../core/utils/omnibox_parser.dart';
+import '../shield/native_shield_bridge.dart';
 
-  const OmniboxPosition(this.label);
-  final String label;
+class SiteUsageEntry {
+  const SiteUsageEntry({
+    required this.domain,
+    required this.url,
+    required this.title,
+    required this.visitCount,
+    required this.lastVisitedMs,
+    this.isPinned = false,
+  });
 
-  static OmniboxPosition fromName(String? name) {
-    for (final OmniboxPosition pos in OmniboxPosition.values) {
-      if (pos.name == name) {
-        return pos;
-      }
-    }
-    return OmniboxPosition.bottom;
+  final String domain;
+  final String url;
+  final String title;
+  final int visitCount;
+  final int lastVisitedMs;
+  final bool isPinned;
+
+  SiteUsageEntry copyWith({
+    String? url,
+    String? title,
+    int? visitCount,
+    int? lastVisitedMs,
+    bool? isPinned,
+  }) {
+    return SiteUsageEntry(
+      domain: domain,
+      url: url ?? this.url,
+      title: title ?? this.title,
+      visitCount: visitCount ?? this.visitCount,
+      lastVisitedMs: lastVisitedMs ?? this.lastVisitedMs,
+      isPinned: isPinned ?? this.isPinned,
+    );
+  }
+
+  Map<String, Object?> toJson() => <String, Object?>{
+    'domain': domain,
+    'url': url,
+    'title': title,
+    'visitCount': visitCount,
+    'lastVisitedMs': lastVisitedMs,
+    'isPinned': isPinned,
+  };
+
+  factory SiteUsageEntry.fromJson(Map<String, Object?> json) {
+    final String rawUrl = (json['url']?.toString() ?? '').trim();
+    final String domain = (json['domain']?.toString() ?? '').trim().isNotEmpty
+        ? json['domain']!.toString().trim()
+        : OmniboxParser.cleanDomain(rawUrl);
+    return SiteUsageEntry(
+      domain: domain,
+      url: rawUrl.isEmpty ? 'https://$domain' : rawUrl,
+      title: (json['title']?.toString() ?? '').trim().isNotEmpty
+          ? json['title']!.toString().trim()
+          : OmniboxParser.friendlySiteTitleFromDomain(domain),
+      visitCount: (json['visitCount'] is num)
+          ? (json['visitCount']! as num).toInt()
+          : 0,
+      lastVisitedMs: (json['lastVisitedMs'] is num)
+          ? (json['lastVisitedMs']! as num).toInt()
+          : 0,
+      isPinned: json['isPinned'] == true,
+    );
   }
 }
 
-class QuickShortcut {
-  const QuickShortcut({
+class BookmarkItem {
+  const BookmarkItem({
     required this.title,
     required this.url,
+    required this.createdAtMs,
   });
 
   final String title;
   final String url;
+  final int createdAtMs;
 
-  Map<String, String> toJson() => <String, String>{
-        'title': title,
-        'url': url,
-      };
+  Map<String, Object?> toJson() => <String, Object?>{
+    'title': title,
+    'url': url,
+    'createdAtMs': createdAtMs,
+  };
 
-  factory QuickShortcut.fromJson(Map<String, dynamic> json) {
-    return QuickShortcut(
-      title: (json['title'] as String? ?? '').trim(),
-      url: (json['url'] as String? ?? '').trim(),
+  factory BookmarkItem.fromJson(Map<String, Object?> json) {
+    return BookmarkItem(
+      title: (json['title']?.toString() ?? 'Bookmark').trim(),
+      url: (json['url']?.toString() ?? '').trim(),
+      createdAtMs: (json['createdAtMs'] is num)
+          ? (json['createdAtMs']! as num).toInt()
+          : 0,
+    );
+  }
+}
+
+class HistoryItem {
+  const HistoryItem({
+    required this.title,
+    required this.url,
+    required this.visitedAtMs,
+  });
+
+  final String title;
+  final String url;
+  final int visitedAtMs;
+
+  Map<String, Object?> toJson() => <String, Object?>{
+    'title': title,
+    'url': url,
+    'visitedAtMs': visitedAtMs,
+  };
+
+  factory HistoryItem.fromJson(Map<String, Object?> json) {
+    return HistoryItem(
+      title: (json['title']?.toString() ?? 'Page').trim(),
+      url: (json['url']?.toString() ?? '').trim(),
+      visitedAtMs: (json['visitedAtMs'] is num)
+          ? (json['visitedAtMs']! as num).toInt()
+          : 0,
     );
   }
 }
@@ -51,208 +134,600 @@ class BrowserSettingsController extends ChangeNotifier {
 
   final SharedPreferences _prefs;
 
-  static const String _keyThemeMode = 'hb_theme_mode';
-  static const String _keySearchEngine = 'hb_search_engine';
-  static const String _keyOmniboxPos = 'hb_omnibox_position';
-  static const String _keyShieldEnabled = 'hb_shield_enabled';
-  static const String _keyHttpsUpgrade = 'hb_https_upgrade';
-  static const String _keyBlockThirdPartyCookies = 'hb_block_3p_cookies';
-  static const String _keyJsEnabled = 'hb_js_enabled';
-  static const String _keyDesktopMode = 'hb_desktop_mode';
-  static const String _keyTextZoom = 'hb_text_zoom';
-  static const String _keyTotalBlocked = 'hb_total_blocked';
-  static const String _keyTrustedHosts = 'hb_trusted_hosts';
-  static const String _keyShortcuts = 'hb_quick_shortcuts';
+  static const String _keySearchEngine = 'hb.searchEngine.v3';
+  static const String _keyThemeMode = 'hb.themeMode.v3';
+  static const String _keyBottomBar = 'hb.bottomOmnibox';
+  static const String _keyShieldEnabled = 'hb.shieldEnabled';
+  static const String _keyHttpsUpgrade = 'hb.httpsUpgrade';
+  static const String _keyBlockThirdPartyCookies = 'hb.blockThirdPartyCookies';
+  static const String _keySendDntGpc = 'hb.sendDntGpc';
+  static const String _keyClearOnExit = 'hb.clearOnExit';
+  static const String _keyJavascriptEnabled = 'hb.javascriptEnabled';
+  static const String _keyDesktopMode = 'hb.desktopMode';
+  static const String _keyTextScalePercent = 'hb.textScalePercent';
+  static const String _keyTotalBlocked = 'hb.totalBlocked';
+  static const String _keyTrustedHosts = 'hb.trustedHosts';
+  static const String _keySiteUsage = 'hb.siteUsage.v3';
+  static const String _keyHiddenDomains = 'hb.hiddenQuickDomains.v3';
+  static const String _keyBookmarks = 'hb.bookmarks.v3';
+  static const String _keyHistory = 'hb.history.v3';
 
-  static const List<QuickShortcut> defaultShortcuts = <QuickShortcut>[
-    QuickShortcut(title: 'DuckDuckGo', url: 'https://duckduckgo.com'),
-    QuickShortcut(title: 'Wikipedia', url: 'https://www.wikipedia.org'),
-    QuickShortcut(title: 'GitHub', url: 'https://github.com'),
-    QuickShortcut(title: 'Hacker News', url: 'https://news.ycombinator.com'),
-    QuickShortcut(title: 'Proton', url: 'https://proton.me'),
-    QuickShortcut(title: 'MDN Docs', url: 'https://developer.mozilla.org'),
+  static const List<SiteUsageEntry> _starterSites = <SiteUsageEntry>[
+    SiteUsageEntry(
+      domain: 'youtube.com',
+      url: 'https://www.youtube.com',
+      title: 'YouTube',
+      visitCount: 0,
+      lastVisitedMs: 0,
+    ),
+    SiteUsageEntry(
+      domain: 'github.com',
+      url: 'https://github.com',
+      title: 'GitHub',
+      visitCount: 0,
+      lastVisitedMs: 0,
+    ),
+    SiteUsageEntry(
+      domain: 'wikipedia.org',
+      url: 'https://www.wikipedia.org',
+      title: 'Wikipedia',
+      visitCount: 0,
+      lastVisitedMs: 0,
+    ),
+    SiteUsageEntry(
+      domain: 'reddit.com',
+      url: 'https://www.reddit.com',
+      title: 'Reddit',
+      visitCount: 0,
+      lastVisitedMs: 0,
+    ),
+    SiteUsageEntry(
+      domain: 'news.ycombinator.com',
+      url: 'https://news.ycombinator.com',
+      title: 'Hacker News',
+      visitCount: 0,
+      lastVisitedMs: 0,
+    ),
+    SiteUsageEntry(
+      domain: 'bbc.com',
+      url: 'https://www.bbc.com/news',
+      title: 'BBC News',
+      visitCount: 0,
+      lastVisitedMs: 0,
+    ),
+    SiteUsageEntry(
+      domain: 'stackoverflow.com',
+      url: 'https://stackoverflow.com',
+      title: 'StackOverflow',
+      visitCount: 0,
+      lastVisitedMs: 0,
+    ),
+    SiteUsageEntry(
+      domain: 'developer.mozilla.org',
+      url: 'https://developer.mozilla.org',
+      title: 'MDN Docs',
+      visitCount: 0,
+      lastVisitedMs: 0,
+    ),
   ];
 
-  ThemeMode _themeMode = ThemeMode.system;
-  SearchEngine _searchEngine = SearchEngine.duckDuckGo;
-  OmniboxPosition _omniboxPosition = OmniboxPosition.bottom;
+  // Heaven Search is ALWAYS the default search engine unless switched by user.
+  SearchEngine _searchEngine = SearchEngine.heaven;
+  ThemeMode _themeMode = ThemeMode.dark;
+  bool _bottomOmnibox = true;
   bool _shieldEnabled = true;
   bool _httpsUpgrade = true;
   bool _blockThirdPartyCookies = true;
+  bool _sendDntAndGpc = true;
+  bool _clearOnExit = false;
   bool _javascriptEnabled = true;
   bool _desktopMode = false;
-  int _textZoom = 100;
+  int _textScalePercent = 100;
   int _totalTrackersBlocked = 0;
-  Set<String> _trustedHosts = <String>{};
-  List<QuickShortcut> _shortcuts = List<QuickShortcut>.from(defaultShortcuts);
 
-  ThemeMode get themeMode => _themeMode;
+  final Set<String> _trustedHosts = <String>{};
+  final Map<String, SiteUsageEntry> _siteUsageByDomain =
+      <String, SiteUsageEntry>{};
+  final Set<String> _hiddenQuickDomains = <String>{};
+  List<BookmarkItem> _bookmarks = <BookmarkItem>[];
+  List<HistoryItem> _history = <HistoryItem>[];
+
   SearchEngine get searchEngine => _searchEngine;
-  OmniboxPosition get omniboxPosition => _omniboxPosition;
+  ThemeMode get themeMode => _themeMode;
+  bool get bottomOmnibox => _bottomOmnibox;
   bool get shieldEnabled => _shieldEnabled;
   bool get httpsUpgrade => _httpsUpgrade;
   bool get blockThirdPartyCookies => _blockThirdPartyCookies;
+  bool get sendDntAndGpc => _sendDntAndGpc;
+  bool get clearOnExit => _clearOnExit;
   bool get javascriptEnabled => _javascriptEnabled;
   bool get desktopMode => _desktopMode;
-  int get textZoom => _textZoom;
+  int get textScalePercent => _textScalePercent;
   int get totalTrackersBlocked => _totalTrackersBlocked;
   Set<String> get trustedHosts => Set<String>.unmodifiable(_trustedHosts);
-  List<QuickShortcut> get shortcuts => List<QuickShortcut>.unmodifiable(_shortcuts);
+  List<BookmarkItem> get bookmarks =>
+      List<BookmarkItem>.unmodifiable(_bookmarks);
+  List<HistoryItem> get history => List<HistoryItem>.unmodifiable(_history);
 
-  void _load() {
-    final String? themeStr = _prefs.getString(_keyThemeMode);
-    if (themeStr == 'light') {
-      _themeMode = ThemeMode.light;
-    } else if (themeStr == 'dark') {
-      _themeMode = ThemeMode.dark;
-    } else {
-      _themeMode = ThemeMode.system;
+  /// Smart Quick Launch: automatically ranks sites by actual usage frequency
+  /// (pinned first, then highest visitCount, then filled with starter sites).
+  List<SiteUsageEntry> get quickLaunchSites {
+    final List<SiteUsageEntry> pinned = <SiteUsageEntry>[];
+    final List<SiteUsageEntry> frequent = <SiteUsageEntry>[];
+
+    for (final SiteUsageEntry entry in _siteUsageByDomain.values) {
+      if (_hiddenQuickDomains.contains(entry.domain)) {
+        continue;
+      }
+      if (entry.isPinned) {
+        pinned.add(entry);
+      } else if (entry.visitCount > 0) {
+        frequent.add(entry);
+      }
     }
 
+    pinned.sort((SiteUsageEntry a, SiteUsageEntry b) {
+      final int byCount = b.visitCount.compareTo(a.visitCount);
+      return byCount != 0
+          ? byCount
+          : b.lastVisitedMs.compareTo(a.lastVisitedMs);
+    });
+
+    frequent.sort((SiteUsageEntry a, SiteUsageEntry b) {
+      final int byCount = b.visitCount.compareTo(a.visitCount);
+      return byCount != 0
+          ? byCount
+          : b.lastVisitedMs.compareTo(a.lastVisitedMs);
+    });
+
+    final List<SiteUsageEntry> result = <SiteUsageEntry>[];
+    final Set<String> includedDomains = <String>{};
+
+    for (final SiteUsageEntry item in <SiteUsageEntry>[
+      ...pinned,
+      ...frequent,
+    ]) {
+      if (includedDomains.add(item.domain)) {
+        result.add(item);
+      }
+      if (result.length >= 8) {
+        return result;
+      }
+    }
+
+    for (final SiteUsageEntry starter in _starterSites) {
+      if (_hiddenQuickDomains.contains(starter.domain)) {
+        continue;
+      }
+      if (includedDomains.add(starter.domain)) {
+        result.add(starter);
+      }
+      if (result.length >= 8) {
+        break;
+      }
+    }
+
+    return result;
+  }
+
+  void _load() {
     _searchEngine = SearchEngine.fromName(_prefs.getString(_keySearchEngine));
-    _omniboxPosition =
-        OmniboxPosition.fromName(_prefs.getString(_keyOmniboxPos));
+    _themeMode = switch (_prefs.getString(_keyThemeMode)) {
+      'light' => ThemeMode.light,
+      'system' => ThemeMode.system,
+      _ => ThemeMode.dark,
+    };
+    _bottomOmnibox = _prefs.getBool(_keyBottomBar) ?? true;
     _shieldEnabled = _prefs.getBool(_keyShieldEnabled) ?? true;
     _httpsUpgrade = _prefs.getBool(_keyHttpsUpgrade) ?? true;
     _blockThirdPartyCookies =
         _prefs.getBool(_keyBlockThirdPartyCookies) ?? true;
-    _javascriptEnabled = _prefs.getBool(_keyJsEnabled) ?? true;
+    _sendDntAndGpc = _prefs.getBool(_keySendDntGpc) ?? true;
+    _clearOnExit = _prefs.getBool(_keyClearOnExit) ?? false;
+    _javascriptEnabled = _prefs.getBool(_keyJavascriptEnabled) ?? true;
     _desktopMode = _prefs.getBool(_keyDesktopMode) ?? false;
-    _textZoom = (_prefs.getInt(_keyTextZoom) ?? 100).clamp(75, 150);
+    _textScalePercent = (_prefs.getInt(_keyTextScalePercent) ?? 100).clamp(
+      75,
+      175,
+    );
     _totalTrackersBlocked = _prefs.getInt(_keyTotalBlocked) ?? 0;
 
     final List<String>? savedTrusted = _prefs.getStringList(_keyTrustedHosts);
     if (savedTrusted != null) {
-      _trustedHosts = savedTrusted.map(HeavenShield.normalizeHost).toSet();
+      _trustedHosts
+        ..clear()
+        ..addAll(savedTrusted);
     }
 
-    final String? rawShortcuts = _prefs.getString(_keyShortcuts);
-    if (rawShortcuts != null && rawShortcuts.isNotEmpty) {
+    final List<String>? hidden = _prefs.getStringList(_keyHiddenDomains);
+    if (hidden != null) {
+      _hiddenQuickDomains
+        ..clear()
+        ..addAll(hidden);
+    }
+
+    final String? rawUsage = _prefs.getString(_keySiteUsage);
+    if (rawUsage != null && rawUsage.isNotEmpty) {
       try {
-        final List<dynamic> decoded = jsonDecode(rawShortcuts) as List<dynamic>;
-        _shortcuts = decoded
-            .whereType<Map<String, dynamic>>()
-            .map(QuickShortcut.fromJson)
-            .where((QuickShortcut s) => s.title.isNotEmpty && s.url.isNotEmpty)
-            .toList();
-      } catch (_) {
-        _shortcuts = List<QuickShortcut>.from(defaultShortcuts);
+        final Object? decoded = jsonDecode(rawUsage);
+        if (decoded is List<Object?>) {
+          for (final Object? item in decoded) {
+            if (item is Map<String, Object?>) {
+              final SiteUsageEntry entry = SiteUsageEntry.fromJson(item);
+              if (entry.domain.isNotEmpty) {
+                _siteUsageByDomain[entry.domain] = entry;
+              }
+            }
+          }
+        }
+      } on FormatException {
+        _siteUsageByDomain.clear();
       }
     }
+
+    final String? rawBookmarks = _prefs.getString(_keyBookmarks);
+    if (rawBookmarks != null && rawBookmarks.isNotEmpty) {
+      try {
+        final Object? decoded = jsonDecode(rawBookmarks);
+        if (decoded is List<Object?>) {
+          _bookmarks = decoded
+              .whereType<Map<String, Object?>>()
+              .map(BookmarkItem.fromJson)
+              .where((BookmarkItem b) => b.url.isNotEmpty)
+              .toList();
+        }
+      } on FormatException {
+        _bookmarks = <BookmarkItem>[];
+      }
+    }
+
+    final String? rawHistory = _prefs.getString(_keyHistory);
+    if (rawHistory != null && rawHistory.isNotEmpty) {
+      try {
+        final Object? decoded = jsonDecode(rawHistory);
+        if (decoded is List<Object?>) {
+          _history = decoded
+              .whereType<Map<String, Object?>>()
+              .map(HistoryItem.fromJson)
+              .where((HistoryItem h) => h.url.isNotEmpty)
+              .toList();
+        }
+      } on FormatException {
+        _history = <HistoryItem>[];
+      }
+    }
+
+    _pushNativeShieldConfig();
   }
 
-  Future<void> setThemeMode(ThemeMode mode) async {
-    _themeMode = mode;
+  void _pushNativeShieldConfig() {
+    NativeShieldBridge.instance.syncShieldConfig(
+      shieldEnabled: _shieldEnabled,
+      trustedHosts: _trustedHosts,
+      sendDntAndGpc: _sendDntAndGpc,
+    );
+  }
+
+  bool isHostTrusted(String? host) {
+    if (host == null || host.isEmpty) {
+      return false;
+    }
+    return _trustedHosts.contains(OmniboxParser.cleanDomain(host));
+  }
+
+  Future<void> toggleHostTrust(String host) async {
+    final String normalized = OmniboxParser.cleanDomain(host);
+    if (normalized.isEmpty) {
+      return;
+    }
+    if (!_trustedHosts.remove(normalized)) {
+      _trustedHosts.add(normalized);
+    }
+    await _prefs.setStringList(_keyTrustedHosts, _trustedHosts.toList());
+    _pushNativeShieldConfig();
     notifyListeners();
-    await _prefs.setString(_keyThemeMode, mode.name);
+  }
+
+  /// Automatically records website usage for Quick Launch ranking + Browsing History.
+  /// Never call this from Incognito tabs.
+  Future<void> recordPageVisit({
+    required String url,
+    required String title,
+  }) async {
+    final Uri? uri = Uri.tryParse(url);
+    if (uri == null ||
+        (uri.scheme != 'http' && uri.scheme != 'https') ||
+        uri.host.isEmpty) {
+      return;
+    }
+
+    final int now = DateTime.now().millisecondsSinceEpoch;
+    final String cleanDomain = OmniboxParser.cleanDomain(uri.host);
+    final String cleanTitle = title.trim().isNotEmpty
+        ? title.trim()
+        : OmniboxParser.friendlySiteTitleFromDomain(cleanDomain);
+
+    // 1. Update automatic site usage frequency for Quick Launch
+    if (cleanDomain.isNotEmpty && !_hiddenQuickDomains.contains(cleanDomain)) {
+      final SiteUsageEntry? existing = _siteUsageByDomain[cleanDomain];
+      final String canonicalOrigin = '${uri.scheme}://${uri.host}';
+      final String shortLabel = existing != null && existing.isPinned
+          ? existing.title
+          : _deriveShortLabel(cleanDomain, cleanTitle);
+
+      _siteUsageByDomain[cleanDomain] = SiteUsageEntry(
+        domain: cleanDomain,
+        url: existing != null && existing.isPinned
+            ? existing.url
+            : canonicalOrigin,
+        title: shortLabel,
+        visitCount: (existing?.visitCount ?? 0) + 1,
+        lastVisitedMs: now,
+        isPinned: existing?.isPinned ?? false,
+      );
+      await _persistSiteUsage();
+    }
+
+    // 2. Append to Browsing History (deduplicate consecutive identical URL)
+    if (_history.isEmpty || _history.first.url != url) {
+      _history = <HistoryItem>[
+        HistoryItem(title: cleanTitle, url: url, visitedAtMs: now),
+        ..._history.where((HistoryItem h) => h.url != url).take(249),
+      ];
+      await _persistHistory();
+    }
+
+    notifyListeners();
+  }
+
+  String _deriveShortLabel(String domain, String pageTitle) {
+    for (final SiteUsageEntry s in _starterSites) {
+      if (s.domain == domain) {
+        return s.title;
+      }
+    }
+    return OmniboxParser.friendlySiteTitleFromDomain(domain);
+  }
+
+  Future<void> pinOrAddQuickLaunchSite({
+    required String title,
+    required String rawUrl,
+  }) async {
+    final Uri resolved = OmniboxParser.resolveInput(
+      rawUrl,
+      searchEngine: _searchEngine,
+      httpsUpgrade: _httpsUpgrade,
+    );
+    final String domain = OmniboxParser.cleanDomain(resolved.toString());
+    if (domain.isEmpty) {
+      return;
+    }
+    _hiddenQuickDomains.remove(domain);
+    await _prefs.setStringList(_keyHiddenDomains, _hiddenQuickDomains.toList());
+
+    final SiteUsageEntry? existing = _siteUsageByDomain[domain];
+    _siteUsageByDomain[domain] = SiteUsageEntry(
+      domain: domain,
+      url: resolved.toString(),
+      title: title.trim().isEmpty
+          ? OmniboxParser.friendlySiteTitleFromDomain(domain)
+          : title.trim(),
+      visitCount: (existing?.visitCount ?? 0) + 1,
+      lastVisitedMs: DateTime.now().millisecondsSinceEpoch,
+      isPinned: true,
+    );
+    await _persistSiteUsage();
+    notifyListeners();
+  }
+
+  Future<void> togglePinQuickSite(String domain) async {
+    final String clean = OmniboxParser.cleanDomain(domain);
+    final SiteUsageEntry? existing = _siteUsageByDomain[clean];
+    if (existing != null) {
+      _siteUsageByDomain[clean] = existing.copyWith(
+        isPinned: !existing.isPinned,
+      );
+    } else {
+      final SiteUsageEntry starter = _starterSites.firstWhere(
+        (SiteUsageEntry e) => e.domain == clean,
+        orElse: () => SiteUsageEntry(
+          domain: clean,
+          url: 'https://$clean',
+          title: OmniboxParser.friendlySiteTitleFromDomain(clean),
+          visitCount: 1,
+          lastVisitedMs: DateTime.now().millisecondsSinceEpoch,
+        ),
+      );
+      _siteUsageByDomain[clean] = starter.copyWith(isPinned: true);
+    }
+    await _persistSiteUsage();
+    notifyListeners();
+  }
+
+  Future<void> removeQuickLaunchSite(String domain) async {
+    final String clean = OmniboxParser.cleanDomain(domain);
+    _siteUsageByDomain.remove(clean);
+    _hiddenQuickDomains.add(clean);
+    await _prefs.setStringList(_keyHiddenDomains, _hiddenQuickDomains.toList());
+    await _persistSiteUsage();
+    notifyListeners();
+  }
+
+  Future<void> restoreDefaultQuickLaunch() async {
+    _hiddenQuickDomains.clear();
+    await _prefs.remove(_keyHiddenDomains);
+    notifyListeners();
+  }
+
+  bool isBookmarked(String? url) {
+    if (url == null || url.isEmpty) {
+      return false;
+    }
+    return _bookmarks.any((BookmarkItem b) => b.url == url);
+  }
+
+  Future<bool> toggleBookmark({
+    required String url,
+    required String title,
+  }) async {
+    if (url.isEmpty || OmniboxParser.isHeavenSearchUrl(url)) {
+      return false;
+    }
+    final int idx = _bookmarks.indexWhere((BookmarkItem b) => b.url == url);
+    bool added;
+    if (idx >= 0) {
+      _bookmarks = List<BookmarkItem>.of(_bookmarks)..removeAt(idx);
+      added = false;
+    } else {
+      final String cleanTitle = title.trim().isNotEmpty
+          ? title.trim()
+          : OmniboxParser.formatDisplayUrl(url);
+      _bookmarks = <BookmarkItem>[
+        BookmarkItem(
+          title: cleanTitle,
+          url: url,
+          createdAtMs: DateTime.now().millisecondsSinceEpoch,
+        ),
+        ..._bookmarks,
+      ];
+      added = true;
+    }
+    await _persistBookmarks();
+    notifyListeners();
+    return added;
+  }
+
+  Future<void> removeBookmark(String url) async {
+    _bookmarks = _bookmarks.where((BookmarkItem b) => b.url != url).toList();
+    await _persistBookmarks();
+    notifyListeners();
+  }
+
+  Future<void> deleteHistoryItem(HistoryItem target) async {
+    _history = _history
+        .where(
+          (HistoryItem h) =>
+              !(h.url == target.url && h.visitedAtMs == target.visitedAtMs),
+        )
+        .toList();
+    await _persistHistory();
+    notifyListeners();
+  }
+
+  Future<void> clearHistory() async {
+    _history = <HistoryItem>[];
+    await _prefs.remove(_keyHistory);
+    notifyListeners();
+  }
+
+  Future<void> clearUsageAndHistory() async {
+    _history = <HistoryItem>[];
+    _siteUsageByDomain.removeWhere((_, SiteUsageEntry v) => !v.isPinned);
+    await _prefs.remove(_keyHistory);
+    await _persistSiteUsage();
+    notifyListeners();
+  }
+
+  Future<void> _persistSiteUsage() async {
+    final String encoded = jsonEncode(
+      _siteUsageByDomain.values.map((SiteUsageEntry e) => e.toJson()).toList(),
+    );
+    await _prefs.setString(_keySiteUsage, encoded);
+  }
+
+  Future<void> _persistBookmarks() async {
+    final String encoded = jsonEncode(
+      _bookmarks.map((BookmarkItem b) => b.toJson()).toList(),
+    );
+    await _prefs.setString(_keyBookmarks, encoded);
+  }
+
+  Future<void> _persistHistory() async {
+    final String encoded = jsonEncode(
+      _history.map((HistoryItem h) => h.toJson()).toList(),
+    );
+    await _prefs.setString(_keyHistory, encoded);
+  }
+
+  Future<void> incrementBlockedCount([int delta = 1]) async {
+    if (delta <= 0) {
+      return;
+    }
+    _totalTrackersBlocked += delta;
+    await _prefs.setInt(_keyTotalBlocked, _totalTrackersBlocked);
+    notifyListeners();
   }
 
   Future<void> setSearchEngine(SearchEngine engine) async {
     _searchEngine = engine;
-    notifyListeners();
     await _prefs.setString(_keySearchEngine, engine.name);
+    notifyListeners();
   }
 
-  Future<void> setOmniboxPosition(OmniboxPosition position) async {
-    _omniboxPosition = position;
+  Future<void> setThemeMode(ThemeMode mode) async {
+    _themeMode = mode;
+    final String raw = switch (mode) {
+      ThemeMode.light => 'light',
+      ThemeMode.system => 'system',
+      ThemeMode.dark => 'dark',
+    };
+    await _prefs.setString(_keyThemeMode, raw);
     notifyListeners();
-    await _prefs.setString(_keyOmniboxPos, position.name);
+  }
+
+  Future<void> setBottomOmnibox(bool value) async {
+    _bottomOmnibox = value;
+    await _prefs.setBool(_keyBottomBar, value);
+    notifyListeners();
   }
 
   Future<void> setShieldEnabled(bool value) async {
     _shieldEnabled = value;
-    notifyListeners();
     await _prefs.setBool(_keyShieldEnabled, value);
+    _pushNativeShieldConfig();
+    notifyListeners();
   }
 
   Future<void> setHttpsUpgrade(bool value) async {
     _httpsUpgrade = value;
-    notifyListeners();
     await _prefs.setBool(_keyHttpsUpgrade, value);
+    notifyListeners();
   }
 
   Future<void> setBlockThirdPartyCookies(bool value) async {
     _blockThirdPartyCookies = value;
-    notifyListeners();
     await _prefs.setBool(_keyBlockThirdPartyCookies, value);
+    notifyListeners();
+  }
+
+  Future<void> setSendDntAndGpc(bool value) async {
+    _sendDntAndGpc = value;
+    await _prefs.setBool(_keySendDntGpc, value);
+    _pushNativeShieldConfig();
+    notifyListeners();
+  }
+
+  Future<void> setClearOnExit(bool value) async {
+    _clearOnExit = value;
+    await _prefs.setBool(_keyClearOnExit, value);
+    notifyListeners();
   }
 
   Future<void> setJavascriptEnabled(bool value) async {
     _javascriptEnabled = value;
+    await _prefs.setBool(_keyJavascriptEnabled, value);
     notifyListeners();
-    await _prefs.setBool(_keyJsEnabled, value);
   }
 
   Future<void> setDesktopMode(bool value) async {
     _desktopMode = value;
-    notifyListeners();
     await _prefs.setBool(_keyDesktopMode, value);
-  }
-
-  Future<void> setTextZoom(int zoom) async {
-    final int clamped = zoom.clamp(75, 150);
-    _textZoom = clamped;
     notifyListeners();
-    await _prefs.setInt(_keyTextZoom, clamped);
   }
 
-  Future<void> recordBlockedTracker() async {
-    _totalTrackersBlocked += 1;
+  Future<void> setTextScalePercent(int value) async {
+    _textScalePercent = value.clamp(75, 175);
+    await _prefs.setInt(_keyTextScalePercent, _textScalePercent);
     notifyListeners();
-    await _prefs.setInt(_keyTotalBlocked, _totalTrackersBlocked);
-  }
-
-  Future<void> resetBlockedCounter() async {
-    _totalTrackersBlocked = 0;
-    notifyListeners();
-    await _prefs.setInt(_keyTotalBlocked, 0);
-  }
-
-  bool isHostTrusted(String? host) {
-    return HeavenShield.isHostTrusted(host, _trustedHosts);
-  }
-
-  Future<void> toggleHostTrust(String host) async {
-    final String clean = HeavenShield.normalizeHost(host);
-    if (clean.isEmpty) {
-      return;
-    }
-    if (_trustedHosts.contains(clean)) {
-      _trustedHosts.remove(clean);
-    } else {
-      _trustedHosts.add(clean);
-    }
-    notifyListeners();
-    await _prefs.setStringList(_keyTrustedHosts, _trustedHosts.toList());
-  }
-
-  Future<void> addShortcut(QuickShortcut shortcut) async {
-    _shortcuts = <QuickShortcut>[..._shortcuts, shortcut];
-    notifyListeners();
-    await _saveShortcuts();
-  }
-
-  Future<void> removeShortcutAt(int index) async {
-    if (index < 0 || index >= _shortcuts.length) {
-      return;
-    }
-    final List<QuickShortcut> updated = List<QuickShortcut>.from(_shortcuts)
-      ..removeAt(index);
-    _shortcuts = updated;
-    notifyListeners();
-    await _saveShortcuts();
-  }
-
-  Future<void> resetDefaultShortcuts() async {
-    _shortcuts = List<QuickShortcut>.from(defaultShortcuts);
-    notifyListeners();
-    await _saveShortcuts();
-  }
-
-  Future<void> _saveShortcuts() async {
-    final String encoded = jsonEncode(
-      _shortcuts.map((QuickShortcut s) => s.toJson()).toList(),
-    );
-    await _prefs.setString(_keyShortcuts, encoded);
   }
 }

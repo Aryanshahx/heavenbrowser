@@ -1,872 +1,630 @@
+import 'dart:async';
 import 'dart:convert';
 
-import 'package:flutter/material.dart';
-import 'package:heavenbrowser/core/constants/app_constants.dart';
-import 'package:heavenbrowser/core/utils/omnibox_parser.dart';
-import 'package:heavenbrowser/features/settings/browser_settings.dart';
-import 'package:heavenbrowser/features/shield/heaven_shield.dart';
+import 'package:flutter/foundation.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:webview_flutter/webview_flutter.dart';
 import 'package:webview_flutter_android/webview_flutter_android.dart';
 
-class FindMatchesState {
-  const FindMatchesState({
-    this.total = 0,
-    this.current = 0,
+import '../../../core/constants/app_constants.dart';
+import '../../../core/utils/omnibox_parser.dart';
+import '../../settings/browser_settings.dart';
+import '../../shield/heaven_shield.dart';
+import '../../shield/native_shield_bridge.dart';
+
+class ReadableArticle {
+  const ReadableArticle({
+    required this.title,
+    required this.siteName,
+    required this.paragraphs,
   });
 
-  final int total;
-  final int current;
+  final String title;
+  final String siteName;
+  final List<String> paragraphs;
 }
 
-class BrowserPageState {
-  const BrowserPageState({
-    this.currentUrl,
-    this.pageTitle,
-    this.progress = 0,
-    this.isLoading = false,
-    this.canGoBack = false,
-    this.canGoForward = false,
-    this.errorDescription,
-    this.blockedDomainsOnPage = const <String>[],
-    this.findMatches = const FindMatchesState(),
-  });
-
-  final String? currentUrl;
-  final String? pageTitle;
-  final int progress;
-  final bool isLoading;
-  final bool canGoBack;
-  final bool canGoForward;
-  final String? errorDescription;
-  final List<String> blockedDomainsOnPage;
-  final FindMatchesState findMatches;
-
-  bool get hasActivePage => currentUrl != null && currentUrl!.isNotEmpty;
-
-  bool get isSecureHttps {
-    if (currentUrl == null) {
-      return false;
+class BrowserEngine extends ChangeNotifier {
+  BrowserEngine({
+    required this.settings,
+    required this.isIncognito,
+    this.enablePlatformWebView = true,
+  }) {
+    settings.addListener(_onSettingsChanged);
+    if (enablePlatformWebView) {
+      _initializeController();
     }
-    return Uri.tryParse(currentUrl!)?.scheme == 'https';
   }
 
-  String? get host {
-    if (currentUrl == null) {
+  final BrowserSettingsController settings;
+  final bool isIncognito;
+  final bool enablePlatformWebView;
+
+  WebViewController? _controller;
+  int? _androidWebViewId;
+
+  // Unified tab history entries supporting Start Page (''), heaven://search?q=..., and http(s)://
+  final List<String> _virtualHistory = <String>[''];
+  int _virtualIndex = 0;
+
+  String? _currentUrl;
+  String _pageTitle = 'New Tab';
+  double _progress = 0;
+  bool _isLoading = false;
+  bool _webViewCanGoBack = false;
+  bool _webViewCanGoForward = false;
+  int _pageBlockedCount = 0;
+  final Set<String> _pageBlockedDomains = <String>{};
+  String? _errorMessage;
+
+  WebViewController? get controller => _controller;
+  String? get currentUrl => _currentUrl;
+  String get pageTitle => _pageTitle;
+  double get progress => _progress;
+  bool get isLoading => _isLoading;
+  bool get isShowingStartPage => _currentUrl == null || _currentUrl!.isEmpty;
+  bool get isShowingHeavenSearch =>
+      OmniboxParser.isHeavenSearchUrl(_currentUrl);
+  String get heavenSearchQuery => OmniboxParser.extractHeavenQuery(_currentUrl);
+
+  bool get canGoBack =>
+      (!isShowingStartPage && !isShowingHeavenSearch && _webViewCanGoBack) ||
+      _virtualIndex > 0;
+
+  bool get canGoForward =>
+      (!isShowingStartPage && !isShowingHeavenSearch && _webViewCanGoForward) ||
+      _virtualIndex < _virtualHistory.length - 1;
+
+  int get pageBlockedCount => _pageBlockedCount;
+  List<String> get pageBlockedDomains =>
+      _pageBlockedDomains.toList(growable: false);
+  String? get errorMessage => _errorMessage;
+
+  bool get isSecure =>
+      isShowingHeavenSearch ||
+      (_currentUrl != null && _currentUrl!.startsWith('https://'));
+
+  String? get currentHost {
+    if (_currentUrl == null || isShowingHeavenSearch) {
       return null;
     }
-    final String? h = Uri.tryParse(currentUrl!)?.host;
-    return (h != null && h.isNotEmpty) ? h : null;
+    final Uri? parsed = Uri.tryParse(_currentUrl!);
+    return (parsed != null && parsed.host.isNotEmpty) ? parsed.host : null;
   }
 
-  BrowserPageState copyWith({
-    String? currentUrl,
-    bool clearUrl = false,
-    String? pageTitle,
-    bool clearTitle = false,
-    int? progress,
-    bool? isLoading,
-    bool? canGoBack,
-    bool? canGoForward,
-    String? errorDescription,
-    bool clearError = false,
-    List<String>? blockedDomainsOnPage,
-    FindMatchesState? findMatches,
-  }) {
-    return BrowserPageState(
-      currentUrl: clearUrl ? null : (currentUrl ?? this.currentUrl),
-      pageTitle: clearTitle ? null : (pageTitle ?? this.pageTitle),
-      progress: progress ?? this.progress,
-      isLoading: isLoading ?? this.isLoading,
-      canGoBack: canGoBack ?? this.canGoBack,
-      canGoForward: canGoForward ?? this.canGoForward,
-      errorDescription:
-          clearError ? null : (errorDescription ?? this.errorDescription),
-      blockedDomainsOnPage: blockedDomainsOnPage ?? this.blockedDomainsOnPage,
-      findMatches: findMatches ?? this.findMatches,
+  void _initializeController() {
+    final WebViewController webController = WebViewController();
+    _controller = webController;
+
+    unawaited(_applyControllerSettings());
+
+    unawaited(
+      webController.addJavaScriptChannel(
+        'HeavenShieldChannel',
+        onMessageReceived: (JavaScriptMessage msg) {
+          _recordBlockedResource(msg.message.trim());
+        },
+      ),
     );
-  }
-}
 
-abstract class BrowserEngine extends ChangeNotifier {
-  BrowserPageState get state;
+    unawaited(
+      webController.setNavigationDelegate(
+        NavigationDelegate(
+          onNavigationRequest: _handleNavigationRequest,
+          onPageStarted: (String url) {
+            if (url == 'about:blank' &&
+                (isShowingStartPage || isShowingHeavenSearch)) {
+              return;
+            }
+            _currentUrl = url;
+            _isLoading = true;
+            _progress = 0.1;
+            _errorMessage = null;
+            _pageBlockedCount = 0;
+            _pageBlockedDomains.clear();
+            _syncVirtualEntryWithWebUrl(url);
+            if (_androidWebViewId != null) {
+              unawaited(
+                NativeShieldBridge.instance.updatePageHost(
+                  webViewId: _androidWebViewId!,
+                  pageHost: Uri.tryParse(url)?.host,
+                ),
+              );
+            }
+            notifyListeners();
+          },
+          onProgress: (int value) {
+            _progress = (value.clamp(0, 100)) / 100.0;
+            _isLoading = value < 100;
+            notifyListeners();
+          },
+          onPageFinished: (String url) async {
+            if (url == 'about:blank' &&
+                (isShowingStartPage || isShowingHeavenSearch)) {
+              _isLoading = false;
+              _progress = 0;
+              notifyListeners();
+              return;
+            }
+            _currentUrl = url;
+            _isLoading = false;
+            _progress = 1.0;
+            _syncVirtualEntryWithWebUrl(url);
+            await _injectProtectionAndZoom(url);
+            await _refreshNavigationState();
 
-  Future<void> loadUri(Uri uri);
-  Future<void> reload();
-  Future<void> stopLoading();
-  Future<void> goBack();
-  Future<void> goForward();
-  void showHome();
-  Future<void> syncSettings(BrowserSettingsController settings);
-  Future<void> findInPage(String query);
-  Future<void> findNext({required bool forward});
-  Future<void> clearFind();
-  Future<void> clearSiteData();
-  Future<void> wipeSessionAndData();
-  Widget buildViewport(BuildContext context);
-}
-
-BrowserEngine createDefaultBrowserEngine({
-  required BrowserSettingsController settings,
-  required GlobalKey<NavigatorState> navigatorKey,
-}) {
-  if (WebViewPlatform.instance != null) {
-    return WebViewBrowserEngine(
-      settings: settings,
-      navigatorKey: navigatorKey,
+            // Record website usage & history ONLY in Normal Mode (strictly skipped in Incognito)
+            if (!isIncognito &&
+                (url.startsWith('http://') || url.startsWith('https://'))) {
+              await settings.recordPageVisit(url: url, title: _pageTitle);
+            }
+            notifyListeners();
+          },
+          onUrlChange: (UrlChange change) {
+            final String? nextUrl = change.url;
+            if (nextUrl != null &&
+                nextUrl.isNotEmpty &&
+                nextUrl != 'about:blank') {
+              _currentUrl = nextUrl;
+              _syncVirtualEntryWithWebUrl(nextUrl);
+              unawaited(_refreshNavigationState());
+            }
+          },
+          onWebResourceError: (WebResourceError error) {
+            if (error.isForMainFrame ?? true) {
+              _isLoading = false;
+              _errorMessage = error.description;
+              notifyListeners();
+            }
+          },
+        ),
+      ),
     );
+
+    if (webController.platform
+        case final AndroidWebViewController androidCtrl) {
+      _androidWebViewId = androidCtrl.webViewIdentifier;
+      unawaited(
+        NativeShieldBridge.instance.attachWebView(
+          webViewId: androidCtrl.webViewIdentifier,
+          pageHost: currentHost,
+          onBlocked: (int _, String domain) {
+            _recordBlockedResource(domain);
+          },
+        ),
+      );
+    }
   }
-  return InMemoryBrowserEngine(settings: settings);
-}
 
-class WebViewBrowserEngine extends BrowserEngine {
-  WebViewBrowserEngine({
-    required this.settings,
-    required this.navigatorKey,
-  }) {
-    _initController();
+  void _syncVirtualEntryWithWebUrl(String url) {
+    if (_virtualHistory.isEmpty) {
+      _virtualHistory.add(url);
+      _virtualIndex = 0;
+      return;
+    }
+    final String current = _virtualHistory[_virtualIndex];
+    if (current.startsWith('http://') || current.startsWith('https://')) {
+      _virtualHistory[_virtualIndex] = url;
+    }
   }
 
-  BrowserSettingsController settings;
-  final GlobalKey<NavigatorState> navigatorKey;
-  late final WebViewController _controller;
-  final WebViewCookieManager _cookieManager = WebViewCookieManager();
-  final Set<String> _upgradedHttpsHosts = <String>{};
+  void _pushVirtualLocation(String target) {
+    if (_virtualHistory[_virtualIndex] == target) {
+      return;
+    }
+    if (_virtualIndex < _virtualHistory.length - 1) {
+      _virtualHistory.removeRange(_virtualIndex + 1, _virtualHistory.length);
+    }
+    _virtualHistory.add(target);
+    _virtualIndex = _virtualHistory.length - 1;
+  }
 
-  BrowserPageState _state = const BrowserPageState();
-
-  @override
-  BrowserPageState get state => _state;
-
-  void _updateState(BrowserPageState next) {
-    _state = next;
+  void _recordBlockedResource(String domainOrTag) {
+    _pageBlockedCount += 1;
+    if (domainOrTag.isNotEmpty) {
+      _pageBlockedDomains.add(domainOrTag);
+    }
+    unawaited(settings.incrementBlockedCount(1));
     notifyListeners();
   }
 
-  void _recordBlocked(String domain) {
-    final List<String> updated = <String>[
-      ..._state.blockedDomainsOnPage,
-      domain,
-    ];
-    _updateState(_state.copyWith(blockedDomainsOnPage: updated));
-    settings.recordBlockedTracker();
-  }
-
-  void _initController() {
-    _controller = WebViewController();
-    _controller.setBackgroundColor(const Color(0x00000000));
-
-    _controller.addJavaScriptChannel(
-      'HeavenShieldChannel',
-      onMessageReceived: (JavaScriptMessage message) {
-        final String domain = message.message.trim();
-        if (domain.isNotEmpty) {
-          _recordBlocked(domain);
-        }
-      },
-    );
-
-    _controller.addJavaScriptChannel(
-      'HeavenFindChannel',
-      onMessageReceived: (JavaScriptMessage message) {
-        try {
-          final Map<String, dynamic> data =
-              jsonDecode(message.message) as Map<String, dynamic>;
-          final int total = (data['total'] as num?)?.toInt() ?? 0;
-          final int current = (data['current'] as num?)?.toInt() ?? 0;
-          _updateState(
-            _state.copyWith(
-              findMatches: FindMatchesState(total: total, current: current),
-            ),
-          );
-        } catch (_) {}
-      },
-    );
-
-    _controller.setNavigationDelegate(
-      NavigationDelegate(
-        onNavigationRequest: (NavigationRequest request) async {
-          final Uri? uri = Uri.tryParse(request.url);
-          if (uri == null) {
-            return NavigationDecision.prevent;
-          }
-
-          final String scheme = uri.scheme.toLowerCase();
-          if (scheme == 'mailto' || scheme == 'tel' || scheme == 'sms') {
-            await launchUrl(uri, mode: LaunchMode.externalApplication);
-            return NavigationDecision.prevent;
-          }
-
-          if (scheme != 'http' && scheme != 'https' && scheme != 'about') {
-            return NavigationDecision.prevent;
-          }
-
-          final String pageHost =
-              request.isMainFrame ? uri.host : (_state.host ?? uri.host);
-
-          if (HeavenShield.shouldBlockUri(
-            uri,
-            shieldEnabled: settings.shieldEnabled,
-            trustedHosts: settings.trustedHosts,
-            currentPageHost: pageHost,
-          )) {
-            final String matched =
-                HeavenShield.matchBlockedDomain(uri.host) ?? uri.host;
-            _recordBlocked(matched);
-            return NavigationDecision.prevent;
-          }
-
-          if (request.isMainFrame &&
-              scheme == 'http' &&
-              settings.httpsUpgrade &&
-              !OmniboxParser.isLocalOrPrivateHost(uri.host) &&
-              !_upgradedHttpsHosts.contains(uri.host)) {
-            _upgradedHttpsHosts.add(uri.host);
-            final Uri upgraded = uri.replace(scheme: 'https');
-            await _controller.loadRequest(upgraded);
-            return NavigationDecision.prevent;
-          }
-
-          return NavigationDecision.navigate;
-        },
-        onPageStarted: (String url) async {
-          if (url == 'about:blank') {
-            return;
-          }
-          _updateState(
-            _state.copyWith(
-              currentUrl: url,
-              isLoading: true,
-              progress: 10,
-              clearError: true,
-              blockedDomainsOnPage: <String>[],
-              findMatches: const FindMatchesState(),
-            ),
-          );
-          await _injectShield(url);
-          await _refreshNavAvailability();
-        },
-        onProgress: (int progress) {
-          _updateState(
-            _state.copyWith(
-              progress: progress,
-              isLoading: progress < 100,
-            ),
-          );
-        },
-        onPageFinished: (String url) async {
-          if (url == 'about:blank') {
-            return;
-          }
-          await _injectShield(url);
-          final String? title = await _controller.getTitle();
-          final bool back = await _controller.canGoBack();
-          final bool forward = await _controller.canGoForward();
-          _updateState(
-            _state.copyWith(
-              currentUrl: url,
-              pageTitle: (title != null && title.trim().isNotEmpty)
-                  ? title.trim()
-                  : OmniboxParser.formatDisplayUrl(url),
-              progress: 100,
-              isLoading: false,
-              canGoBack: back,
-              canGoForward: forward,
-            ),
-          );
-        },
-        onUrlChange: (UrlChange change) async {
-          final String? url = change.url;
-          if (url == null || url.isEmpty || url == 'about:blank') {
-            return;
-          }
-          await _refreshNavAvailability(overrideUrl: url);
-        },
-        onWebResourceError: (WebResourceError error) {
-          if (error.isForMainFrame != true) {
-            return;
-          }
-          if (error.description.contains('ERR_ABORTED') ||
-              error.errorCode == -999) {
-            return;
-          }
-          _updateState(
-            _state.copyWith(
-              isLoading: false,
-              progress: 0,
-              errorDescription: error.description,
-            ),
-          );
-        },
-      ),
-    );
-
-    _configureDialogs();
-    _configureAndroidHardening();
-    syncSettings(settings);
-  }
-
-  void _configureDialogs() {
-    _controller.setOnJavaScriptAlertDialog(
-      (JavaScriptAlertDialogRequest request) async {
-        final BuildContext? ctx = navigatorKey.currentContext;
-        if (ctx == null) {
-          return;
-        }
-        await showDialog<void>(
-          context: ctx,
-          builder: (BuildContext dialogContext) => AlertDialog(
-            title: const Text('Page Alert'),
-            content: Text(request.message),
-            actions: <Widget>[
-              FilledButton(
-                onPressed: () => Navigator.of(dialogContext).pop(),
-                child: const Text('OK'),
-              ),
-            ],
-          ),
-        );
-      },
-    );
-
-    _controller.setOnJavaScriptConfirmDialog(
-      (JavaScriptConfirmDialogRequest request) async {
-        final BuildContext? ctx = navigatorKey.currentContext;
-        if (ctx == null) {
-          return false;
-        }
-        final bool? confirmed = await showDialog<bool>(
-          context: ctx,
-          builder: (BuildContext dialogContext) => AlertDialog(
-            title: const Text('Confirm Action'),
-            content: Text(request.message),
-            actions: <Widget>[
-              TextButton(
-                onPressed: () => Navigator.of(dialogContext).pop(false),
-                child: const Text('Cancel'),
-              ),
-              FilledButton(
-                onPressed: () => Navigator.of(dialogContext).pop(true),
-                child: const Text('Confirm'),
-              ),
-            ],
-          ),
-        );
-        return confirmed ?? false;
-      },
-    );
-  }
-
-  Future<void> _configureAndroidHardening() async {
-    if (_controller.platform case final AndroidWebViewController platform) {
-      await platform.setAllowFileAccess(false);
-      await platform.setAllowContentAccess(false);
-      await platform.setGeolocationEnabled(false);
-      await platform.setMediaPlaybackRequiresUserGesture(true);
-      await platform.enableZoom(true);
-      await platform.setUseWideViewPort(true);
+  Future<NavigationDecision> _handleNavigationRequest(
+    NavigationRequest request,
+  ) async {
+    final Uri? uri = Uri.tryParse(request.url);
+    if (uri == null) {
+      return NavigationDecision.prevent;
     }
+
+    if (uri.scheme == 'about' || uri.scheme == 'data' || uri.scheme == 'blob') {
+      return NavigationDecision.navigate;
+    }
+
+    if (uri.scheme != 'http' && uri.scheme != 'https') {
+      if (await canLaunchUrl(uri)) {
+        await launchUrl(uri, mode: LaunchMode.externalApplication);
+      }
+      return NavigationDecision.prevent;
+    }
+
+    final bool shieldActiveForSite =
+        settings.shieldEnabled && !settings.isHostTrusted(currentHost);
+
+    if (shieldActiveForSite && HeavenShield.shouldBlockUri(uri)) {
+      _recordBlockedResource(
+        HeavenShield.matchBlockedDomain(uri.host) ?? uri.host,
+      );
+      return NavigationDecision.prevent;
+    }
+
+    if (request.isMainFrame && shieldActiveForSite) {
+      final ({Uri uri, int removedCount}) stripped =
+          HeavenShield.stripTrackingParameters(uri);
+      if (stripped.removedCount > 0 && stripped.uri != uri) {
+        _pageBlockedCount += stripped.removedCount;
+        await settings.incrementBlockedCount(stripped.removedCount);
+        await _controller?.loadRequest(stripped.uri);
+        notifyListeners();
+        return NavigationDecision.prevent;
+      }
+    }
+
+    if (request.isMainFrame &&
+        settings.httpsUpgrade &&
+        uri.scheme == 'http' &&
+        !OmniboxParser.isLocalOrPrivateHost(uri.host)) {
+      await _controller?.loadRequest(uri.replace(scheme: 'https'));
+      return NavigationDecision.prevent;
+    }
+
+    return NavigationDecision.navigate;
   }
 
-  Future<void> _injectShield(String url) async {
-    if (!settings.javascriptEnabled) {
+  void _onSettingsChanged() {
+    unawaited(_applyControllerSettings());
+  }
+
+  Future<void> _applyControllerSettings() async {
+    final WebViewController? webController = _controller;
+    if (webController == null) {
       return;
     }
-    final String? host = Uri.tryParse(url)?.host;
-    final String script = HeavenShield.buildProtectionScript(
-      shieldEnabled: settings.shieldEnabled,
-      isSiteTrusted: settings.isHostTrusted(host),
-    );
-    try {
-      await _controller.runJavaScript(script);
-    } catch (_) {}
-  }
 
-  Future<void> _refreshNavAvailability({String? overrideUrl}) async {
-    final bool back = await _controller.canGoBack();
-    final bool forward = await _controller.canGoForward();
-    _updateState(
-      _state.copyWith(
-        currentUrl: overrideUrl,
-        canGoBack: back,
-        canGoForward: forward,
-      ),
-    );
-  }
-
-  @override
-  Future<void> syncSettings(BrowserSettingsController nextSettings) async {
-    settings = nextSettings;
-    await _controller.setJavaScriptMode(
-      nextSettings.javascriptEnabled
+    await webController.setJavaScriptMode(
+      settings.javascriptEnabled
           ? JavaScriptMode.unrestricted
           : JavaScriptMode.disabled,
     );
-    await _controller.setUserAgent(
-      nextSettings.desktopMode
+
+    await webController.setUserAgent(
+      settings.desktopMode
           ? AppConstants.desktopUserAgent
           : AppConstants.mobileUserAgent,
     );
 
-    if (_controller.platform case final AndroidWebViewController platform) {
-      await platform.setTextZoom(nextSettings.textZoom);
-      if (_cookieManager.platform
-          case final AndroidWebViewCookieManager cookiePlatform) {
-        await cookiePlatform.setAcceptThirdPartyCookies(
-          platform,
-          !nextSettings.blockThirdPartyCookies,
+    if (webController.platform
+        case final AndroidWebViewController androidCtrl) {
+      await androidCtrl.setMediaPlaybackRequiresUserGesture(false);
+      await androidCtrl.setTextZoom(settings.textScalePercent);
+
+      final WebViewCookieManager cookieManager = WebViewCookieManager();
+      if (cookieManager.platform
+          case final AndroidWebViewCookieManager androidCookies) {
+        final bool allow3p = !isIncognito && !settings.blockThirdPartyCookies;
+        await androidCookies.setAcceptThirdPartyCookies(androidCtrl, allow3p);
+      }
+    }
+  }
+
+  Future<void> _injectProtectionAndZoom(String url) async {
+    final WebViewController? webController = _controller;
+    if (webController == null || !settings.javascriptEnabled) {
+      return;
+    }
+
+    final Uri? parsed = Uri.tryParse(url);
+    final bool trusted = settings.isHostTrusted(parsed?.host);
+    final String script = HeavenShield.buildProtectionScript(
+      shieldEnabled: settings.shieldEnabled && !trusted,
+      sendDntAndGpc: settings.sendDntAndGpc,
+    );
+
+    try {
+      await webController.runJavaScript(script);
+    } catch (_) {
+      // Ignore JS errors on non-HTML responses.
+    }
+  }
+
+  Future<void> _refreshNavigationState() async {
+    final WebViewController? webController = _controller;
+    if (webController == null) {
+      return;
+    }
+    _webViewCanGoBack = await webController.canGoBack();
+    _webViewCanGoForward = await webController.canGoForward();
+    final String? title = await webController.getTitle();
+    if (title != null && title.trim().isNotEmpty && title != 'about:blank') {
+      _pageTitle = title.trim();
+    } else if (_currentUrl != null) {
+      _pageTitle = OmniboxParser.formatDisplayUrl(_currentUrl);
+    }
+    notifyListeners();
+  }
+
+  Future<void> loadUserEntry(String rawInput) async {
+    final Uri target = OmniboxParser.resolveInput(
+      rawInput,
+      searchEngine: settings.searchEngine,
+      httpsUpgrade: settings.httpsUpgrade,
+    );
+    await loadUri(target);
+  }
+
+  Future<void> loadUri(Uri uri) async {
+    _errorMessage = null;
+    _pageBlockedCount = 0;
+    _pageBlockedDomains.clear();
+
+    final String targetUrl = uri.toString();
+    _pushVirtualLocation(targetUrl);
+
+    if (OmniboxParser.isHeavenSearchUrl(targetUrl)) {
+      _currentUrl = targetUrl;
+      final String q = OmniboxParser.extractHeavenQuery(targetUrl);
+      _pageTitle = q.isEmpty ? 'Heaven Search' : '$q — Heaven Search';
+      _isLoading = false;
+      _progress = 0;
+      _webViewCanGoBack = false;
+      _webViewCanGoForward = false;
+      notifyListeners();
+      return;
+    }
+
+    Uri finalUri = uri;
+    final bool shieldActive =
+        settings.shieldEnabled && !settings.isHostTrusted(uri.host);
+    if (shieldActive) {
+      final ({Uri uri, int removedCount}) stripped =
+          HeavenShield.stripTrackingParameters(uri);
+      finalUri = stripped.uri;
+      if (stripped.removedCount > 0) {
+        _pageBlockedCount += stripped.removedCount;
+        await settings.incrementBlockedCount(stripped.removedCount);
+      }
+    }
+
+    _currentUrl = finalUri.toString();
+    _pageTitle = OmniboxParser.formatDisplayUrl(_currentUrl);
+    _isLoading = true;
+    _progress = 0.1;
+    notifyListeners();
+
+    if (_androidWebViewId != null) {
+      unawaited(
+        NativeShieldBridge.instance.updatePageHost(
+          webViewId: _androidWebViewId!,
+          pageHost: finalUri.host,
+        ),
+      );
+    }
+
+    await _controller?.loadRequest(finalUri);
+    if (_controller == null) {
+      _isLoading = false;
+      if (!isIncognito &&
+          (_currentUrl!.startsWith('http://') ||
+              _currentUrl!.startsWith('https://'))) {
+        await settings.recordPageVisit(url: _currentUrl!, title: _pageTitle);
+      }
+      notifyListeners();
+    }
+  }
+
+  Future<void> goHome() async {
+    _pushVirtualLocation('');
+    _currentUrl = null;
+    _pageTitle = isIncognito ? 'Incognito Tab' : 'New Tab';
+    _isLoading = false;
+    _progress = 0;
+    _errorMessage = null;
+    _pageBlockedCount = 0;
+    _pageBlockedDomains.clear();
+    _webViewCanGoBack = false;
+    _webViewCanGoForward = false;
+    await _controller?.loadRequest(Uri.parse('about:blank'));
+    notifyListeners();
+  }
+
+  Future<void> goBack() async {
+    if (!isShowingStartPage &&
+        !isShowingHeavenSearch &&
+        _controller != null &&
+        await _controller!.canGoBack()) {
+      await _controller!.goBack();
+      await _refreshNavigationState();
+      return;
+    }
+
+    if (_virtualIndex > 0) {
+      _virtualIndex -= 1;
+      await _restoreVirtualLocation(_virtualHistory[_virtualIndex]);
+    }
+  }
+
+  Future<void> goForward() async {
+    if (!isShowingStartPage &&
+        !isShowingHeavenSearch &&
+        _controller != null &&
+        await _controller!.canGoForward()) {
+      await _controller!.goForward();
+      await _refreshNavigationState();
+      return;
+    }
+
+    if (_virtualIndex < _virtualHistory.length - 1) {
+      _virtualIndex += 1;
+      await _restoreVirtualLocation(_virtualHistory[_virtualIndex]);
+    }
+  }
+
+  Future<void> _restoreVirtualLocation(String target) async {
+    _errorMessage = null;
+    if (target.isEmpty) {
+      _currentUrl = null;
+      _pageTitle = isIncognito ? 'Incognito Tab' : 'New Tab';
+      _isLoading = false;
+      _progress = 0;
+      _webViewCanGoBack = false;
+      _webViewCanGoForward = false;
+      notifyListeners();
+      return;
+    }
+
+    if (OmniboxParser.isHeavenSearchUrl(target)) {
+      _currentUrl = target;
+      final String q = OmniboxParser.extractHeavenQuery(target);
+      _pageTitle = q.isEmpty ? 'Heaven Search' : '$q — Heaven Search';
+      _isLoading = false;
+      _progress = 0;
+      _webViewCanGoBack = false;
+      _webViewCanGoForward = false;
+      notifyListeners();
+      return;
+    }
+
+    _currentUrl = target;
+    _pageTitle = OmniboxParser.formatDisplayUrl(target);
+    _isLoading = _controller != null;
+    notifyListeners();
+    await _controller?.loadRequest(Uri.parse(target));
+  }
+
+  Future<void> reloadOrStop() async {
+    if (isShowingHeavenSearch) {
+      notifyListeners();
+      return;
+    }
+    if (_controller == null) {
+      return;
+    }
+    if (_isLoading) {
+      await _controller!.runJavaScript('window.stop();');
+      _isLoading = false;
+      notifyListeners();
+    } else {
+      _errorMessage = null;
+      await _controller!.reload();
+    }
+  }
+
+  Future<int> findInPage(String term) async {
+    if (_controller == null ||
+        term.trim().isEmpty ||
+        !settings.javascriptEnabled) {
+      return 0;
+    }
+    final String escaped = jsonEncode(term.trim());
+    try {
+      final Object result = await _controller!.runJavaScriptReturningResult('''
+(function() {
+  const q = $escaped.toLowerCase();
+  if (!q) return 0;
+  window.find($escaped, false, false, true, false, true, false);
+  const bodyText = (document.body && document.body.innerText) ? document.body.innerText.toLowerCase() : '';
+  return bodyText.split(q).length - 1;
+})();
+''');
+      return int.tryParse(result.toString().replaceAll('"', '')) ?? 0;
+    } catch (_) {
+      return 0;
+    }
+  }
+
+  Future<ReadableArticle?> extractReadableArticle() async {
+    if (_controller == null ||
+        isShowingStartPage ||
+        isShowingHeavenSearch ||
+        !settings.javascriptEnabled) {
+      return null;
+    }
+    try {
+      final Object raw = await _controller!.runJavaScriptReturningResult('''
+(function() {
+  const root = document.querySelector('article, [role="main"], main') || document.body;
+  if (!root) return '';
+  const blocks = Array.from(root.querySelectorAll('h1, h2, h3, p, li'))
+    .map(el => (el.innerText || '').replace(/\\s+/g, ' ').trim())
+    .filter(txt => txt.length >= 38);
+  const deduped = [];
+  const seen = new Set();
+  for (const b of blocks) {
+    if (!seen.has(b)) {
+      seen.add(b);
+      deduped.push(b);
+    }
+    if (deduped.length >= 80) break;
+  }
+  return JSON.stringify({
+    title: document.title || '',
+    site: window.location.hostname || '',
+    paragraphs: deduped
+  });
+})();
+''');
+
+      String jsonStr = raw.toString();
+      if (jsonStr.startsWith('"') && jsonStr.endsWith('"')) {
+        jsonStr = jsonDecode(jsonStr) as String;
+      }
+      if (jsonStr.isEmpty) {
+        return null;
+      }
+      final Object? parsed = jsonDecode(jsonStr);
+      if (parsed is Map<String, Object?>) {
+        final List<String> paragraphs = (parsed['paragraphs'] is List<Object?>)
+            ? (parsed['paragraphs']! as List<Object?>)
+                  .map((Object? e) => e?.toString().trim() ?? '')
+                  .where((String s) => s.isNotEmpty)
+                  .toList()
+            : <String>[];
+        if (paragraphs.isEmpty) {
+          return null;
+        }
+        return ReadableArticle(
+          title: (parsed['title']?.toString() ?? _pageTitle).trim(),
+          siteName: OmniboxParser.cleanDomain(
+            parsed['site']?.toString() ?? currentHost,
+          ),
+          paragraphs: paragraphs,
         );
       }
+    } catch (_) {
+      return null;
     }
+    return null;
   }
 
-  @override
-  Future<void> loadUri(Uri uri) async {
-    if (HeavenShield.shouldBlockUri(
-      uri,
-      shieldEnabled: settings.shieldEnabled,
-      trustedHosts: settings.trustedHosts,
-      currentPageHost: uri.host,
-    )) {
-      final String matched =
-          HeavenShield.matchBlockedDomain(uri.host) ?? uri.host;
-      _recordBlocked(matched);
-      _updateState(
-        _state.copyWith(
-          currentUrl: uri.toString(),
-          isLoading: false,
-          progress: 0,
-          errorDescription:
-              'Blocked by Heaven Shield: $matched is a known tracker/ad domain.',
-        ),
-      );
-      return;
+  Future<void> burnBrowsingData() async {
+    if (_controller != null) {
+      await _controller!.clearCache();
+      await _controller!.clearLocalStorage();
+      final WebViewCookieManager cookieManager = WebViewCookieManager();
+      await cookieManager.clearCookies();
     }
-
-    _updateState(
-      _state.copyWith(
-        currentUrl: uri.toString(),
-        isLoading: true,
-        progress: 8,
-        clearError: true,
-        blockedDomainsOnPage: <String>[],
-        findMatches: const FindMatchesState(),
-      ),
-    );
-    await _controller.loadRequest(uri);
+    _virtualHistory
+      ..clear()
+      ..add('');
+    _virtualIndex = 0;
+    await goHome();
   }
 
   @override
-  Future<void> reload() async {
-    if (!_state.hasActivePage) {
-      return;
+  void dispose() {
+    settings.removeListener(_onSettingsChanged);
+    if (_androidWebViewId != null) {
+      NativeShieldBridge.instance.detachWebView(_androidWebViewId!);
     }
-    _updateState(_state.copyWith(clearError: true, isLoading: true));
-    await _controller.reload();
-  }
-
-  @override
-  Future<void> stopLoading() async {
-    if (settings.javascriptEnabled) {
-      try {
-        await _controller.runJavaScript('window.stop();');
-      } catch (_) {}
-    }
-    _updateState(_state.copyWith(isLoading: false, progress: 100));
-  }
-
-  @override
-  Future<void> goBack() async {
-    if (await _controller.canGoBack()) {
-      await _controller.goBack();
-      await _refreshNavAvailability();
-    }
-  }
-
-  @override
-  Future<void> goForward() async {
-    if (await _controller.canGoForward()) {
-      await _controller.goForward();
-      await _refreshNavAvailability();
-    }
-  }
-
-  @override
-  void showHome() {
-    _updateState(
-      const BrowserPageState(),
-    );
-  }
-
-  @override
-  Future<void> findInPage(String query) async {
-    if (!_state.hasActivePage || !settings.javascriptEnabled) {
-      return;
-    }
-    final String trimmed = query.trim();
-    if (trimmed.isEmpty) {
-      await clearFind();
-      return;
-    }
-    final String safeQuery = jsonEncode(trimmed);
-    final String js = '''
-(function() {
-  function clearMarks() {
-    const oldMarks = document.querySelectorAll('mark[data-heaven-find]');
-    oldMarks.forEach(function(m) {
-      const parent = m.parentNode;
-      if (parent) {
-        parent.replaceChild(document.createTextNode(m.textContent || ''), m);
-        parent.normalize();
-      }
-    });
-    window.__heavenFindMarks = [];
-    window.__heavenFindIdx = -1;
-  }
-
-  clearMarks();
-  const needle = ($safeQuery).toLowerCase();
-  if (!needle || !document.body) {
-    HeavenFindChannel.postMessage(JSON.stringify({total: 0, current: 0}));
-    return;
-  }
-
-  const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, {
-    acceptNode: function(node) {
-      if (!node.parentElement) return NodeFilter.FILTER_REJECT;
-      const tag = node.parentElement.tagName;
-      if (tag === 'SCRIPT' || tag === 'STYLE' || tag === 'NOSCRIPT' || tag === 'TEXTAREA') {
-        return NodeFilter.FILTER_REJECT;
-      }
-      return node.nodeValue && node.nodeValue.toLowerCase().indexOf(needle) !== -1
-        ? NodeFilter.FILTER_ACCEPT
-        : NodeFilter.FILTER_SKIP;
-    }
-  });
-
-  const textNodes = [];
-  while (walker.nextNode()) {
-    textNodes.push(walker.currentNode);
-  }
-
-  const marks = [];
-  textNodes.forEach(function(textNode) {
-    const text = textNode.nodeValue || '';
-    const lower = text.toLowerCase();
-    let start = 0;
-    let idx = lower.indexOf(needle, start);
-    if (idx === -1) return;
-
-    const frag = document.createDocumentFragment();
-    while (idx !== -1) {
-      if (idx > start) {
-        frag.appendChild(document.createTextNode(text.slice(start, idx)));
-      }
-      const mark = document.createElement('mark');
-      mark.setAttribute('data-heaven-find', '1');
-      mark.style.backgroundColor = '#FDE047';
-      mark.style.color = '#0F172A';
-      mark.style.padding = '0 1px';
-      mark.style.borderRadius = '2px';
-      mark.textContent = text.slice(idx, idx + needle.length);
-      frag.appendChild(mark);
-      marks.push(mark);
-      start = idx + needle.length;
-      idx = lower.indexOf(needle, start);
-    }
-    if (start < text.length) {
-      frag.appendChild(document.createTextNode(text.slice(start)));
-    }
-    if (textNode.parentNode) {
-      textNode.parentNode.replaceChild(frag, textNode);
-    }
-  });
-
-  window.__heavenFindMarks = marks;
-  if (marks.length > 0) {
-    window.__heavenFindIdx = 0;
-    marks[0].style.backgroundColor = '#FB923C';
-    marks[0].scrollIntoView({behavior: 'smooth', block: 'center'});
-    HeavenFindChannel.postMessage(JSON.stringify({total: marks.length, current: 1}));
-  } else {
-    window.__heavenFindIdx = -1;
-    HeavenFindChannel.postMessage(JSON.stringify({total: 0, current: 0}));
-  }
-})();
-''';
-    await _controller.runJavaScript(js);
-  }
-
-  @override
-  Future<void> findNext({required bool forward}) async {
-    if (!_state.hasActivePage || !settings.javascriptEnabled) {
-      return;
-    }
-    final String step = forward ? '1' : '-1';
-    final String js = '''
-(function() {
-  const marks = window.__heavenFindMarks || [];
-  if (!marks.length) return;
-  const prev = window.__heavenFindIdx || 0;
-  if (marks[prev]) {
-    marks[prev].style.backgroundColor = '#FDE047';
-  }
-  const next = (prev + ($step) + marks.length) % marks.length;
-  window.__heavenFindIdx = next;
-  marks[next].style.backgroundColor = '#FB923C';
-  marks[next].scrollIntoView({behavior: 'smooth', block: 'center'});
-  HeavenFindChannel.postMessage(JSON.stringify({total: marks.length, current: next + 1}));
-})();
-''';
-    await _controller.runJavaScript(js);
-  }
-
-  @override
-  Future<void> clearFind() async {
-    _updateState(_state.copyWith(findMatches: const FindMatchesState()));
-    if (!_state.hasActivePage || !settings.javascriptEnabled) {
-      return;
-    }
-    const String js = '''
-(function() {
-  const oldMarks = document.querySelectorAll('mark[data-heaven-find]');
-  oldMarks.forEach(function(m) {
-    const parent = m.parentNode;
-    if (parent) {
-      parent.replaceChild(document.createTextNode(m.textContent || ''), m);
-      parent.normalize();
-    }
-  });
-  window.__heavenFindMarks = [];
-  window.__heavenFindIdx = -1;
-})();
-''';
-    try {
-      await _controller.runJavaScript(js);
-    } catch (_) {}
-  }
-
-  @override
-  Future<void> clearSiteData() async {
-    await _cookieManager.clearCookies();
-    await _controller.clearCache();
-    await _controller.clearLocalStorage();
-  }
-
-  @override
-  Future<void> wipeSessionAndData() async {
-    await clearSiteData();
-    _upgradedHttpsHosts.clear();
-    try {
-      await _controller.loadRequest(Uri.parse('about:blank'));
-    } catch (_) {}
-    _updateState(const BrowserPageState());
-  }
-
-  @override
-  Widget buildViewport(BuildContext context) {
-    return WebViewWidget(controller: _controller);
-  }
-}
-
-/// Deterministic in-memory browser engine used during headless widget tests
-/// and desktop environments without Android WebView platform channels.
-class InMemoryBrowserEngine extends BrowserEngine {
-  InMemoryBrowserEngine({required this.settings});
-
-  BrowserSettingsController settings;
-  final List<String> _history = <String>[];
-  int _historyIndex = -1;
-  int wipeCount = 0;
-
-  BrowserPageState _state = const BrowserPageState();
-
-  @override
-  BrowserPageState get state => _state;
-
-  @override
-  Future<void> syncSettings(BrowserSettingsController nextSettings) async {
-    settings = nextSettings;
-    notifyListeners();
-  }
-
-  @override
-  Future<void> loadUri(Uri uri) async {
-    if (HeavenShield.shouldBlockUri(
-      uri,
-      shieldEnabled: settings.shieldEnabled,
-      trustedHosts: settings.trustedHosts,
-      currentPageHost: uri.host,
-    )) {
-      final String matched =
-          HeavenShield.matchBlockedDomain(uri.host) ?? uri.host;
-      await settings.recordBlockedTracker();
-      _state = _state.copyWith(
-        currentUrl: uri.toString(),
-        pageTitle: 'Blocked by Heaven Shield',
-        isLoading: false,
-        progress: 100,
-        errorDescription:
-            'Blocked by Heaven Shield: $matched is a known tracker/ad domain.',
-        blockedDomainsOnPage: <String>[matched],
-      );
-      notifyListeners();
-      return;
-    }
-
-    if (_historyIndex < _history.length - 1) {
-      _history.removeRange(_historyIndex + 1, _history.length);
-    }
-    _history.add(uri.toString());
-    _historyIndex = _history.length - 1;
-
-    _state = BrowserPageState(
-      currentUrl: uri.toString(),
-      pageTitle: OmniboxParser.formatDisplayUrl(uri.toString()),
-      progress: 100,
-      isLoading: false,
-      canGoBack: _historyIndex > 0,
-      canGoForward: false,
-    );
-    notifyListeners();
-  }
-
-  @override
-  Future<void> reload() async {
-    if (!_state.hasActivePage) {
-      return;
-    }
-    _state = _state.copyWith(clearError: true, progress: 100, isLoading: false);
-    notifyListeners();
-  }
-
-  @override
-  Future<void> stopLoading() async {
-    _state = _state.copyWith(isLoading: false, progress: 100);
-    notifyListeners();
-  }
-
-  @override
-  Future<void> goBack() async {
-    if (_historyIndex > 0) {
-      _historyIndex -= 1;
-      final String url = _history[_historyIndex];
-      _state = BrowserPageState(
-        currentUrl: url,
-        pageTitle: OmniboxParser.formatDisplayUrl(url),
-        progress: 100,
-        isLoading: false,
-        canGoBack: _historyIndex > 0,
-        canGoForward: _historyIndex < _history.length - 1,
-      );
-      notifyListeners();
-    }
-  }
-
-  @override
-  Future<void> goForward() async {
-    if (_historyIndex < _history.length - 1) {
-      _historyIndex += 1;
-      final String url = _history[_historyIndex];
-      _state = BrowserPageState(
-        currentUrl: url,
-        pageTitle: OmniboxParser.formatDisplayUrl(url),
-        progress: 100,
-        isLoading: false,
-        canGoBack: _historyIndex > 0,
-        canGoForward: _historyIndex < _history.length - 1,
-      );
-      notifyListeners();
-    }
-  }
-
-  @override
-  void showHome() {
-    _state = const BrowserPageState();
-    notifyListeners();
-  }
-
-  @override
-  Future<void> findInPage(String query) async {
-    final String q = query.trim().toLowerCase();
-    if (q.isEmpty || !_state.hasActivePage) {
-      _state = _state.copyWith(findMatches: const FindMatchesState());
-    } else {
-      final String haystack =
-          '${_state.currentUrl ?? ''} ${_state.pageTitle ?? ''}'.toLowerCase();
-      final int matches = q.allMatches(haystack).length;
-      _state = _state.copyWith(
-        findMatches: FindMatchesState(
-          total: matches,
-          current: matches > 0 ? 1 : 0,
-        ),
-      );
-    }
-    notifyListeners();
-  }
-
-  @override
-  Future<void> findNext({required bool forward}) async {
-    final FindMatchesState m = _state.findMatches;
-    if (m.total <= 0) {
-      return;
-    }
-    final int next = forward
-        ? (m.current % m.total) + 1
-        : ((m.current - 2 + m.total) % m.total) + 1;
-    _state = _state.copyWith(
-      findMatches: FindMatchesState(total: m.total, current: next),
-    );
-    notifyListeners();
-  }
-
-  @override
-  Future<void> clearFind() async {
-    _state = _state.copyWith(findMatches: const FindMatchesState());
-    notifyListeners();
-  }
-
-  @override
-  Future<void> clearSiteData() async {
-    wipeCount += 1;
-  }
-
-  @override
-  Future<void> wipeSessionAndData() async {
-    wipeCount += 1;
-    _history.clear();
-    _historyIndex = -1;
-    _state = const BrowserPageState();
-    notifyListeners();
-  }
-
-  @override
-  Widget buildViewport(BuildContext context) {
-    final ColorScheme colors = Theme.of(context).colorScheme;
-    return Center(
-      child: Padding(
-        padding: const EdgeInsets.all(24),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: <Widget>[
-            Icon(Icons.public, size: 48, color: colors.primary),
-            const SizedBox(height: 12),
-            Text(
-              _state.pageTitle ?? '',
-              style: Theme.of(context).textTheme.titleMedium,
-              textAlign: TextAlign.center,
-            ),
-            const SizedBox(height: 6),
-            SelectableText(
-              _state.currentUrl ?? '',
-              style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                    color: colors.onSurfaceVariant,
-                  ),
-              textAlign: TextAlign.center,
-            ),
-          ],
-        ),
-      ),
-    );
+    super.dispose();
   }
 }

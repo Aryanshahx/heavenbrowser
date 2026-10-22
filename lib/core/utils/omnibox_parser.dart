@@ -1,4 +1,10 @@
 enum SearchEngine {
+  heaven(
+    label: 'Heaven Search',
+    shortLabel: 'Heaven',
+    homeUrl: 'heaven://search',
+    queryPrefix: 'heaven://search?q=',
+  ),
   duckDuckGo(
     label: 'DuckDuckGo',
     shortLabel: 'DDG',
@@ -36,6 +42,8 @@ enum SearchEngine {
   final String homeUrl;
   final String queryPrefix;
 
+  bool get isNativeHeaven => this == SearchEngine.heaven;
+
   String buildSearchUrl(String rawQuery) {
     return '$queryPrefix${Uri.encodeQueryComponent(rawQuery.trim())}';
   }
@@ -46,7 +54,7 @@ enum SearchEngine {
         return engine;
       }
     }
-    return SearchEngine.duckDuckGo;
+    return SearchEngine.heaven;
   }
 }
 
@@ -66,6 +74,25 @@ class OmniboxParser {
     caseSensitive: false,
   );
 
+  static bool isHeavenSearchUrl(String? url) {
+    if (url == null || url.isEmpty) {
+      return false;
+    }
+    final Uri? uri = Uri.tryParse(url);
+    return uri != null && uri.scheme == 'heaven' && uri.host == 'search';
+  }
+
+  static String extractHeavenQuery(String? url) {
+    if (url == null || url.isEmpty) {
+      return '';
+    }
+    final Uri? uri = Uri.tryParse(url);
+    if (uri == null || uri.scheme != 'heaven') {
+      return '';
+    }
+    return (uri.queryParameters['q'] ?? '').trim();
+  }
+
   static Uri resolveInput(
     String rawInput, {
     required SearchEngine searchEngine,
@@ -76,11 +103,10 @@ class OmniboxParser {
       return Uri.parse(searchEngine.homeUrl);
     }
 
-    if (input == 'about:blank') {
-      return Uri.parse('about:blank');
+    if (input == 'about:blank' || input.startsWith('heaven://')) {
+      return Uri.parse(input);
     }
 
-    // Explicit scheme provided (http:// or https://)
     if (input.startsWith('http://') || input.startsWith('https://')) {
       final Uri? parsed = Uri.tryParse(input);
       if (parsed != null && parsed.host.isNotEmpty) {
@@ -93,20 +119,16 @@ class OmniboxParser {
       }
     }
 
-    // Contains spaces -> definitely a search query
     if (input.contains(' ')) {
       return Uri.parse(searchEngine.buildSearchUrl(input));
     }
 
-    // Localhost or IPv4 address -> default to http:// so local dev servers work
     if (_localhostPattern.hasMatch(input) || _ipv4Pattern.hasMatch(input)) {
       return Uri.parse('http://$input');
     }
 
-    // Bare domain like "github.com" or "wikipedia.org/wiki/Flutter"
     if (_domainLikePattern.hasMatch(input)) {
-      final String scheme = httpsUpgrade ? 'https' : 'https';
-      return Uri.parse('$scheme://$input');
+      return Uri.parse('https://$input');
     }
 
     return Uri.parse(searchEngine.buildSearchUrl(input));
@@ -132,9 +154,30 @@ class OmniboxParser {
     return false;
   }
 
+  static String cleanDomain(String? urlOrHost) {
+    if (urlOrHost == null || urlOrHost.isEmpty) {
+      return '';
+    }
+    final Uri? parsed = Uri.tryParse(urlOrHost);
+    String host = (parsed != null && parsed.host.isNotEmpty)
+        ? parsed.host
+        : urlOrHost;
+    host = host.trim().toLowerCase();
+    if (host.startsWith('www.') && host.length > 4) {
+      host = host.substring(4);
+    } else if (host.startsWith('m.') && host.length > 2) {
+      host = host.substring(2);
+    }
+    return host;
+  }
+
   static String formatDisplayUrl(String? url) {
     if (url == null || url.isEmpty) {
       return '';
+    }
+    if (isHeavenSearchUrl(url)) {
+      final String q = extractHeavenQuery(url);
+      return q.isEmpty ? 'Heaven Search' : 'Heaven Search • $q';
     }
     final Uri? uri = Uri.tryParse(url);
     if (uri == null || uri.host.isEmpty) {
@@ -145,5 +188,17 @@ class OmniboxParser {
       host = host.substring(4);
     }
     return host;
+  }
+
+  static String friendlySiteTitleFromDomain(String domain) {
+    final String clean = cleanDomain(domain);
+    if (clean.isEmpty) {
+      return 'Website';
+    }
+    final String firstPart = clean.split('.').first;
+    if (firstPart.isEmpty) {
+      return clean;
+    }
+    return firstPart[0].toUpperCase() + firstPart.substring(1);
   }
 }
