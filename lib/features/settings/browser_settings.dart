@@ -136,7 +136,7 @@ class BrowserSettingsController extends ChangeNotifier {
 
   static const String _keySearchEngine = 'hb.searchEngine.v3';
   static const String _keyThemeMode = 'hb.themeMode.v3';
-  static const String _keyBottomBar = 'hb.bottomOmnibox';
+  static const String _keyBottomBar = 'hb.bottomOmnibox.v4';
   static const String _keyShieldEnabled = 'hb.shieldEnabled';
   static const String _keyHttpsUpgrade = 'hb.httpsUpgrade';
   static const String _keyBlockThirdPartyCookies = 'hb.blockThirdPartyCookies';
@@ -152,69 +152,10 @@ class BrowserSettingsController extends ChangeNotifier {
   static const String _keyBookmarks = 'hb.bookmarks.v3';
   static const String _keyHistory = 'hb.history.v3';
 
-  static const List<SiteUsageEntry> _starterSites = <SiteUsageEntry>[
-    SiteUsageEntry(
-      domain: 'youtube.com',
-      url: 'https://www.youtube.com',
-      title: 'YouTube',
-      visitCount: 0,
-      lastVisitedMs: 0,
-    ),
-    SiteUsageEntry(
-      domain: 'github.com',
-      url: 'https://github.com',
-      title: 'GitHub',
-      visitCount: 0,
-      lastVisitedMs: 0,
-    ),
-    SiteUsageEntry(
-      domain: 'wikipedia.org',
-      url: 'https://www.wikipedia.org',
-      title: 'Wikipedia',
-      visitCount: 0,
-      lastVisitedMs: 0,
-    ),
-    SiteUsageEntry(
-      domain: 'reddit.com',
-      url: 'https://www.reddit.com',
-      title: 'Reddit',
-      visitCount: 0,
-      lastVisitedMs: 0,
-    ),
-    SiteUsageEntry(
-      domain: 'news.ycombinator.com',
-      url: 'https://news.ycombinator.com',
-      title: 'Hacker News',
-      visitCount: 0,
-      lastVisitedMs: 0,
-    ),
-    SiteUsageEntry(
-      domain: 'bbc.com',
-      url: 'https://www.bbc.com/news',
-      title: 'BBC News',
-      visitCount: 0,
-      lastVisitedMs: 0,
-    ),
-    SiteUsageEntry(
-      domain: 'stackoverflow.com',
-      url: 'https://stackoverflow.com',
-      title: 'StackOverflow',
-      visitCount: 0,
-      lastVisitedMs: 0,
-    ),
-    SiteUsageEntry(
-      domain: 'developer.mozilla.org',
-      url: 'https://developer.mozilla.org',
-      title: 'MDN Docs',
-      visitCount: 0,
-      lastVisitedMs: 0,
-    ),
-  ];
-
-  // Heaven Search is ALWAYS the default search engine unless switched by user.
+  // Heaven Search is ALWAYS the default search engine, and TOP dock is ALWAYS default.
   SearchEngine _searchEngine = SearchEngine.heaven;
   ThemeMode _themeMode = ThemeMode.dark;
-  bool _bottomOmnibox = true;
+  bool _bottomOmnibox = false;
   bool _shieldEnabled = true;
   bool _httpsUpgrade = true;
   bool _blockThirdPartyCookies = true;
@@ -249,8 +190,8 @@ class BrowserSettingsController extends ChangeNotifier {
       List<BookmarkItem>.unmodifiable(_bookmarks);
   List<HistoryItem> get history => List<HistoryItem>.unmodifiable(_history);
 
-  /// Smart Quick Launch: automatically ranks sites by actual usage frequency
-  /// (pinned first, then highest visitCount, then filled with starter sites).
+  /// Returns ONLY websites actually visited or pinned by the user (zero starter clutter),
+  /// automatically ranked by pin status and visit frequency.
   List<SiteUsageEntry> get quickLaunchSites {
     final List<SiteUsageEntry> pinned = <SiteUsageEntry>[];
     final List<SiteUsageEntry> frequent = <SiteUsageEntry>[];
@@ -280,34 +221,7 @@ class BrowserSettingsController extends ChangeNotifier {
           : b.lastVisitedMs.compareTo(a.lastVisitedMs);
     });
 
-    final List<SiteUsageEntry> result = <SiteUsageEntry>[];
-    final Set<String> includedDomains = <String>{};
-
-    for (final SiteUsageEntry item in <SiteUsageEntry>[
-      ...pinned,
-      ...frequent,
-    ]) {
-      if (includedDomains.add(item.domain)) {
-        result.add(item);
-      }
-      if (result.length >= 8) {
-        return result;
-      }
-    }
-
-    for (final SiteUsageEntry starter in _starterSites) {
-      if (_hiddenQuickDomains.contains(starter.domain)) {
-        continue;
-      }
-      if (includedDomains.add(starter.domain)) {
-        result.add(starter);
-      }
-      if (result.length >= 8) {
-        break;
-      }
-    }
-
-    return result;
+    return <SiteUsageEntry>[...pinned, ...frequent].take(8).toList();
   }
 
   void _load() {
@@ -317,7 +231,8 @@ class BrowserSettingsController extends ChangeNotifier {
       'system' => ThemeMode.system,
       _ => ThemeMode.dark,
     };
-    _bottomOmnibox = _prefs.getBool(_keyBottomBar) ?? true;
+    // Default false = Top Dock Bar
+    _bottomOmnibox = _prefs.getBool(_keyBottomBar) ?? false;
     _shieldEnabled = _prefs.getBool(_keyShieldEnabled) ?? true;
     _httpsUpgrade = _prefs.getBool(_keyHttpsUpgrade) ?? true;
     _blockThirdPartyCookies =
@@ -403,6 +318,7 @@ class BrowserSettingsController extends ChangeNotifier {
   void _pushNativeShieldConfig() {
     NativeShieldBridge.instance.syncShieldConfig(
       shieldEnabled: _shieldEnabled,
+      desktopMode: _desktopMode,
       trustedHosts: _trustedHosts,
       sendDntAndGpc: _sendDntAndGpc,
     );
@@ -428,8 +344,6 @@ class BrowserSettingsController extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// Automatically records website usage for Quick Launch ranking + Browsing History.
-  /// Never call this from Incognito tabs.
   Future<void> recordPageVisit({
     required String url,
     required String title,
@@ -447,13 +361,12 @@ class BrowserSettingsController extends ChangeNotifier {
         ? title.trim()
         : OmniboxParser.friendlySiteTitleFromDomain(cleanDomain);
 
-    // 1. Update automatic site usage frequency for Quick Launch
     if (cleanDomain.isNotEmpty && !_hiddenQuickDomains.contains(cleanDomain)) {
       final SiteUsageEntry? existing = _siteUsageByDomain[cleanDomain];
       final String canonicalOrigin = '${uri.scheme}://${uri.host}';
       final String shortLabel = existing != null && existing.isPinned
           ? existing.title
-          : _deriveShortLabel(cleanDomain, cleanTitle);
+          : OmniboxParser.friendlySiteTitleFromDomain(cleanDomain);
 
       _siteUsageByDomain[cleanDomain] = SiteUsageEntry(
         domain: cleanDomain,
@@ -468,7 +381,6 @@ class BrowserSettingsController extends ChangeNotifier {
       await _persistSiteUsage();
     }
 
-    // 2. Append to Browsing History (deduplicate consecutive identical URL)
     if (_history.isEmpty || _history.first.url != url) {
       _history = <HistoryItem>[
         HistoryItem(title: cleanTitle, url: url, visitedAtMs: now),
@@ -478,15 +390,6 @@ class BrowserSettingsController extends ChangeNotifier {
     }
 
     notifyListeners();
-  }
-
-  String _deriveShortLabel(String domain, String pageTitle) {
-    for (final SiteUsageEntry s in _starterSites) {
-      if (s.domain == domain) {
-        return s.title;
-      }
-    }
-    return OmniboxParser.friendlySiteTitleFromDomain(domain);
   }
 
   Future<void> pinOrAddQuickLaunchSite({
@@ -527,21 +430,9 @@ class BrowserSettingsController extends ChangeNotifier {
       _siteUsageByDomain[clean] = existing.copyWith(
         isPinned: !existing.isPinned,
       );
-    } else {
-      final SiteUsageEntry starter = _starterSites.firstWhere(
-        (SiteUsageEntry e) => e.domain == clean,
-        orElse: () => SiteUsageEntry(
-          domain: clean,
-          url: 'https://$clean',
-          title: OmniboxParser.friendlySiteTitleFromDomain(clean),
-          visitCount: 1,
-          lastVisitedMs: DateTime.now().millisecondsSinceEpoch,
-        ),
-      );
-      _siteUsageByDomain[clean] = starter.copyWith(isPinned: true);
+      await _persistSiteUsage();
+      notifyListeners();
     }
-    await _persistSiteUsage();
-    notifyListeners();
   }
 
   Future<void> removeQuickLaunchSite(String domain) async {
@@ -722,6 +613,7 @@ class BrowserSettingsController extends ChangeNotifier {
   Future<void> setDesktopMode(bool value) async {
     _desktopMode = value;
     await _prefs.setBool(_keyDesktopMode, value);
+    _pushNativeShieldConfig();
     notifyListeners();
   }
 

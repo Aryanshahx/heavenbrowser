@@ -2,10 +2,10 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:share_plus/share_plus.dart';
 
-import '../../core/constants/app_constants.dart';
 import '../../core/theme/app_theme.dart';
 import '../../core/utils/omnibox_parser.dart';
 import '../../core/widgets/site_logo.dart';
+import '../downloads/downloads_controller.dart';
 import 'heaven_search_service.dart';
 
 class HeavenSearchView extends StatefulWidget {
@@ -13,19 +13,23 @@ class HeavenSearchView extends StatefulWidget {
     super.key,
     required this.query,
     required this.searchService,
+    required this.downloads,
     required this.onOpenUrl,
     required this.onOpenInNewTab,
     required this.onOpenInIncognitoTab,
     required this.onSubmitNewQuery,
+    required this.onVoiceSearch,
     this.isIncognito = false,
   });
 
   final String query;
   final HeavenSearchService searchService;
+  final DownloadsController downloads;
   final ValueChanged<String> onOpenUrl;
   final ValueChanged<String> onOpenInNewTab;
   final ValueChanged<String> onOpenInIncognitoTab;
   final ValueChanged<String> onSubmitNewQuery;
+  final VoidCallback onVoiceSearch;
   final bool isIncognito;
 
   @override
@@ -33,7 +37,8 @@ class HeavenSearchView extends StatefulWidget {
 }
 
 class _HeavenSearchViewState extends State<HeavenSearchView> {
-  HeavenSearchTab _selectedTab = HeavenSearchTab.web;
+  HeavenSearchTab _selectedTab = HeavenSearchTab.all;
+  HeavenSearchFilters _filters = const HeavenSearchFilters();
   Future<HeavenSearchResponse>? _future;
   late final TextEditingController _searchController;
 
@@ -59,7 +64,7 @@ class _HeavenSearchViewState extends State<HeavenSearchView> {
       return;
     }
     setState(() {
-      _future = widget.searchService.search(widget.query);
+      _future = widget.searchService.search(widget.query, filters: _filters);
     });
   }
 
@@ -93,10 +98,14 @@ class _HeavenSearchViewState extends State<HeavenSearchView> {
             SliverFillRemaining(
               hasScrollBody: false,
               child: Center(
-                child: Text(
-                  'Enter a query above to search privately with Heaven Search.',
-                  style: theme.textTheme.bodyMedium?.copyWith(
-                    color: colors.onSurfaceVariant,
+                child: Padding(
+                  padding: const EdgeInsets.all(24),
+                  child: Text(
+                    'Type or speak a query above to search privately.',
+                    textAlign: TextAlign.center,
+                    style: theme.textTheme.bodyMedium?.copyWith(
+                      color: colors.onSurfaceVariant,
+                    ),
                   ),
                 ),
               ),
@@ -118,7 +127,7 @@ class _HeavenSearchViewState extends State<HeavenSearchView> {
                             children: <Widget>[
                               CircularProgressIndicator(),
                               SizedBox(height: 14),
-                              Text('Searching the private web...'),
+                              Text('Searching privately...'),
                             ],
                           ),
                         ),
@@ -129,48 +138,43 @@ class _HeavenSearchViewState extends State<HeavenSearchView> {
                     if (data == null) {
                       return SliverFillRemaining(
                         hasScrollBody: false,
-                        child: _buildErrorOrEmptyState(context, colors),
+                        child: _buildEmptyState(context, colors),
+                      );
+                    }
+
+                    if (_selectedTab == HeavenSearchTab.images) {
+                      return _buildImagesSliver(
+                        context,
+                        colors,
+                        data.imageResults,
                       );
                     }
 
                     final List<HeavenSearchResult> activeResults =
                         switch (_selectedTab) {
-                          HeavenSearchTab.web => data.webResults,
-                          HeavenSearchTab.knowledge => data.knowledgeResults,
-                          HeavenSearchTab.tech => data.techResults,
+                          HeavenSearchTab.all => data.webResults,
+                          HeavenSearchTab.videos => data.videoResults,
+                          HeavenSearchTab.news => data.newsResults,
+                          HeavenSearchTab.wiki => data.wikiResults,
+                          HeavenSearchTab.images =>
+                            const <HeavenSearchResult>[],
                         };
 
                     return SliverPadding(
-                      padding: const EdgeInsets.fromLTRB(14, 4, 14, 32),
+                      padding: const EdgeInsets.fromLTRB(14, 8, 14, 32),
                       sliver: SliverList.list(
                         children: <Widget>[
                           Padding(
                             padding: const EdgeInsets.only(bottom: 10, left: 4),
-                            child: Row(
-                              children: <Widget>[
-                                Icon(
-                                  Icons.verified_user_rounded,
-                                  size: 14,
-                                  color: widget.isIncognito
-                                      ? AppTheme.incognitoOrchid
-                                      : AppTheme.shieldEmerald,
-                                ),
-                                const SizedBox(width: 6),
-                                Expanded(
-                                  child: Text(
-                                    '${activeResults.length} private results in '
-                                    '${(data.elapsedMs / 1000).toStringAsFixed(2)}s '
-                                    '• Zero tracking cookies',
-                                    style: theme.textTheme.labelSmall?.copyWith(
-                                      color: colors.onSurfaceVariant,
-                                    ),
-                                  ),
-                                ),
-                              ],
+                            child: Text(
+                              '${activeResults.length} results (${(data.elapsedMs / 1000).toStringAsFixed(2)}s) • ${_filters.region.label}',
+                              style: theme.textTheme.labelSmall?.copyWith(
+                                color: colors.onSurfaceVariant,
+                              ),
                             ),
                           ),
                           if (data.instantMathResult != null &&
-                              _selectedTab == HeavenSearchTab.web)
+                              _selectedTab == HeavenSearchTab.all)
                             _buildCalculatorCard(
                               context,
                               colors,
@@ -178,17 +182,29 @@ class _HeavenSearchViewState extends State<HeavenSearchView> {
                               data.instantMathResult!,
                             ),
                           if (data.knowledgeCard != null &&
-                              _selectedTab != HeavenSearchTab.tech)
+                              _selectedTab == HeavenSearchTab.all)
                             _buildKnowledgePanel(
                               context,
                               colors,
                               data.knowledgeCard!,
                             ),
                           if (activeResults.isEmpty)
-                            _buildErrorOrEmptyState(context, colors)
+                            _buildEmptyState(context, colors)
                           else
                             for (final HeavenSearchResult item in activeResults)
-                              _buildResultCard(context, colors, isDark, item),
+                              _selectedTab == HeavenSearchTab.videos
+                                  ? _buildVideoCard(
+                                      context,
+                                      colors,
+                                      isDark,
+                                      item,
+                                    )
+                                  : _buildResultCard(
+                                      context,
+                                      colors,
+                                      isDark,
+                                      item,
+                                    ),
                           const SizedBox(height: 12),
                           _buildExternalFallbackBar(context, colors),
                         ],
@@ -207,11 +223,11 @@ class _HeavenSearchViewState extends State<HeavenSearchView> {
     bool isDark,
   ) {
     return Container(
-      padding: const EdgeInsets.fromLTRB(14, 12, 14, 10),
+      padding: const EdgeInsets.fromLTRB(14, 10, 14, 8),
       decoration: BoxDecoration(
         color: isDark
             ? Colors.white.withValues(alpha: 0.03)
-            : Colors.white.withValues(alpha: 0.85),
+            : Colors.white.withValues(alpha: 0.92),
         border: Border(
           bottom: BorderSide(
             color: colors.outlineVariant.withValues(alpha: 0.35),
@@ -221,88 +237,50 @@ class _HeavenSearchViewState extends State<HeavenSearchView> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: <Widget>[
-          Row(
-            children: <Widget>[
-              ClipRRect(
-                borderRadius: BorderRadius.circular(10),
-                child: Image.asset(
-                  AppConstants.logoAssetPath,
-                  width: 30,
-                  height: 30,
-                  errorBuilder: (_, _, _) =>
-                      const Icon(Icons.bolt_rounded, color: AppTheme.neonCyan),
-                ),
-              ),
-              const SizedBox(width: 10),
-              Text(
-                'Heaven Search',
-                style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                  fontWeight: FontWeight.w800,
-                  letterSpacing: -0.3,
-                ),
-              ),
-              const SizedBox(width: 8),
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-                decoration: BoxDecoration(
-                  color:
-                      (widget.isIncognito
-                              ? AppTheme.incognitoOrchid
-                              : AppTheme.neonCyan)
-                          .withValues(alpha: 0.14),
-                  borderRadius: BorderRadius.circular(999),
-                ),
-                child: Text(
-                  widget.isIncognito ? 'STEALTH' : 'PRIVATE',
-                  style: TextStyle(
-                    fontSize: 10,
-                    fontWeight: FontWeight.w800,
-                    letterSpacing: 0.6,
-                    color: widget.isIncognito
-                        ? AppTheme.incognitoOrchid
-                        : colors.primary,
-                  ),
-                ),
-              ),
-              const Spacer(),
-              IconButton(
-                onPressed: _runSearch,
-                icon: const Icon(Icons.refresh_rounded, size: 20),
-                tooltip: 'Refresh results',
-                visualDensity: VisualDensity.compact,
-              ),
-            ],
-          ),
-          const SizedBox(height: 10),
           Container(
             height: 44,
             decoration: BoxDecoration(
               color: isDark
-                  ? const Color(0xFF111A2E)
+                  ? const Color(0xFF140D29)
                   : colors.surfaceContainerHighest.withValues(alpha: 0.55),
-              borderRadius: BorderRadius.circular(14),
-              border: Border.all(
-                color: colors.outlineVariant.withValues(alpha: 0.45),
-              ),
+              borderRadius: BorderRadius.circular(22),
+              border: Border.all(color: colors.primary.withValues(alpha: 0.38)),
             ),
-            child: TextField(
-              controller: _searchController,
-              textInputAction: TextInputAction.search,
-              onSubmitted: (String value) {
-                if (value.trim().isNotEmpty) {
-                  widget.onSubmitNewQuery(value.trim());
-                }
-              },
-              style: const TextStyle(fontSize: 14.5),
-              decoration: InputDecoration(
-                hintText: 'Search privately with Heaven...',
-                prefixIcon: Icon(
-                  Icons.search_rounded,
-                  size: 20,
-                  color: colors.primary,
+            child: Row(
+              children: <Widget>[
+                const SizedBox(width: 12),
+                Icon(Icons.search_rounded, size: 19, color: colors.primary),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: TextField(
+                    controller: _searchController,
+                    textInputAction: TextInputAction.search,
+                    onSubmitted: (String value) {
+                      if (value.trim().isNotEmpty) {
+                        widget.onSubmitNewQuery(value.trim());
+                      }
+                    },
+                    style: const TextStyle(fontSize: 14.5),
+                    decoration: const InputDecoration(
+                      hintText: 'Search Heaven...',
+                      border: InputBorder.none,
+                      isDense: true,
+                    ),
+                  ),
                 ),
-                suffixIcon: IconButton(
+                IconButton(
+                  icon: Icon(
+                    Icons.mic_rounded,
+                    size: 20,
+                    color: colors.primary,
+                  ),
+                  visualDensity: VisualDensity.compact,
+                  tooltip: 'Voice Search',
+                  onPressed: widget.onVoiceSearch,
+                ),
+                IconButton(
                   icon: const Icon(Icons.arrow_forward_rounded, size: 19),
+                  visualDensity: VisualDensity.compact,
                   tooltip: 'Search',
                   onPressed: () {
                     final String val = _searchController.text.trim();
@@ -311,30 +289,272 @@ class _HeavenSearchViewState extends State<HeavenSearchView> {
                     }
                   },
                 ),
-                border: InputBorder.none,
-                contentPadding: const EdgeInsets.symmetric(vertical: 11),
-              ),
+              ],
             ),
           ),
           const SizedBox(height: 10),
+          // Vertical category tabs (all 5 fit cleanly in full view on any phone width)
+          Row(
+            children: <Widget>[
+              for (final HeavenSearchTab tab in HeavenSearchTab.values)
+                Expanded(
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 2.5),
+                    child: InkWell(
+                      borderRadius: BorderRadius.circular(11),
+                      onTap: () => setState(() => _selectedTab = tab),
+                      child: AnimatedContainer(
+                        duration: const Duration(milliseconds: 160),
+                        padding: const EdgeInsets.symmetric(
+                          vertical: 7,
+                          horizontal: 4,
+                        ),
+                        alignment: Alignment.center,
+                        decoration: BoxDecoration(
+                          color: _selectedTab == tab
+                              ? colors.primary
+                              : colors.surfaceContainerHighest.withValues(
+                                  alpha: 0.45,
+                                ),
+                          borderRadius: BorderRadius.circular(11),
+                        ),
+                        child: FittedBox(
+                          fit: BoxFit.scaleDown,
+                          child: Text(
+                            tab.label,
+                            maxLines: 1,
+                            style: TextStyle(
+                              fontWeight: FontWeight.w800,
+                              fontSize: 12.5,
+                              color: _selectedTab == tab
+                                  ? colors.onPrimary
+                                  : colors.onSurface,
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+            ],
+          ),
+          const SizedBox(height: 6),
+          // Working search filters row (Time, Region, SafeSearch)
           SingleChildScrollView(
             scrollDirection: Axis.horizontal,
             child: Row(
               children: <Widget>[
-                for (final HeavenSearchTab tab in HeavenSearchTab.values)
-                  Padding(
-                    padding: const EdgeInsets.only(right: 8),
-                    child: ChoiceChip(
-                      label: Text(tab.label),
-                      selected: _selectedTab == tab,
-                      onSelected: (_) => setState(() => _selectedTab = tab),
+                _FilterPillButton(
+                  icon: Icons.schedule_rounded,
+                  label: _filters.time.label,
+                  active: _filters.time != HeavenTimeFilter.any,
+                  onTap: () => _pickTimeFilter(context),
+                ),
+                const SizedBox(width: 6),
+                _FilterPillButton(
+                  icon: Icons.public_rounded,
+                  label: _filters.region.label,
+                  active: false,
+                  onTap: () => _pickRegionFilter(context),
+                ),
+                const SizedBox(width: 6),
+                _FilterPillButton(
+                  icon: Icons.verified_user_outlined,
+                  label: _filters.safe.label,
+                  active: _filters.safe != HeavenSafeFilter.moderate,
+                  onTap: () => _pickSafeFilter(context),
+                ),
+                if (_filters.hasActiveCustomFilter) ...<Widget>[
+                  const SizedBox(width: 6),
+                  TextButton(
+                    style: TextButton.styleFrom(
                       visualDensity: VisualDensity.compact,
                     ),
+                    onPressed: () {
+                      setState(() {
+                        _filters = HeavenSearchFilters(region: _filters.region);
+                      });
+                      _runSearch();
+                    },
+                    child: const Text('Reset', style: TextStyle(fontSize: 12)),
                   ),
+                ],
               ],
             ),
           ),
         ],
+      ),
+    );
+  }
+
+  SliverPadding _buildImagesSliver(
+    BuildContext context,
+    ColorScheme colors,
+    List<HeavenImageResult> images,
+  ) {
+    if (images.isEmpty) {
+      return SliverPadding(
+        padding: const EdgeInsets.all(20),
+        sliver: SliverToBoxAdapter(child: _buildEmptyState(context, colors)),
+      );
+    }
+
+    return SliverPadding(
+      padding: const EdgeInsets.fromLTRB(14, 12, 14, 28),
+      sliver: SliverGrid.builder(
+        gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+          crossAxisCount: 2,
+          mainAxisSpacing: 10,
+          crossAxisSpacing: 10,
+          mainAxisExtent: 195,
+        ),
+        itemCount: images.length,
+        itemBuilder: (BuildContext context, int index) {
+          final HeavenImageResult img = images[index];
+          return InkWell(
+            borderRadius: BorderRadius.circular(16),
+            onTap: () => _showImagePreviewDialog(context, img),
+            child: Container(
+              decoration: BoxDecoration(
+                color: colors.surfaceContainerHighest.withValues(alpha: 0.35),
+                borderRadius: BorderRadius.circular(16),
+                border: Border.all(
+                  color: colors.outlineVariant.withValues(alpha: 0.35),
+                ),
+              ),
+              clipBehavior: Clip.antiAlias,
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: <Widget>[
+                  Expanded(
+                    child: Image.network(
+                      img.thumbUrl,
+                      fit: BoxFit.cover,
+                      errorBuilder: (_, _, _) => const Center(
+                        child: Icon(Icons.broken_image_outlined, size: 32),
+                      ),
+                    ),
+                  ),
+                  Padding(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 10,
+                      vertical: 8,
+                    ),
+                    child: Text(
+                      img.title,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        fontSize: 12,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          );
+        },
+      ),
+    );
+  }
+
+  Widget _buildVideoCard(
+    BuildContext context,
+    ColorScheme colors,
+    bool isDark,
+    HeavenSearchResult item,
+  ) {
+    return Container(
+      margin: const EdgeInsets.only(bottom: 12),
+      decoration: BoxDecoration(
+        color: isDark ? const Color(0xFF120B24) : Colors.white,
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(
+          color: colors.outlineVariant.withValues(alpha: 0.35),
+        ),
+      ),
+      clipBehavior: Clip.antiAlias,
+      child: InkWell(
+        onTap: () => widget.onOpenUrl(item.url),
+        onLongPress: () => _showResultMenu(context, item),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: <Widget>[
+            if (item.thumbnailUrl != null)
+              Stack(
+                alignment: Alignment.center,
+                children: <Widget>[
+                  AspectRatio(
+                    aspectRatio: 16 / 9,
+                    child: Image.network(
+                      item.thumbnailUrl!,
+                      fit: BoxFit.cover,
+                      errorBuilder: (_, _, _) => Container(
+                        color: Colors.black26,
+                        child: const Icon(
+                          Icons.play_circle_outline_rounded,
+                          size: 48,
+                        ),
+                      ),
+                    ),
+                  ),
+                  Container(
+                    padding: const EdgeInsets.all(10),
+                    decoration: BoxDecoration(
+                      color: Colors.black.withValues(alpha: 0.65),
+                      shape: BoxShape.circle,
+                    ),
+                    child: const Icon(
+                      Icons.play_arrow_rounded,
+                      color: Colors.white,
+                      size: 30,
+                    ),
+                  ),
+                ],
+              ),
+            Padding(
+              padding: const EdgeInsets.all(13),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: <Widget>[
+                  Text(
+                    item.title,
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      fontSize: 15,
+                      fontWeight: FontWeight.w700,
+                      height: 1.3,
+                    ),
+                  ),
+                  const SizedBox(height: 6),
+                  Row(
+                    children: <Widget>[
+                      SiteLogo(
+                        urlOrDomain: item.url,
+                        size: 20,
+                        borderRadius: 6,
+                      ),
+                      const SizedBox(width: 7),
+                      Expanded(
+                        child: Text(
+                          item.displayDomain,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            fontSize: 12,
+                            color: colors.onSurfaceVariant,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -407,7 +627,7 @@ class _HeavenSearchViewState extends State<HeavenSearchView> {
   ) {
     return Container(
       margin: const EdgeInsets.only(bottom: 14),
-      padding: const EdgeInsets.all(16),
+      padding: const EdgeInsets.all(15),
       decoration: BoxDecoration(
         color: colors.primaryContainer.withValues(alpha: 0.22),
         borderRadius: BorderRadius.circular(20),
@@ -421,13 +641,15 @@ class _HeavenSearchViewState extends State<HeavenSearchView> {
               SiteLogo(
                 urlOrDomain: card.sourceUrl,
                 fallbackLabel: card.sourceName,
-                size: 28,
+                size: 26,
                 borderRadius: 8,
               ),
               const SizedBox(width: 10),
               Expanded(
                 child: Text(
                   card.heading,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
                   style: Theme.of(context).textTheme.titleMedium?.copyWith(
                     fontWeight: FontWeight.w800,
                   ),
@@ -470,8 +692,8 @@ class _HeavenSearchViewState extends State<HeavenSearchView> {
                   borderRadius: BorderRadius.circular(12),
                   child: Image.network(
                     card.imageUrl!,
-                    width: 74,
-                    height: 74,
+                    width: 72,
+                    height: 72,
                     fit: BoxFit.cover,
                     errorBuilder: (_, _, _) => const SizedBox.shrink(),
                   ),
@@ -479,13 +701,13 @@ class _HeavenSearchViewState extends State<HeavenSearchView> {
               ],
             ],
           ),
-          const SizedBox(height: 10),
+          const SizedBox(height: 8),
           Align(
             alignment: Alignment.centerRight,
             child: TextButton.icon(
               onPressed: () => widget.onOpenUrl(card.sourceUrl),
               icon: const Icon(Icons.open_in_new_rounded, size: 16),
-              label: const Text('Read Full Source'),
+              label: const Text('Read Full Article'),
             ),
           ),
         ],
@@ -502,7 +724,7 @@ class _HeavenSearchViewState extends State<HeavenSearchView> {
     return Container(
       margin: const EdgeInsets.only(bottom: 10),
       decoration: BoxDecoration(
-        color: isDark ? const Color(0xFF0E1628) : Colors.white,
+        color: isDark ? const Color(0xFF120B24) : Colors.white,
         borderRadius: BorderRadius.circular(18),
         border: Border.all(
           color: colors.outlineVariant.withValues(alpha: 0.35),
@@ -513,7 +735,7 @@ class _HeavenSearchViewState extends State<HeavenSearchView> {
         onTap: () => widget.onOpenUrl(item.url),
         onLongPress: () => _showResultMenu(context, item),
         child: Padding(
-          padding: const EdgeInsets.fromLTRB(14, 13, 12, 13),
+          padding: const EdgeInsets.fromLTRB(14, 12, 10, 12),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: <Widget>[
@@ -521,8 +743,8 @@ class _HeavenSearchViewState extends State<HeavenSearchView> {
                 children: <Widget>[
                   SiteLogo(
                     urlOrDomain: item.url,
-                    fallbackLabel: item.displayDomain,
-                    size: 28,
+                    fallbackLabel: item.sourceLabel,
+                    size: 26,
                     borderRadius: 8,
                   ),
                   const SizedBox(width: 10),
@@ -531,9 +753,10 @@ class _HeavenSearchViewState extends State<HeavenSearchView> {
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: <Widget>[
                         Text(
-                          OmniboxParser.friendlySiteTitleFromDomain(
-                            item.displayDomain,
-                          ),
+                          item.metaBadge ??
+                              OmniboxParser.friendlySiteTitleFromDomain(
+                                item.displayDomain,
+                              ),
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
                           style: const TextStyle(
@@ -542,7 +765,7 @@ class _HeavenSearchViewState extends State<HeavenSearchView> {
                           ),
                         ),
                         Text(
-                          item.url,
+                          item.displayDomain,
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
                           style: TextStyle(
@@ -553,49 +776,28 @@ class _HeavenSearchViewState extends State<HeavenSearchView> {
                       ],
                     ),
                   ),
-                  if (item.metaBadge != null) ...<Widget>[
-                    Container(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 7,
-                        vertical: 2,
-                      ),
-                      decoration: BoxDecoration(
-                        color: colors.secondaryContainer.withValues(alpha: 0.5),
-                        borderRadius: BorderRadius.circular(6),
-                      ),
-                      child: Text(
-                        item.metaBadge!,
-                        style: TextStyle(
-                          fontSize: 10.5,
-                          fontWeight: FontWeight.w700,
-                          color: colors.onSecondaryContainer,
-                        ),
-                      ),
-                    ),
-                    const SizedBox(width: 4),
-                  ],
                   IconButton(
                     icon: const Icon(Icons.more_vert_rounded, size: 18),
                     visualDensity: VisualDensity.compact,
-                    tooltip: 'Result options',
+                    tooltip: 'Options',
                     onPressed: () => _showResultMenu(context, item),
                   ),
                 ],
               ),
-              const SizedBox(height: 8),
+              const SizedBox(height: 7),
               Text(
                 item.title,
                 style: Theme.of(context).textTheme.titleSmall?.copyWith(
                   fontSize: 15.5,
                   fontWeight: FontWeight.w700,
                   color: isDark
-                      ? const Color(0xFF7DD3FC)
-                      : const Color(0xFF1D4ED8),
-                  height: 1.28,
+                      ? AppTheme.luminousLavender
+                      : const Color(0xFF5B21B6),
+                  height: 1.3,
                 ),
               ),
               if (item.snippet.isNotEmpty) ...<Widget>[
-                const SizedBox(height: 6),
+                const SizedBox(height: 5),
                 Text(
                   item.snippet,
                   maxLines: 3,
@@ -614,27 +816,19 @@ class _HeavenSearchViewState extends State<HeavenSearchView> {
     );
   }
 
-  Widget _buildErrorOrEmptyState(BuildContext context, ColorScheme colors) {
+  Widget _buildEmptyState(BuildContext context, ColorScheme colors) {
     return Container(
       padding: const EdgeInsets.all(24),
       alignment: Alignment.center,
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: <Widget>[
-          Icon(Icons.travel_explore_rounded, size: 46, color: colors.primary),
+          Icon(Icons.travel_explore_rounded, size: 44, color: colors.primary),
           const SizedBox(height: 12),
           Text(
-            'No direct results found for "${widget.query}"',
+            'No results for "${widget.query}" with current filter',
             textAlign: TextAlign.center,
-            style: Theme.of(
-              context,
-            ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w700),
-          ),
-          const SizedBox(height: 6),
-          Text(
-            'Check your connection or try opening the query on an external search index below.',
-            textAlign: TextAlign.center,
-            style: TextStyle(color: colors.onSurfaceVariant, fontSize: 13),
+            style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 15),
           ),
           const SizedBox(height: 14),
           _buildExternalFallbackBar(context, colors),
@@ -660,7 +854,7 @@ class _HeavenSearchViewState extends State<HeavenSearchView> {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: <Widget>[
           Text(
-            'Compare query on external engines:',
+            'Try this query on other engines:',
             style: TextStyle(
               fontSize: 11.5,
               fontWeight: FontWeight.w600,
@@ -687,6 +881,202 @@ class _HeavenSearchViewState extends State<HeavenSearchView> {
           ),
         ],
       ),
+    );
+  }
+
+  Future<void> _pickTimeFilter(BuildContext context) async {
+    final HeavenTimeFilter? picked =
+        await showModalBottomSheet<HeavenTimeFilter>(
+          context: context,
+          builder: (BuildContext ctx) {
+            return SafeArea(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: <Widget>[
+                  const Padding(
+                    padding: EdgeInsets.all(14),
+                    child: Text(
+                      'Filter by Time',
+                      style: TextStyle(
+                        fontWeight: FontWeight.w800,
+                        fontSize: 16,
+                      ),
+                    ),
+                  ),
+                  for (final HeavenTimeFilter f in HeavenTimeFilter.values)
+                    ListTile(
+                      leading: Icon(
+                        _filters.time == f
+                            ? Icons.radio_button_checked_rounded
+                            : Icons.radio_button_off_rounded,
+                      ),
+                      title: Text(f.label),
+                      onTap: () => Navigator.pop(ctx, f),
+                    ),
+                  const SizedBox(height: 8),
+                ],
+              ),
+            );
+          },
+        );
+    if (picked != null && picked != _filters.time) {
+      setState(() => _filters = _filters.copyWith(time: picked));
+      _runSearch();
+    }
+  }
+
+  Future<void> _pickRegionFilter(BuildContext context) async {
+    final HeavenRegionFilter? picked =
+        await showModalBottomSheet<HeavenRegionFilter>(
+          context: context,
+          builder: (BuildContext ctx) {
+            return SafeArea(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: <Widget>[
+                  const Padding(
+                    padding: EdgeInsets.all(14),
+                    child: Text(
+                      'Search Region',
+                      style: TextStyle(
+                        fontWeight: FontWeight.w800,
+                        fontSize: 16,
+                      ),
+                    ),
+                  ),
+                  for (final HeavenRegionFilter r in HeavenRegionFilter.values)
+                    ListTile(
+                      leading: Icon(
+                        _filters.region == r
+                            ? Icons.radio_button_checked_rounded
+                            : Icons.radio_button_off_rounded,
+                      ),
+                      title: Text(r.label),
+                      onTap: () => Navigator.pop(ctx, r),
+                    ),
+                  const SizedBox(height: 8),
+                ],
+              ),
+            );
+          },
+        );
+    if (picked != null && picked != _filters.region) {
+      setState(() => _filters = _filters.copyWith(region: picked));
+      _runSearch();
+    }
+  }
+
+  Future<void> _pickSafeFilter(BuildContext context) async {
+    final HeavenSafeFilter? picked =
+        await showModalBottomSheet<HeavenSafeFilter>(
+          context: context,
+          builder: (BuildContext ctx) {
+            return SafeArea(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: <Widget>[
+                  const Padding(
+                    padding: EdgeInsets.all(14),
+                    child: Text(
+                      'SafeSearch Filter',
+                      style: TextStyle(
+                        fontWeight: FontWeight.w800,
+                        fontSize: 16,
+                      ),
+                    ),
+                  ),
+                  for (final HeavenSafeFilter s in HeavenSafeFilter.values)
+                    ListTile(
+                      leading: Icon(
+                        _filters.safe == s
+                            ? Icons.radio_button_checked_rounded
+                            : Icons.radio_button_off_rounded,
+                      ),
+                      title: Text(s.label),
+                      onTap: () => Navigator.pop(ctx, s),
+                    ),
+                  const SizedBox(height: 8),
+                ],
+              ),
+            );
+          },
+        );
+    if (picked != null && picked != _filters.safe) {
+      setState(() => _filters = _filters.copyWith(safe: picked));
+      _runSearch();
+    }
+  }
+
+  Future<void> _showImagePreviewDialog(
+    BuildContext context,
+    HeavenImageResult img,
+  ) async {
+    await showDialog<void>(
+      context: context,
+      builder: (BuildContext dialogContext) {
+        return Dialog(
+          clipBehavior: Clip.antiAlias,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: <Widget>[
+              ConstrainedBox(
+                constraints: const BoxConstraints(maxHeight: 340),
+                child: Image.network(
+                  img.thumbUrl,
+                  fit: BoxFit.contain,
+                  errorBuilder: (_, _, _) => const SizedBox(
+                    height: 160,
+                    child: Icon(Icons.broken_image_outlined, size: 42),
+                  ),
+                ),
+              ),
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 12, 16, 14),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: <Widget>[
+                    Text(
+                      img.title,
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        fontWeight: FontWeight.w700,
+                        fontSize: 14.5,
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    Wrap(
+                      spacing: 8,
+                      runSpacing: 8,
+                      children: <Widget>[
+                        OutlinedButton.icon(
+                          onPressed: () {
+                            Navigator.pop(dialogContext);
+                            widget.onOpenUrl(img.pageUrl);
+                          },
+                          icon: const Icon(Icons.open_in_new_rounded, size: 17),
+                          label: const Text('Source Page'),
+                        ),
+                        FilledButton.icon(
+                          onPressed: () async {
+                            Navigator.pop(dialogContext);
+                            await widget.downloads.startUrlDownload(
+                              url: img.fullUrl,
+                            );
+                          },
+                          icon: const Icon(Icons.download_rounded, size: 17),
+                          label: const Text('Download'),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        );
+      },
     );
   }
 
@@ -726,7 +1116,7 @@ class _HeavenSearchViewState extends State<HeavenSearchView> {
               ListTile(
                 leading: const Icon(
                   Icons.shield_moon_outlined,
-                  color: AppTheme.incognitoOrchid,
+                  color: AppTheme.incognitoCyan,
                 ),
                 title: const Text('Open in Incognito Tab'),
                 onTap: () {
@@ -763,6 +1153,68 @@ class _HeavenSearchViewState extends State<HeavenSearchView> {
           ),
         );
       },
+    );
+  }
+}
+
+class _FilterPillButton extends StatelessWidget {
+  const _FilterPillButton({
+    required this.icon,
+    required this.label,
+    required this.active,
+    required this.onTap,
+  });
+
+  final IconData icon;
+  final String label;
+  final bool active;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final ColorScheme colors = Theme.of(context).colorScheme;
+    return InkWell(
+      borderRadius: BorderRadius.circular(999),
+      onTap: onTap,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+        decoration: BoxDecoration(
+          color: active
+              ? colors.primary.withValues(alpha: 0.18)
+              : colors.surfaceContainerHighest.withValues(alpha: 0.45),
+          borderRadius: BorderRadius.circular(999),
+          border: Border.all(
+            color: active
+                ? colors.primary
+                : colors.outlineVariant.withValues(alpha: 0.35),
+          ),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: <Widget>[
+            Icon(
+              icon,
+              size: 13.5,
+              color: active ? colors.primary : colors.onSurfaceVariant,
+            ),
+            const SizedBox(width: 5),
+            Text(
+              label,
+              style: TextStyle(
+                fontSize: 11.5,
+                fontWeight: FontWeight.w600,
+                color: active ? colors.primary : colors.onSurface,
+              ),
+            ),
+            const SizedBox(width: 2),
+            Icon(
+              Icons.arrow_drop_down_rounded,
+              size: 15,
+              color: active ? colors.primary : colors.onSurfaceVariant,
+            ),
+          ],
+        ),
+      ),
     );
   }
 }

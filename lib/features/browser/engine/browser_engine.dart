@@ -43,13 +43,13 @@ class BrowserEngine extends ChangeNotifier {
   WebViewController? _controller;
   int? _androidWebViewId;
 
-  // Unified tab history entries supporting Start Page (''), heaven://search?q=..., and http(s)://
   final List<String> _virtualHistory = <String>[''];
   int _virtualIndex = 0;
 
   String? _currentUrl;
   String _pageTitle = 'New Tab';
   double _progress = 0;
+  double _pullProgress = 0;
   bool _isLoading = false;
   bool _webViewCanGoBack = false;
   bool _webViewCanGoForward = false;
@@ -61,6 +61,7 @@ class BrowserEngine extends ChangeNotifier {
   String? get currentUrl => _currentUrl;
   String get pageTitle => _pageTitle;
   double get progress => _progress;
+  double get pullProgress => _pullProgress;
   bool get isLoading => _isLoading;
   bool get isShowingStartPage => _currentUrl == null || _currentUrl!.isEmpty;
   bool get isShowingHeavenSearch =>
@@ -92,6 +93,16 @@ class BrowserEngine extends ChangeNotifier {
     return (parsed != null && parsed.host.isNotEmpty) ? parsed.host : null;
   }
 
+  Map<String, String> get _clientHintHeaders => settings.desktopMode
+      ? const <String, String>{
+          'Sec-CH-UA-Mobile': '?0',
+          'Sec-CH-UA-Platform': '"Linux"',
+        }
+      : const <String, String>{
+          'Sec-CH-UA-Mobile': '?1',
+          'Sec-CH-UA-Platform': '"Android"',
+        };
+
   void _initializeController() {
     final WebViewController webController = WebViewController();
     _controller = webController;
@@ -119,6 +130,7 @@ class BrowserEngine extends ChangeNotifier {
             _currentUrl = url;
             _isLoading = true;
             _progress = 0.1;
+            _pullProgress = 0;
             _errorMessage = null;
             _pageBlockedCount = 0;
             _pageBlockedDomains.clear();
@@ -149,11 +161,11 @@ class BrowserEngine extends ChangeNotifier {
             _currentUrl = url;
             _isLoading = false;
             _progress = 1.0;
+            _pullProgress = 0;
             _syncVirtualEntryWithWebUrl(url);
             await _injectProtectionAndZoom(url);
             await _refreshNavigationState();
 
-            // Record website usage & history ONLY in Normal Mode (strictly skipped in Incognito)
             if (!isIncognito &&
                 (url.startsWith('http://') || url.startsWith('https://'))) {
               await settings.recordPageVisit(url: url, title: _pageTitle);
@@ -187,9 +199,20 @@ class BrowserEngine extends ChangeNotifier {
       unawaited(
         NativeShieldBridge.instance.attachWebView(
           webViewId: androidCtrl.webViewIdentifier,
+          desktopMode: settings.desktopMode,
           pageHost: currentHost,
           onBlocked: (int _, String domain) {
             _recordBlockedResource(domain);
+          },
+          onPullProgress: (double value) {
+            if ((_pullProgress - value).abs() >= 0.02 || value == 0.0) {
+              _pullProgress = value;
+              notifyListeners();
+            }
+          },
+          onPullRefresh: () {
+            _pullProgress = 0;
+            unawaited(reloadFullPage());
           },
         ),
       );
@@ -247,6 +270,15 @@ class BrowserEngine extends ChangeNotifier {
       return NavigationDecision.prevent;
     }
 
+    // If Desktop Mode is enabled and a site redirects to m.example.com, rewrite to desktop host
+    if (request.isMainFrame && settings.desktopMode) {
+      final Uri desktopUri = rewriteMobileToDesktopUri(uri);
+      if (desktopUri != uri) {
+        await _controller?.loadRequest(desktopUri, headers: _clientHintHeaders);
+        return NavigationDecision.prevent;
+      }
+    }
+
     final bool shieldActiveForSite =
         settings.shieldEnabled && !settings.isHostTrusted(currentHost);
 
@@ -263,7 +295,10 @@ class BrowserEngine extends ChangeNotifier {
       if (stripped.removedCount > 0 && stripped.uri != uri) {
         _pageBlockedCount += stripped.removedCount;
         await settings.incrementBlockedCount(stripped.removedCount);
-        await _controller?.loadRequest(stripped.uri);
+        await _controller?.loadRequest(
+          stripped.uri,
+          headers: _clientHintHeaders,
+        );
         notifyListeners();
         return NavigationDecision.prevent;
       }
@@ -273,11 +308,33 @@ class BrowserEngine extends ChangeNotifier {
         settings.httpsUpgrade &&
         uri.scheme == 'http' &&
         !OmniboxParser.isLocalOrPrivateHost(uri.host)) {
-      await _controller?.loadRequest(uri.replace(scheme: 'https'));
+      await _controller?.loadRequest(
+        uri.replace(scheme: 'https'),
+        headers: _clientHintHeaders,
+      );
       return NavigationDecision.prevent;
     }
 
     return NavigationDecision.navigate;
+  }
+
+  static Uri rewriteMobileToDesktopUri(Uri uri) {
+    final String lowerHost = uri.host.toLowerCase();
+    if (lowerHost.startsWith('m.') && lowerHost.length > 4) {
+      final String rest = uri.host.substring(2);
+      final String targetHost =
+          (rest == 'youtube.com' || rest == 'facebook.com')
+          ? 'www.$rest'
+          : rest;
+      return uri.replace(host: targetHost);
+    }
+    if (lowerHost.contains('.m.')) {
+      return uri.replace(host: uri.host.replaceFirst('.m.', '.'));
+    }
+    if (lowerHost.startsWith('mobile.') && lowerHost.length > 9) {
+      return uri.replace(host: uri.host.substring(7));
+    }
+    return uri;
   }
 
   void _onSettingsChanged() {
@@ -306,12 +363,42 @@ class BrowserEngine extends ChangeNotifier {
         case final AndroidWebViewController androidCtrl) {
       await androidCtrl.setMediaPlaybackRequiresUserGesture(false);
       await androidCtrl.setTextZoom(settings.textScalePercent);
+      await androidCtrl.enableZoom(true);
+      await NativeShieldBridge.instance.applyDesktopViewport(
+        webViewId: androidCtrl.webViewIdentifier,
+        desktopMode: settings.desktopMode,
+      );
 
       final WebViewCookieManager cookieManager = WebViewCookieManager();
       if (cookieManager.platform
           case final AndroidWebViewCookieManager androidCookies) {
         final bool allow3p = !isIncognito && !settings.blockThirdPartyCookies;
         await androidCookies.setAcceptThirdPartyCookies(androidCtrl, allow3p);
+      }
+    }
+  }
+
+  /// Properly switches Desktop Mode sequentially (awaiting User-Agent + Native WideViewport)
+  /// before reloading with Desktop Client-Hints and m. -> desktop host rewrite.
+  Future<void> setDesktopModeAndReload(bool enabled) async {
+    await settings.setDesktopMode(enabled);
+    await _applyControllerSettings();
+
+    final String? activeUrl = _currentUrl;
+    if (activeUrl != null &&
+        !isShowingStartPage &&
+        !isShowingHeavenSearch &&
+        _controller != null) {
+      Uri? parsed = Uri.tryParse(activeUrl);
+      if (parsed != null) {
+        if (enabled) {
+          parsed = rewriteMobileToDesktopUri(parsed);
+        }
+        _currentUrl = parsed.toString();
+        _isLoading = true;
+        _errorMessage = null;
+        notifyListeners();
+        await _controller!.loadRequest(parsed, headers: _clientHintHeaders);
       }
     }
   }
@@ -365,6 +452,7 @@ class BrowserEngine extends ChangeNotifier {
     _errorMessage = null;
     _pageBlockedCount = 0;
     _pageBlockedDomains.clear();
+    _pullProgress = 0;
 
     final String targetUrl = uri.toString();
     _pushVirtualLocation(targetUrl);
@@ -381,12 +469,12 @@ class BrowserEngine extends ChangeNotifier {
       return;
     }
 
-    Uri finalUri = uri;
+    Uri finalUri = settings.desktopMode ? rewriteMobileToDesktopUri(uri) : uri;
     final bool shieldActive =
-        settings.shieldEnabled && !settings.isHostTrusted(uri.host);
+        settings.shieldEnabled && !settings.isHostTrusted(finalUri.host);
     if (shieldActive) {
       final ({Uri uri, int removedCount}) stripped =
-          HeavenShield.stripTrackingParameters(uri);
+          HeavenShield.stripTrackingParameters(finalUri);
       finalUri = stripped.uri;
       if (stripped.removedCount > 0) {
         _pageBlockedCount += stripped.removedCount;
@@ -409,7 +497,8 @@ class BrowserEngine extends ChangeNotifier {
       );
     }
 
-    await _controller?.loadRequest(finalUri);
+    await _applyControllerSettings();
+    await _controller?.loadRequest(finalUri, headers: _clientHintHeaders);
     if (_controller == null) {
       _isLoading = false;
       if (!isIncognito &&
@@ -427,6 +516,7 @@ class BrowserEngine extends ChangeNotifier {
     _pageTitle = isIncognito ? 'Incognito Tab' : 'New Tab';
     _isLoading = false;
     _progress = 0;
+    _pullProgress = 0;
     _errorMessage = null;
     _pageBlockedCount = 0;
     _pageBlockedDomains.clear();
@@ -470,6 +560,7 @@ class BrowserEngine extends ChangeNotifier {
 
   Future<void> _restoreVirtualLocation(String target) async {
     _errorMessage = null;
+    _pullProgress = 0;
     if (target.isEmpty) {
       _currentUrl = null;
       _pageTitle = isIncognito ? 'Incognito Tab' : 'New Tab';
@@ -497,7 +588,23 @@ class BrowserEngine extends ChangeNotifier {
     _pageTitle = OmniboxParser.formatDisplayUrl(target);
     _isLoading = _controller != null;
     notifyListeners();
-    await _controller?.loadRequest(Uri.parse(target));
+    await _controller?.loadRequest(
+      Uri.parse(target),
+      headers: _clientHintHeaders,
+    );
+  }
+
+  Future<void> reloadFullPage() async {
+    _errorMessage = null;
+    if (isShowingStartPage) {
+      notifyListeners();
+      return;
+    }
+    if (isShowingHeavenSearch) {
+      notifyListeners();
+      return;
+    }
+    await _controller?.reload();
   }
 
   Future<void> reloadOrStop() async {

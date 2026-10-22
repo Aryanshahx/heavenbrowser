@@ -7,6 +7,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'core/constants/app_constants.dart';
 import 'core/theme/app_theme.dart';
 import 'features/browser/presentation/browser_screen.dart';
+import 'features/downloads/downloads_controller.dart';
 import 'features/search/heaven_search_service.dart';
 import 'features/settings/browser_settings.dart';
 import 'features/tabs/tab_manager.dart';
@@ -15,19 +16,22 @@ Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   final SharedPreferences prefs = await SharedPreferences.getInstance();
   final BrowserSettingsController settings = BrowserSettingsController(prefs);
+  final DownloadsController downloads = DownloadsController(prefs);
 
-  runApp(HeavenBrowserApp(settings: settings));
+  runApp(HeavenBrowserApp(settings: settings, downloads: downloads));
 }
 
 class HeavenBrowserApp extends StatefulWidget {
   const HeavenBrowserApp({
     super.key,
     required this.settings,
+    this.downloads,
     this.enablePlatformWebView = true,
     this.searchService,
   });
 
   final BrowserSettingsController settings;
+  final DownloadsController? downloads;
   final bool enablePlatformWebView;
   final HeavenSearchService? searchService;
 
@@ -39,6 +43,10 @@ class _HeavenBrowserAppState extends State<HeavenBrowserApp>
     with WidgetsBindingObserver {
   late final TabManagerController _tabManager;
   late final HeavenSearchService _searchService;
+  DownloadsController? _ownedDownloads;
+
+  DownloadsController get _effectiveDownloads =>
+      widget.downloads ?? _ownedDownloads!;
 
   @override
   void initState() {
@@ -73,11 +81,32 @@ class _HeavenBrowserAppState extends State<HeavenBrowserApp>
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     _tabManager.dispose();
+    _ownedDownloads?.dispose();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
+    if (widget.downloads == null && _ownedDownloads == null) {
+      return FutureBuilder<SharedPreferences>(
+        future: SharedPreferences.getInstance(),
+        builder:
+            (BuildContext context, AsyncSnapshot<SharedPreferences> snapshot) {
+              if (!snapshot.hasData) {
+                return const SizedBox.shrink();
+              }
+              _ownedDownloads ??= DownloadsController(
+                snapshot.data!,
+                enableNativePolling: widget.enablePlatformWebView,
+              );
+              return _buildMaterialApp();
+            },
+      );
+    }
+    return _buildMaterialApp();
+  }
+
+  Widget _buildMaterialApp() {
     return ListenableBuilder(
       listenable: widget.settings,
       builder: (BuildContext context, _) {
@@ -93,6 +122,7 @@ class _HeavenBrowserAppState extends State<HeavenBrowserApp>
                 settings: widget.settings,
                 tabManager: _tabManager,
                 searchService: _searchService,
+                downloads: _effectiveDownloads,
               ),
             ),
           ],
@@ -109,6 +139,7 @@ class _HeavenBrowserAppState extends State<HeavenBrowserApp>
                 settings: widget.settings,
                 tabManager: _tabManager,
                 searchService: _searchService,
+                downloads: _effectiveDownloads,
               ),
             );
           },

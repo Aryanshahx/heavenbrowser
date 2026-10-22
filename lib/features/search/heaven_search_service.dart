@@ -7,12 +7,81 @@ import '../../core/constants/app_constants.dart';
 import '../../core/utils/omnibox_parser.dart';
 
 enum HeavenSearchTab {
-  web('All Web'),
-  knowledge('Knowledge'),
-  tech('Tech & Dev');
+  all('All'),
+  images('Images'),
+  videos('Videos'),
+  news('News'),
+  wiki('Wiki');
 
   const HeavenSearchTab(this.label);
   final String label;
+}
+
+enum HeavenTimeFilter {
+  any('Any time', ''),
+  day('Past 24h', 'd'),
+  week('Past week', 'w'),
+  month('Past month', 'm'),
+  year('Past year', 'y');
+
+  const HeavenTimeFilter(this.label, this.ddgCode);
+  final String label;
+  final String ddgCode;
+}
+
+enum HeavenRegionFilter {
+  india('India', 'in-en', 'IN', 'en-IN'),
+  global('Global', 'wt-wt', 'US', 'en-US'),
+  us('United States', 'us-en', 'US', 'en-US'),
+  uk('United Kingdom', 'uk-en', 'GB', 'en-GB');
+
+  const HeavenRegionFilter(
+    this.label,
+    this.ddgLocale,
+    this.countryCode,
+    this.langCode,
+  );
+  final String label;
+  final String ddgLocale;
+  final String countryCode;
+  final String langCode;
+}
+
+enum HeavenSafeFilter {
+  moderate('Safe: Moderate', '-1'),
+  strict('Safe: Strict', '1'),
+  off('Safe: Off', '-2');
+
+  const HeavenSafeFilter(this.label, this.ddgCode);
+  final String label;
+  final String ddgCode;
+}
+
+class HeavenSearchFilters {
+  const HeavenSearchFilters({
+    this.time = HeavenTimeFilter.any,
+    this.region = HeavenRegionFilter.india,
+    this.safe = HeavenSafeFilter.moderate,
+  });
+
+  final HeavenTimeFilter time;
+  final HeavenRegionFilter region;
+  final HeavenSafeFilter safe;
+
+  HeavenSearchFilters copyWith({
+    HeavenTimeFilter? time,
+    HeavenRegionFilter? region,
+    HeavenSafeFilter? safe,
+  }) {
+    return HeavenSearchFilters(
+      time: time ?? this.time,
+      region: region ?? this.region,
+      safe: safe ?? this.safe,
+    );
+  }
+
+  bool get hasActiveCustomFilter =>
+      time != HeavenTimeFilter.any || safe != HeavenSafeFilter.moderate;
 }
 
 class HeavenSearchResult {
@@ -22,6 +91,7 @@ class HeavenSearchResult {
     required this.snippet,
     required this.sourceLabel,
     this.metaBadge,
+    this.thumbnailUrl,
   });
 
   final String title;
@@ -29,8 +99,23 @@ class HeavenSearchResult {
   final String snippet;
   final String sourceLabel;
   final String? metaBadge;
+  final String? thumbnailUrl;
 
   String get displayDomain => OmniboxParser.cleanDomain(url);
+}
+
+class HeavenImageResult {
+  const HeavenImageResult({
+    required this.title,
+    required this.thumbUrl,
+    required this.fullUrl,
+    required this.pageUrl,
+  });
+
+  final String title;
+  final String thumbUrl;
+  final String fullUrl;
+  final String pageUrl;
 }
 
 class HeavenKnowledgeCard {
@@ -54,8 +139,10 @@ class HeavenSearchResponse {
     required this.query,
     required this.elapsedMs,
     required this.webResults,
-    required this.knowledgeResults,
-    required this.techResults,
+    required this.imageResults,
+    required this.videoResults,
+    required this.newsResults,
+    required this.wikiResults,
     this.instantMathResult,
     this.knowledgeCard,
   });
@@ -63,8 +150,10 @@ class HeavenSearchResponse {
   final String query;
   final int elapsedMs;
   final List<HeavenSearchResult> webResults;
-  final List<HeavenSearchResult> knowledgeResults;
-  final List<HeavenSearchResult> techResults;
+  final List<HeavenImageResult> imageResults;
+  final List<HeavenSearchResult> videoResults;
+  final List<HeavenSearchResult> newsResults;
+  final List<HeavenSearchResult> wikiResults;
   final String? instantMathResult;
   final HeavenKnowledgeCard? knowledgeCard;
 }
@@ -89,7 +178,6 @@ class HeavenMathEvaluator {
         !_hasDigitPattern.hasMatch(trimmed)) {
       return null;
     }
-    // Avoid treating simple dates like 2026-10-22 as math unless spaced or parenthesized
     if (RegExp(r'^\d{4}-\d{1,2}-\d{1,2}$').hasMatch(trimmed)) {
       return null;
     }
@@ -218,21 +306,28 @@ class HeavenSearchService {
     'Accept-Language': 'en-US,en;q=0.9',
   };
 
-  Future<HeavenSearchResponse> search(String rawQuery) async {
+  Future<HeavenSearchResponse> search(
+    String rawQuery, {
+    HeavenSearchFilters filters = const HeavenSearchFilters(),
+  }) async {
     final String query = rawQuery.trim();
     final Stopwatch stopwatch = Stopwatch()..start();
     final String? mathAnswer = HeavenMathEvaluator.tryEvaluate(query);
 
     final (
       List<HeavenSearchResult> web,
-      HeavenKnowledgeCard? ddgCard,
+      List<HeavenImageResult> images,
+      List<HeavenSearchResult> videos,
+      List<HeavenSearchResult> news,
       List<HeavenSearchResult> wiki,
-      List<HeavenSearchResult> tech,
+      HeavenKnowledgeCard? ddgCard,
     ) = await (
-      _fetchOrganicWebResults(query),
-      _fetchKnowledgeCard(query),
+      _fetchOrganicWebResults(query, filters: filters),
+      _fetchCommonsImages(query),
+      _fetchVideoResults(query, filters: filters),
+      _fetchGoogleNewsRss(query, filters: filters),
       _fetchWikipediaResults(query),
-      _fetchTechResults(query),
+      _fetchKnowledgeCard(query),
     ).wait;
 
     HeavenKnowledgeCard? card = ddgCard;
@@ -240,19 +335,19 @@ class HeavenSearchService {
       card = await _fetchWikipediaSummaryCard(wiki.first.title);
     }
 
-    // Fallback synthesis: if organic HTML endpoint returned empty on any network,
-    // blend verified Wikipedia + Tech results so Heaven Search always delivers real links.
     final List<HeavenSearchResult> mergedWeb = web.isNotEmpty
         ? web
-        : <HeavenSearchResult>[...wiki, ...tech];
+        : <HeavenSearchResult>[...wiki, ...news.take(6)];
 
     stopwatch.stop();
     return HeavenSearchResponse(
       query: query,
       elapsedMs: stopwatch.elapsedMilliseconds,
       webResults: mergedWeb,
-      knowledgeResults: wiki,
-      techResults: tech,
+      imageResults: images,
+      videoResults: videos,
+      newsResults: news,
+      wikiResults: wiki,
       instantMathResult: mathAnswer,
       knowledgeCard: card,
     );
@@ -290,10 +385,17 @@ class HeavenSearchService {
     return const <String>[];
   }
 
-  Future<List<HeavenSearchResult>> _fetchOrganicWebResults(String query) async {
+  Future<List<HeavenSearchResult>> _fetchOrganicWebResults(
+    String query, {
+    required HeavenSearchFilters filters,
+  }) async {
     try {
+      final String dfPart = filters.time.ddgCode.isNotEmpty
+          ? '&df=${filters.time.ddgCode}'
+          : '';
       final Uri uri = Uri.parse(
-        'https://html.duckduckgo.com/html/?q=${Uri.encodeQueryComponent(query)}',
+        'https://html.duckduckgo.com/html/?q=${Uri.encodeQueryComponent(query)}'
+        '&kl=${filters.region.ddgLocale}&kp=${filters.safe.ddgCode}$dfPart',
       );
       final http.Response res = await _client
           .get(uri, headers: _browserHeaders)
@@ -301,13 +403,242 @@ class HeavenSearchService {
       if (res.statusCode != 200 || res.body.isEmpty) {
         return const <HeavenSearchResult>[];
       }
-      return parseOrganicHtmlResults(res.body);
+      return parseOrganicHtmlResults(res.body, maxItems: 20);
     } catch (_) {
       return const <HeavenSearchResult>[];
     }
   }
 
-  static List<HeavenSearchResult> parseOrganicHtmlResults(String html) {
+  Future<List<HeavenSearchResult>> _fetchVideoResults(
+    String query, {
+    required HeavenSearchFilters filters,
+  }) async {
+    try {
+      final String videoQuery =
+          '$query (site:youtube.com/watch OR site:vimeo.com OR site:dailymotion.com)';
+      final String dfPart = filters.time.ddgCode.isNotEmpty
+          ? '&df=${filters.time.ddgCode}'
+          : '';
+      final Uri uri = Uri.parse(
+        'https://html.duckduckgo.com/html/?q=${Uri.encodeQueryComponent(videoQuery)}'
+        '&kp=${filters.safe.ddgCode}$dfPart',
+      );
+      final http.Response res = await _client
+          .get(uri, headers: _browserHeaders)
+          .timeout(const Duration(seconds: 7));
+      if (res.statusCode != 200 || res.body.isEmpty) {
+        return const <HeavenSearchResult>[];
+      }
+      final List<HeavenSearchResult> parsed = parseOrganicHtmlResults(
+        res.body,
+        maxItems: 14,
+      );
+      return parsed
+          .map((HeavenSearchResult r) {
+            final String? ytId = extractYouTubeVideoId(r.url);
+            return HeavenSearchResult(
+              title: r.title.replaceAll(' - YouTube', '').trim(),
+              url: r.url,
+              snippet: r.snippet,
+              sourceLabel: r.sourceLabel,
+              metaBadge: 'Video',
+              thumbnailUrl: ytId != null
+                  ? 'https://i.ytimg.com/vi/$ytId/hqdefault.jpg'
+                  : null,
+            );
+          })
+          .toList(growable: false);
+    } catch (_) {
+      return const <HeavenSearchResult>[];
+    }
+  }
+
+  static String? extractYouTubeVideoId(String url) {
+    final Uri? parsed = Uri.tryParse(url);
+    if (parsed == null) {
+      return null;
+    }
+    final String host = parsed.host.toLowerCase();
+    if (host.contains('youtube.com')) {
+      final String? v = parsed.queryParameters['v'];
+      if (v != null && v.length >= 8) {
+        return v;
+      }
+    } else if (host == 'youtu.be' && parsed.pathSegments.isNotEmpty) {
+      return parsed.pathSegments.first;
+    }
+    return null;
+  }
+
+  Future<List<HeavenImageResult>> _fetchCommonsImages(String query) async {
+    try {
+      final Uri uri = Uri.parse(
+        'https://commons.wikimedia.org/w/api.php?action=query'
+        '&generator=search&gsrsearch=${Uri.encodeQueryComponent(query)}'
+        '&gsrnamespace=6&gsrlimit=18&prop=imageinfo'
+        '&iiprop=url&iiurlwidth=500&format=json',
+      );
+      final http.Response res = await _client
+          .get(
+            uri,
+            headers: const <String, String>{
+              'User-Agent':
+                  'HeavenBrowser/0.0.1 (https://github.com/Aryanshahx/heavenbrowser)',
+            },
+          )
+          .timeout(const Duration(seconds: 6));
+      if (res.statusCode != 200) {
+        return const <HeavenImageResult>[];
+      }
+      final Object? decoded = jsonDecode(res.body);
+      if (decoded is! Map<String, Object?>) {
+        return const <HeavenImageResult>[];
+      }
+      final Object? queryObj = decoded['query'];
+      if (queryObj is! Map<String, Object?>) {
+        return const <HeavenImageResult>[];
+      }
+      final Object? pagesObj = queryObj['pages'];
+      if (pagesObj is! Map<String, Object?>) {
+        return const <HeavenImageResult>[];
+      }
+
+      final List<HeavenImageResult> images = <HeavenImageResult>[];
+      for (final Object? pageVal in pagesObj.values) {
+        if (pageVal is Map<String, Object?>) {
+          String rawTitle = (pageVal['title']?.toString() ?? '')
+              .replaceFirst('File:', '')
+              .replaceAll(RegExp(r'\.[a-zA-Z0-9]{3,4}$'), '')
+              .replaceAll('_', ' ')
+              .trim();
+          final Object? infoList = pageVal['imageinfo'];
+          if (infoList is List<Object?> && infoList.isNotEmpty) {
+            final Object? first = infoList.first;
+            if (first is Map<String, Object?>) {
+              final String thumb = (first['thumburl']?.toString() ?? '').trim();
+              final String full = (first['url']?.toString() ?? thumb).trim();
+              final String descUrl =
+                  (first['descriptionurl']?.toString() ?? full).trim();
+              if (thumb.isNotEmpty &&
+                  !thumb.toLowerCase().endsWith('.svg') &&
+                  !thumb.toLowerCase().endsWith('.tif')) {
+                images.add(
+                  HeavenImageResult(
+                    title: rawTitle.isEmpty ? query : rawTitle,
+                    thumbUrl: thumb,
+                    fullUrl: full,
+                    pageUrl: descUrl,
+                  ),
+                );
+              }
+            }
+          }
+        }
+      }
+      return images;
+    } catch (_) {
+      return const <HeavenImageResult>[];
+    }
+  }
+
+  Future<List<HeavenSearchResult>> _fetchGoogleNewsRss(
+    String query, {
+    required HeavenSearchFilters filters,
+  }) async {
+    try {
+      final String timeToken = switch (filters.time) {
+        HeavenTimeFilter.day => ' when:1d',
+        HeavenTimeFilter.week => ' when:7d',
+        HeavenTimeFilter.month => ' when:30d',
+        HeavenTimeFilter.year => ' when:1y',
+        HeavenTimeFilter.any => '',
+      };
+      final String qParam = Uri.encodeQueryComponent('$query$timeToken');
+      final String hl = filters.region.langCode;
+      final String gl = filters.region.countryCode;
+      final String ceid = '$gl:${hl.split('-').first}';
+
+      final Uri uri = Uri.parse(
+        'https://news.google.com/rss/search?q=$qParam&hl=$hl&gl=$gl&ceid=$ceid',
+      );
+      final http.Response res = await _client
+          .get(uri, headers: _browserHeaders)
+          .timeout(const Duration(seconds: 6));
+      if (res.statusCode != 200 || res.body.isEmpty) {
+        return const <HeavenSearchResult>[];
+      }
+      return parseRssNewsItems(res.body);
+    } catch (_) {
+      return const <HeavenSearchResult>[];
+    }
+  }
+
+  static List<HeavenSearchResult> parseRssNewsItems(String xml) {
+    final List<HeavenSearchResult> items = <HeavenSearchResult>[];
+    final RegExp itemRegex = RegExp(
+      r'<item>([\s\S]*?)<\/item>',
+      caseSensitive: false,
+    );
+    final RegExp titleRegex = RegExp(r'<title>([\s\S]*?)<\/title>');
+    final RegExp linkRegex = RegExp(r'<link>([\s\S]*?)<\/link>');
+    final RegExp pubDateRegex = RegExp(r'<pubDate>([\s\S]*?)<\/pubDate>');
+    final RegExp sourceRegex = RegExp(
+      r'<source(?:\s+url="([^"]*)")?[^>]*>([\s\S]*?)<\/source>',
+    );
+
+    for (final RegExpMatch match in itemRegex.allMatches(xml)) {
+      final String block = match.group(1) ?? '';
+      String title = stripHtmlTags(
+        titleRegex.firstMatch(block)?.group(1) ?? '',
+      ).trim();
+      final String link = decodeHtmlEntities(
+        linkRegex.firstMatch(block)?.group(1) ?? '',
+      ).trim();
+      final String pubDate = stripHtmlTags(
+        pubDateRegex.firstMatch(block)?.group(1) ?? '',
+      ).trim();
+      final RegExpMatch? srcMatch = sourceRegex.firstMatch(block);
+      final String sourceUrl = (srcMatch?.group(1) ?? '').trim();
+      final String publisher = stripHtmlTags(
+        srcMatch?.group(2) ?? 'News',
+      ).trim();
+
+      if (title.isEmpty || link.isEmpty) {
+        continue;
+      }
+      // Clean trailing " - Publisher" from Google News title
+      final String suffix = ' - $publisher';
+      if (publisher.isNotEmpty && title.endsWith(suffix)) {
+        title = title.substring(0, title.length - suffix.length).trim();
+      }
+      final String shortDate = pubDate.length > 16
+          ? pubDate.substring(0, 16)
+          : pubDate;
+
+      items.add(
+        HeavenSearchResult(
+          title: title,
+          url: link,
+          snippet: shortDate.isNotEmpty
+              ? '$publisher • Published $shortDate'
+              : publisher,
+          sourceLabel: sourceUrl.isNotEmpty
+              ? OmniboxParser.cleanDomain(sourceUrl)
+              : publisher,
+          metaBadge: publisher,
+        ),
+      );
+      if (items.length >= 18) {
+        break;
+      }
+    }
+    return items;
+  }
+
+  static List<HeavenSearchResult> parseOrganicHtmlResults(
+    String html, {
+    int maxItems = 18,
+  }) {
     final List<HeavenSearchResult> results = <HeavenSearchResult>[];
     final Set<String> seenUrls = <String>{};
 
@@ -324,7 +655,6 @@ class HeavenSearchService {
     for (int i = 0; i < linkMatches.length; i++) {
       final RegExpMatch match = linkMatches[i];
       final String rawHref = decodeHtmlEntities(match.group(1) ?? '');
-      // Skip sponsored redirect links
       if (rawHref.contains('ad_domain=') || rawHref.contains('/y.js')) {
         continue;
       }
@@ -333,7 +663,6 @@ class HeavenSearchService {
       if (!cleanUrl.startsWith('http://') && !cleanUrl.startsWith('https://')) {
         continue;
       }
-      // Strip sponsored ad links even when wrapped inside uddg=
       if (cleanUrl.contains('ad_domain=') ||
           cleanUrl.contains('/y.js') ||
           cleanUrl.contains('bing.com/aclick')) {
@@ -368,7 +697,7 @@ class HeavenSearchService {
           sourceLabel: OmniboxParser.cleanDomain(cleanUrl),
         ),
       );
-      if (results.length >= 16) {
+      if (results.length >= maxItems) {
         break;
       }
     }
@@ -421,7 +750,7 @@ class HeavenSearchService {
               summary: abstractText,
               sourceUrl: abstractUrl,
               sourceName: source,
-              imageUrl: (image.isEmpty) ? null : image,
+              imageUrl: image.isEmpty ? null : image,
             );
           }
         }
@@ -487,7 +816,7 @@ class HeavenSearchService {
       final Uri uri = Uri.parse(
         'https://en.wikipedia.org/w/api.php?action=query&list=search'
         '&srsearch=${Uri.encodeQueryComponent(query)}'
-        '&utf8=1&format=json&srlimit=10',
+        '&utf8=1&format=json&srlimit=12',
       );
       final http.Response res = await _client
           .get(
@@ -542,65 +871,11 @@ class HeavenSearchService {
     }
   }
 
-  Future<List<HeavenSearchResult>> _fetchTechResults(String query) async {
-    try {
-      final Uri uri = Uri.parse(
-        'https://hn.algolia.com/api/v1/search?query=${Uri.encodeQueryComponent(query)}'
-        '&tags=story&hitsPerPage=12',
-      );
-      final http.Response res = await _client
-          .get(uri)
-          .timeout(const Duration(seconds: 6));
-      if (res.statusCode != 200) {
-        return const <HeavenSearchResult>[];
-      }
-      final Object? decoded = jsonDecode(res.body);
-      if (decoded is! Map<String, Object?>) {
-        return const <HeavenSearchResult>[];
-      }
-      final Object? hits = decoded['hits'];
-      if (hits is! List<Object?>) {
-        return const <HeavenSearchResult>[];
-      }
-
-      final List<HeavenSearchResult> items = <HeavenSearchResult>[];
-      for (final Object? raw in hits) {
-        if (raw is Map<String, Object?>) {
-          final String title = (raw['title']?.toString() ?? '').trim();
-          final String objectId = (raw['objectID']?.toString() ?? '').trim();
-          String url = (raw['url']?.toString() ?? '').trim();
-          if (url.isEmpty && objectId.isNotEmpty) {
-            url = 'https://news.ycombinator.com/item?id=$objectId';
-          }
-          if (title.isEmpty || url.isEmpty) continue;
-          final int points = (raw['points'] is num)
-              ? (raw['points']! as num).toInt()
-              : 0;
-          final int comments = (raw['num_comments'] is num)
-              ? (raw['num_comments']! as num).toInt()
-              : 0;
-          final String author = (raw['author']?.toString() ?? 'dev').trim();
-
-          items.add(
-            HeavenSearchResult(
-              title: title,
-              url: url,
-              snippet:
-                  'Shared by @$author • $points points • $comments comments on Hacker News',
-              sourceLabel: OmniboxParser.cleanDomain(url),
-              metaBadge: '$points pts',
-            ),
-          );
-        }
-      }
-      return items;
-    } catch (_) {
-      return const <HeavenSearchResult>[];
-    }
-  }
-
   static String stripHtmlTags(String html) {
-    final String withoutTags = html.replaceAll(RegExp(r'<[^>]*>'), '');
+    final String withoutTags = html
+        .replaceAll('<![CDATA[', '')
+        .replaceAll(']]>', '')
+        .replaceAll(RegExp(r'<[^>]*>'), '');
     return decodeHtmlEntities(withoutTags).replaceAll(RegExp(r'\s+'), ' ');
   }
 

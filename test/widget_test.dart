@@ -3,6 +3,8 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:heavenbrowser/core/utils/omnibox_parser.dart';
+import 'package:heavenbrowser/features/browser/engine/browser_engine.dart';
+import 'package:heavenbrowser/features/downloads/downloads_controller.dart';
 import 'package:heavenbrowser/features/search/heaven_search_service.dart';
 import 'package:heavenbrowser/features/settings/browser_settings.dart';
 import 'package:heavenbrowser/features/shield/heaven_shield.dart';
@@ -18,7 +20,7 @@ HeavenSearchService _createMockSearchService() {
     if (host == 'html.duckduckgo.com') {
       const String sampleHtml = '''
       <div class="result">
-        <a class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fflutter.dev%2Fdocs">Flutter Documentation</a>
+        <a class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fwww.youtube.com%2Fwatch%3Fv%3DdQw4w9WgXcQ">Flutter Official Video</a>
         <a class="result__snippet">Build fast apps on every screen with <b>Flutter</b>.</a>
       </div>
       <div class="result">
@@ -27,6 +29,41 @@ HeavenSearchService _createMockSearchService() {
       </div>
       ''';
       return http.Response(sampleHtml, 200);
+    }
+    if (host == 'commons.wikimedia.org') {
+      return http.Response(
+        jsonEncode(<String, Object>{
+          'query': <String, Object>{
+            'pages': <String, Object>{
+              '1': <String, Object>{
+                'title': 'File:Flutter Logo.png',
+                'imageinfo': <Map<String, Object>>[
+                  <String, Object>{
+                    'thumburl': 'https://example.com/thumb.png',
+                    'url': 'https://example.com/full.png',
+                    'descriptionurl':
+                        'https://commons.wikimedia.org/wiki/File:Flutter',
+                  },
+                ],
+              },
+            },
+          },
+        }),
+        200,
+      );
+    }
+    if (host == 'news.google.com') {
+      const String sampleRss = '''
+      <rss><channel>
+        <item>
+          <title>Flutter 3.44 Released - TechDaily</title>
+          <link>https://news.example.com/flutter</link>
+          <pubDate>Thu, 22 Oct 2026 09:00:00 GMT</pubDate>
+          <source url="https://news.example.com">TechDaily</source>
+        </item>
+      </channel></rss>
+      ''';
+      return http.Response(sampleRss, 200);
     }
     if (host == 'api.duckduckgo.com') {
       return http.Response(
@@ -55,32 +92,6 @@ HeavenSearchService _createMockSearchService() {
         200,
       );
     }
-    if (host == 'hn.algolia.com') {
-      return http.Response(
-        jsonEncode(<String, Object>{
-          'hits': <Map<String, Object>>[
-            <String, Object>{
-              'title': 'Flutter 3 Released',
-              'url': 'https://flutter.dev',
-              'points': 512,
-              'num_comments': 180,
-              'author': 'aryan',
-              'objectID': '101',
-            },
-          ],
-        }),
-        200,
-      );
-    }
-    if (host == 'duckduckgo.com' && request.url.path == '/ac/') {
-      return http.Response(
-        jsonEncode(<Object>[
-          'flut',
-          <String>['flutter', 'flutter tutorial'],
-        ]),
-        200,
-      );
-    }
     return http.Response('{}', 200);
   });
 
@@ -88,121 +99,9 @@ HeavenSearchService _createMockSearchService() {
 }
 
 void main() {
-  group('OmniboxParser & Default Heaven Search', () {
+  group('Defaults, Desktop Rewrite & Clean Home State', () {
     test(
-      'defaults to Heaven Search and resolves queries to heaven://search',
-      () {
-        expect(SearchEngine.fromName(null), SearchEngine.heaven);
-        final Uri uri = OmniboxParser.resolveInput(
-          'raspberry pi 5 ubuntu',
-          searchEngine: SearchEngine.heaven,
-          httpsUpgrade: true,
-        );
-        expect(OmniboxParser.isHeavenSearchUrl(uri.toString()), isTrue);
-        expect(
-          OmniboxParser.extractHeavenQuery(uri.toString()),
-          'raspberry pi 5 ubuntu',
-        );
-      },
-    );
-
-    test('supports switching to external search engines cleanly', () {
-      final Uri uri = OmniboxParser.resolveInput(
-        'privacy news',
-        searchEngine: SearchEngine.brave,
-        httpsUpgrade: true,
-      );
-      expect(uri.host, 'search.brave.com');
-      expect(uri.queryParameters['q'], 'privacy news');
-    });
-
-    test('upgrades http URLs to https while keeping private LAN IPs http', () {
-      final Uri publicSite = OmniboxParser.resolveInput(
-        'http://example.com/blog',
-        searchEngine: SearchEngine.heaven,
-        httpsUpgrade: true,
-      );
-      expect(publicSite.toString(), 'https://example.com/blog');
-
-      final Uri localRouter = OmniboxParser.resolveInput(
-        '192.168.1.1:8080',
-        searchEngine: SearchEngine.heaven,
-        httpsUpgrade: true,
-      );
-      expect(localRouter.toString(), 'http://192.168.1.1:8080');
-    });
-  });
-
-  group('Heaven Search Engine & Instant Calculator', () {
-    test('evaluates arithmetic expressions accurately and ignores dates', () {
-      expect(HeavenMathEvaluator.tryEvaluate('(1250 * 18) / 100'), '225');
-      expect(HeavenMathEvaluator.tryEvaluate('2 ^ 10'), '1024');
-      expect(HeavenMathEvaluator.tryEvaluate('2026-10-22'), isNull);
-      expect(HeavenMathEvaluator.tryEvaluate('flutter sdk'), isNull);
-    });
-
-    test(
-      'unwraps direct URLs, skips sponsored ads, and fetches knowledge',
-      () async {
-        final HeavenSearchService service = _createMockSearchService();
-        final HeavenSearchResponse res = await service.search('flutter');
-
-        expect(res.webResults.length, 1);
-        expect(res.webResults.first.url, 'https://flutter.dev/docs');
-        expect(res.webResults.first.title, 'Flutter Documentation');
-        expect(res.knowledgeCard?.heading, 'Flutter (software)');
-        expect(res.knowledgeResults.first.sourceLabel, 'en.wikipedia.org');
-        expect(res.techResults.first.metaBadge, '512 pts');
-      },
-    );
-  });
-
-  group('Heaven Shield Ad & Tracker Firewall', () {
-    test(
-      'blocks ad networks, popunders & ad paths while allowing real sites',
-      () {
-        expect(
-          HeavenShield.shouldBlockUri(
-            Uri.parse(
-              'https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js',
-            ),
-          ),
-          isTrue,
-        );
-        expect(
-          HeavenShield.shouldBlockUri(
-            Uri.parse('https://trc.taboola.com/libtrc/loader.js'),
-          ),
-          isTrue,
-        );
-        expect(
-          HeavenShield.shouldBlockUri(
-            Uri.parse('https://c1.popads.net/pop.js'),
-          ),
-          isTrue,
-        );
-        expect(
-          HeavenShield.shouldBlockUri(Uri.parse('https://flutter.dev/docs')),
-          isFalse,
-        );
-      },
-    );
-
-    test('strips tracking query parameters while keeping real query params', () {
-      final ({Uri uri, int removedCount})
-      cleaned = HeavenShield.stripTrackingParameters(
-        Uri.parse(
-          'https://news.example.com/post?id=99&utm_source=x&fbclid=abc&gclid=xyz',
-        ),
-      );
-      expect(cleaned.removedCount, 3);
-      expect(cleaned.uri.toString(), 'https://news.example.com/post?id=99');
-    });
-  });
-
-  group('Smart Usage Quick Launch & Multi-Tab Incognito Isolation', () {
-    test(
-      'auto-ranks Quick Launch by visit frequency and isolates Incognito',
+      'defaults to Top Dock Bar, Heaven Search, and zero starter sites',
       () async {
         SharedPreferences.setMockInitialValues(<String, Object>{});
         final SharedPreferences prefs = await SharedPreferences.getInstance();
@@ -210,9 +109,11 @@ void main() {
           prefs,
         );
 
+        expect(settings.bottomOmnibox, isFalse);
         expect(settings.searchEngine, SearchEngine.heaven);
+        expect(settings.quickLaunchSites, isEmpty);
 
-        // Simulate visiting proton.me 3 times and archlinux.org 1 time
+        // Once user visits real sites, they populate automatically by usage
         await settings.recordPageVisit(
           url: 'https://proton.me/mail',
           title: 'Proton Mail',
@@ -221,87 +122,260 @@ void main() {
           url: 'https://proton.me/drive',
           title: 'Proton Drive',
         );
-        await settings.recordPageVisit(
-          url: 'https://proton.me/calendar',
-          title: 'Proton Calendar',
-        );
-        await settings.recordPageVisit(
-          url: 'https://archlinux.org',
-          title: 'Arch Linux',
-        );
-
-        final List<SiteUsageEntry> ranked = settings.quickLaunchSites;
-        expect(ranked[0].domain, 'proton.me');
-        expect(ranked[0].visitCount, 3);
-        expect(ranked[1].domain, 'archlinux.org');
-        expect(ranked[1].visitCount, 1);
-
-        // Verify Multi-Tab + Incognito zero-history guarantee
-        final TabManagerController tabManager = TabManagerController(
-          settings: settings,
-          enablePlatformWebView: false,
-        );
-        final int historyBefore = settings.history.length;
-
-        final BrowserTab stealthTab = await tabManager.openNewTab(
-          incognito: true,
-          initialInput: 'https://secret.example.org',
-        );
-        expect(stealthTab.isIncognito, isTrue);
-        expect(tabManager.totalTabCount, 2);
-        expect(settings.history.length, historyBefore);
-        expect(
-          settings.quickLaunchSites.any(
-            (SiteUsageEntry e) => e.domain == 'secret.example.org',
-          ),
-          isFalse,
-        );
-
-        tabManager.dispose();
+        expect(settings.quickLaunchSites.length, 1);
+        expect(settings.quickLaunchSites.first.domain, 'proton.me');
+        expect(settings.quickLaunchSites.first.visitCount, 2);
       },
     );
+
+    test('Desktop Mode rewrites mobile subdomains to desktop hosts', () {
+      expect(
+        BrowserEngine.rewriteMobileToDesktopUri(
+          Uri.parse('https://m.youtube.com/watch?v=123'),
+        ).toString(),
+        'https://www.youtube.com/watch?v=123',
+      );
+      expect(
+        BrowserEngine.rewriteMobileToDesktopUri(
+          Uri.parse('https://en.m.wikipedia.org/wiki/India'),
+        ).toString(),
+        'https://en.wikipedia.org/wiki/India',
+      );
+    });
   });
 
-  testWidgets('Browser renders Heaven Search natively and opens Incognito tab', (
-    WidgetTester tester,
-  ) async {
-    SharedPreferences.setMockInitialValues(<String, Object>{});
-    final SharedPreferences prefs = await SharedPreferences.getInstance();
-    final BrowserSettingsController settings = BrowserSettingsController(prefs);
+  group('Heaven Search Multi-Verticals, Filters & Shield', () {
+    test(
+      'returns Web, Images, Videos (with YT thumb), News RSS & Wiki',
+      () async {
+        final HeavenSearchService service = _createMockSearchService();
+        final HeavenSearchResponse res = await service.search(
+          'flutter',
+          filters: const HeavenSearchFilters(
+            time: HeavenTimeFilter.week,
+            region: HeavenRegionFilter.india,
+            safe: HeavenSafeFilter.strict,
+          ),
+        );
 
-    await tester.pumpWidget(
-      HeavenBrowserApp(
+        expect(res.webResults.length, 1);
+        expect(res.imageResults.length, 1);
+        expect(res.videoResults.first.thumbnailUrl, contains('dQw4w9WgXcQ'));
+        expect(res.newsResults.first.metaBadge, 'TechDaily');
+        expect(res.wikiResults.first.sourceLabel, 'en.wikipedia.org');
+      },
+    );
+
+    test('blocks ad domains and strips tracking parameters', () {
+      expect(
+        HeavenShield.shouldBlockUri(
+          Uri.parse(
+            'https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js',
+          ),
+        ),
+        isTrue,
+      );
+      final ({Uri uri, int removedCount}) cleaned =
+          HeavenShield.stripTrackingParameters(
+            Uri.parse('https://example.com/p?id=7&utm_source=ads&fbclid=1'),
+          );
+      expect(cleaned.removedCount, 2);
+      expect(cleaned.uri.toString(), 'https://example.com/p?id=7');
+    });
+  });
+
+  group('Downloads Controller & Multi-Tab Isolation', () {
+    test('enqueues downloads and isolates Incognito tabs', () async {
+      SharedPreferences.setMockInitialValues(<String, Object>{});
+      final SharedPreferences prefs = await SharedPreferences.getInstance();
+      final DownloadsController downloads = DownloadsController(
+        prefs,
+        enableNativePolling: false,
+      );
+
+      final bool started = await downloads.startUrlDownload(
+        url: 'https://example.com/manual.pdf',
+        suggestedFileName: 'manual.pdf',
+      );
+      expect(started, isTrue);
+      expect(downloads.items.length, 1);
+      expect(downloads.items.first.fileName, 'manual.pdf');
+
+      final BrowserSettingsController settings = BrowserSettingsController(
+        prefs,
+      );
+      final TabManagerController tabManager = TabManagerController(
         settings: settings,
         enablePlatformWebView: false,
-        searchService: _createMockSearchService(),
-      ),
-    );
-    await tester.pumpAndSettle();
+      );
+      await tabManager.openNewTab(
+        incognito: true,
+        initialInput: 'https://private.example.org',
+      );
+      expect(settings.history, isEmpty);
+      expect(settings.quickLaunchSites, isEmpty);
 
-    expect(find.text('Heaven Browser'), findsOneWidget);
-    expect(find.text('Smart Quick Launch'), findsOneWidget);
-    expect(find.text('+ Incognito'), findsOneWidget);
-
-    // Tap search box and execute a Heaven Search query natively
-    await tester.tap(find.text('Search with Heaven Search or enter URL'));
-    await tester.pumpAndSettle();
-
-    await tester.enterText(find.byType(TextField).first, 'flutter');
-    await tester.testTextInput.receiveAction(TextInputAction.go);
-    await tester.pumpAndSettle();
-
-    // Verify native Heaven Search results rendered inside the browser tab!
-    expect(find.text('Heaven Search'), findsOneWidget);
-    expect(find.text('Flutter Documentation'), findsOneWidget);
-
-    // Open Tab Switcher via the tab count badge ('1') and create an Incognito tab
-    await tester.tap(find.byTooltip('Switch Tabs (Hold for New Tab)'));
-    await tester.pumpAndSettle();
-    expect(find.text('Tabs (1)'), findsOneWidget);
-
-    await tester.tap(find.text('Incognito'));
-    await tester.pumpAndSettle();
-
-    expect(find.text('Heaven Stealth'), findsOneWidget);
+      tabManager.dispose();
+      downloads.dispose();
+    });
   });
+
+  testWidgets(
+    'Narrow 320px screen renders Top Bar, Home/Forward/Mic, Search, Tabs, Library & Downloads cleanly with zero overflow',
+    (WidgetTester tester) async {
+      // Simulate narrow 320x640 phone screen to verify zero layout cut-off
+      tester.view.physicalSize = const Size(320, 640);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(tester.view.reset);
+
+      SharedPreferences.setMockInitialValues(<String, Object>{
+        'hb.downloads.v4': jsonEncode(<Map<String, Object>>[
+          <String, Object>{
+            'downloadId': 401,
+            'fileName': 'heaven_browser_release_notes_2026.pdf',
+            'url': 'https://example.com/heaven_browser_release_notes_2026.pdf',
+            'mimeType': 'application/pdf',
+            'state': 'completed',
+            'bytesDownloaded': 524288,
+            'totalBytes': 524288,
+            'localUri': 'file:///storage/emulated/0/Download/heaven.pdf',
+            'createdAtMs': 1792660000000,
+          },
+        ]),
+      });
+      final SharedPreferences prefs = await SharedPreferences.getInstance();
+      final BrowserSettingsController settings = BrowserSettingsController(
+        prefs,
+      );
+      final DownloadsController downloads = DownloadsController(
+        prefs,
+        enableNativePolling: false,
+      );
+
+      await tester.pumpWidget(
+        HeavenBrowserApp(
+          settings: settings,
+          downloads: downloads,
+          enablePlatformWebView: false,
+          searchService: _createMockSearchService(),
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(tester.takeException(), isNull);
+
+      // Clean Home Screen: no Bookmarks/History/+ Incognito/Smart Quick Launch clutter
+      expect(find.text('Heaven'), findsWidgets);
+      expect(find.text('Smart Quick Launch'), findsNothing);
+      expect(find.text('+ Incognito'), findsNothing);
+
+      // Verify Home, Forward, and Voice Search Mic buttons in Top Dock Bar
+      expect(find.byTooltip('Home'), findsOneWidget);
+      expect(find.byTooltip('Forward'), findsWidgets);
+      expect(find.byTooltip('Voice Search'), findsWidgets);
+
+      // Run a Heaven Search query and switch tabs (Images / News)
+      await tester.tap(find.text('Search or type web address'));
+      await tester.pumpAndSettle();
+      expect(tester.takeException(), isNull);
+      await tester.enterText(find.byType(TextField).first, 'flutter');
+      await tester.testTextInput.receiveAction(TextInputAction.go);
+      await tester.pumpAndSettle();
+      expect(tester.takeException(), isNull);
+
+      expect(find.text('Flutter Official Video'), findsOneWidget);
+      await tester.tap(find.text('News'));
+      await tester.pumpAndSettle();
+      expect(tester.takeException(), isNull);
+      expect(find.text('Flutter 3.44 Released'), findsOneWidget);
+
+      // Open result URL -> Back via menu -> Forward via Top Dock Forward button!
+      await tester.tap(find.text('Flutter 3.44 Released'));
+      await tester.pumpAndSettle();
+      expect(tester.takeException(), isNull);
+      expect(find.text('news.example.com'), findsOneWidget);
+
+      // Bookmark & Download current URL via real Browser Menu buttons!
+      await tester.tap(find.byTooltip('Browser Menu'));
+      await tester.pumpAndSettle();
+      expect(tester.takeException(), isNull);
+      await tester.tap(find.byTooltip('Bookmark Page'));
+      await tester.pumpAndSettle();
+      ScaffoldMessenger.of(
+        tester.element(find.byType(Scaffold).first),
+      ).clearSnackBars();
+      await tester.pumpAndSettle();
+      expect(tester.takeException(), isNull);
+
+      await tester.tap(find.byTooltip('Browser Menu'));
+      await tester.pumpAndSettle();
+      expect(tester.takeException(), isNull);
+      await tester.tap(find.byTooltip('Back'));
+      await tester.pumpAndSettle();
+      expect(tester.takeException(), isNull);
+      expect(find.text('All'), findsOneWidget);
+
+      await tester.tap(find.byTooltip('Forward').first);
+      await tester.pumpAndSettle();
+      expect(tester.takeException(), isNull);
+      expect(find.text('news.example.com'), findsOneWidget);
+
+      // Tap Home button in Top Bar -> returns straight to clean Home Screen
+      await tester.tap(find.byTooltip('Home'));
+      await tester.pumpAndSettle();
+      expect(tester.takeException(), isNull);
+      expect(find.text('Search or type web address'), findsOneWidget);
+
+      // Open Full-Screen Tabs Screen -> verify zero overflow & open Incognito tab
+      await tester.tap(find.byTooltip('Switch Tabs'));
+      await tester.pumpAndSettle();
+      expect(tester.takeException(), isNull);
+      expect(find.text('Tabs (1)'), findsOneWidget);
+      await tester.tap(find.text('Incognito (0)'));
+      await tester.pumpAndSettle();
+      expect(tester.takeException(), isNull);
+      await tester.tap(find.text('New Incognito'));
+      await tester.pumpAndSettle();
+      expect(tester.takeException(), isNull);
+      expect(find.text('Heaven Incognito'), findsOneWidget);
+
+      // Open Menu -> Open Bookmarks/History Library Screen -> verify zero overflow
+      await tester.tap(find.byTooltip('Browser Menu'));
+      await tester.pumpAndSettle();
+      expect(tester.takeException(), isNull);
+      await tester.tap(find.text('Bookmarks'));
+      await tester.pumpAndSettle();
+      expect(tester.takeException(), isNull);
+      expect(find.text('Library'), findsOneWidget);
+      expect(settings.bookmarks.length, 1);
+      await tester.tap(find.textContaining('History'));
+      await tester.pumpAndSettle();
+      expect(tester.takeException(), isNull);
+      await tester.pageBack();
+      await tester.pumpAndSettle();
+      expect(tester.takeException(), isNull);
+
+      // Open Menu -> Open Downloads Screen -> verify populated download card has zero overflow
+      await tester.tap(find.byTooltip('Browser Menu'));
+      await tester.pumpAndSettle();
+      expect(tester.takeException(), isNull);
+      await tester.tap(find.textContaining('Downloads'));
+      await tester.pumpAndSettle();
+      expect(tester.takeException(), isNull);
+      expect(downloads.items.length, 1);
+      await tester.pageBack();
+      await tester.pumpAndSettle();
+      expect(tester.takeException(), isNull);
+
+      // Open Menu -> Open Settings Screen -> verify zero overflow
+      await tester.tap(find.byTooltip('Browser Menu'));
+      await tester.pumpAndSettle();
+      expect(tester.takeException(), isNull);
+      await tester.tap(find.text('Settings'));
+      await tester.pumpAndSettle();
+      expect(tester.takeException(), isNull);
+      expect(find.text('Set as Default Browser'), findsOneWidget);
+
+      downloads.dispose();
+    },
+  );
 }

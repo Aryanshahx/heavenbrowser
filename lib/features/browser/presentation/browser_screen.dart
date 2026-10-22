@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -8,14 +9,17 @@ import 'package:webview_flutter/webview_flutter.dart';
 
 import '../../../core/theme/app_theme.dart';
 import '../../../core/utils/omnibox_parser.dart';
+import '../../downloads/downloads_controller.dart';
+import '../../downloads/downloads_screen.dart';
 import '../../search/heaven_search_service.dart';
 import '../../search/heaven_search_view.dart';
 import '../../settings/browser_settings.dart';
 import '../../settings/settings_screen.dart';
+import '../../shield/native_shield_bridge.dart';
 import '../../tabs/tab_manager.dart';
-import '../../tabs/tab_switcher_sheet.dart';
+import '../../tabs/tabs_screen.dart';
 import '../engine/browser_engine.dart';
-import 'widgets/library_sheet.dart';
+import 'widgets/library_screen.dart';
 import 'widgets/reader_mode_sheet.dart';
 import 'widgets/shield_sheet.dart';
 import 'widgets/start_page.dart';
@@ -26,11 +30,13 @@ class BrowserScreen extends StatefulWidget {
     required this.settings,
     required this.tabManager,
     required this.searchService,
+    required this.downloads,
   });
 
   final BrowserSettingsController settings;
   final TabManagerController tabManager;
   final HeavenSearchService searchService;
+  final DownloadsController downloads;
 
   @override
   State<BrowserScreen> createState() => _BrowserScreenState();
@@ -55,11 +61,27 @@ class _BrowserScreenState extends State<BrowserScreen>
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     _omniboxFocusNode.addListener(_handleOmniboxFocusChange);
+    widget.downloads.onDownloadToast = (String msg) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(msg),
+          behavior: SnackBarBehavior.floating,
+          action: SnackBarAction(
+            label: 'View',
+            onPressed: _openDownloadsScreen,
+          ),
+        ),
+      );
+    };
   }
 
   @override
   void dispose() {
     _suggestDebounce?.cancel();
+    if (widget.downloads.onDownloadToast != null) {
+      widget.downloads.onDownloadToast = null;
+    }
     WidgetsBinding.instance.removeObserver(this);
     _omniboxFocusNode.removeListener(_handleOmniboxFocusChange);
     _omniboxController.dispose();
@@ -139,12 +161,36 @@ class _BrowserScreenState extends State<BrowserScreen>
     await _activeEngine.loadUserEntry(raw);
   }
 
+  Future<void> _triggerVoiceSearch() async {
+    final String? spoken = await NativeShieldBridge.instance.startVoiceSearch();
+    if (!mounted || spoken == null) {
+      return;
+    }
+    if (spoken == '__UNAVAILABLE__') {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'Voice recognition service is not installed on this device',
+          ),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+      return;
+    }
+    final String clean = spoken.trim();
+    if (clean.isEmpty) {
+      return;
+    }
+    await _submitOmnibox(clean);
+  }
+
   @override
   Widget build(BuildContext context) {
     return ListenableBuilder(
       listenable: Listenable.merge(<Listenable>[
         widget.tabManager,
         widget.settings,
+        widget.downloads,
       ]),
       builder: (BuildContext context, _) {
         final bool incognito = widget.tabManager.isActiveIncognito;
@@ -183,6 +229,7 @@ class _BrowserScreenState extends State<BrowserScreen>
               body: SafeArea(
                 child: Column(
                   children: <Widget>[
+                    // TOP DOCK BAR BY DEFAULT
                     if (!bottomBar) _buildCommandCapsuleBar(context, colors),
                     if (_showFindBar) _buildFindBar(colors),
                     if (engine.isLoading)
@@ -197,6 +244,19 @@ class _BrowserScreenState extends State<BrowserScreen>
                       child: Stack(
                         children: <Widget>[
                           _buildTabsViewport(colors),
+                          // Visual Pull-Down-to-Refresh indicator on WebView pages
+                          if (engine.pullProgress > 0.02)
+                            Positioned(
+                              top: 10 + (engine.pullProgress * 46),
+                              left: 0,
+                              right: 0,
+                              child: Center(
+                                child: _buildPullRefreshBadge(
+                                  colors,
+                                  engine.pullProgress,
+                                ),
+                              ),
+                            ),
                           if (_isEditingOmnibox && _liveSuggestions.isNotEmpty)
                             Positioned(
                               left: 12,
@@ -216,6 +276,27 @@ class _BrowserScreenState extends State<BrowserScreen>
           ),
         );
       },
+    );
+  }
+
+  Widget _buildPullRefreshBadge(ColorScheme colors, double pullProgress) {
+    final bool armed = pullProgress >= 0.96;
+    return Material(
+      elevation: 6,
+      shape: const CircleBorder(),
+      color: armed ? colors.primary : colors.surfaceContainerHighest,
+      child: SizedBox(
+        width: 40,
+        height: 40,
+        child: Transform.rotate(
+          angle: pullProgress * math.pi * 1.8,
+          child: Icon(
+            Icons.refresh_rounded,
+            size: 22,
+            color: armed ? colors.onPrimary : colors.primary,
+          ),
+        ),
+      ),
     );
   }
 
@@ -248,25 +329,7 @@ class _BrowserScreenState extends State<BrowserScreen>
         onOpenInIncognitoTab: (String url) =>
             widget.tabManager.openNewTab(incognito: true, initialInput: url),
         onTapSearchBox: _beginOmniboxEdit,
-        onOpenBookmarks: () => _openLibrarySheet(initialTabIndex: 0),
-        onOpenHistory: () => _openLibrarySheet(initialTabIndex: 1),
-        onToggleIncognitoNewTab: () {
-          if (tab.isIncognito) {
-            final List<BrowserTab> normals = widget.tabManager.normalTabs;
-            if (normals.isNotEmpty) {
-              widget.tabManager.switchToTab(normals.last.id);
-            } else {
-              widget.tabManager.openNewTab(incognito: false);
-            }
-          } else {
-            final List<BrowserTab> incogs = widget.tabManager.incognitoTabs;
-            if (incogs.isNotEmpty) {
-              widget.tabManager.switchToTab(incogs.last.id);
-            } else {
-              widget.tabManager.openNewTab(incognito: true);
-            }
-          }
-        },
+        onVoiceSearch: _triggerVoiceSearch,
       );
     }
 
@@ -274,6 +337,7 @@ class _BrowserScreenState extends State<BrowserScreen>
       return HeavenSearchView(
         query: engine.heavenSearchQuery,
         searchService: widget.searchService,
+        downloads: widget.downloads,
         isIncognito: tab.isIncognito,
         onOpenUrl: (String url) => engine.loadUserEntry(url),
         onOpenInNewTab: (String url) =>
@@ -282,12 +346,13 @@ class _BrowserScreenState extends State<BrowserScreen>
             widget.tabManager.openNewTab(incognito: true, initialInput: url),
         onSubmitNewQuery: (String q) =>
             engine.loadUri(Uri.parse(SearchEngine.heaven.buildSearchUrl(q))),
+        onVoiceSearch: _triggerVoiceSearch,
       );
     }
 
     if (engine.errorMessage != null) {
       return Center(
-        child: Padding(
+        child: SingleChildScrollView(
           padding: const EdgeInsets.all(28),
           child: Column(
             mainAxisSize: MainAxisSize.min,
@@ -307,11 +372,13 @@ class _BrowserScreenState extends State<BrowserScreen>
               const SizedBox(height: 20),
               Wrap(
                 spacing: 12,
+                runSpacing: 8,
+                alignment: WrapAlignment.center,
                 children: <Widget>[
                   OutlinedButton.icon(
                     onPressed: engine.goHome,
                     icon: const Icon(Icons.home_outlined),
-                    label: const Text('Start Deck'),
+                    label: const Text('Home'),
                   ),
                   FilledButton.icon(
                     onPressed: engine.reloadOrStop,
@@ -342,7 +409,7 @@ class _BrowserScreenState extends State<BrowserScreen>
     final bool isDark = Theme.of(context).brightness == Brightness.dark;
     return Material(
       elevation: 10,
-      color: isDark ? const Color(0xFF10192E) : Colors.white,
+      color: isDark ? const Color(0xFF140C28) : Colors.white,
       borderRadius: BorderRadius.circular(18),
       child: Container(
         decoration: BoxDecoration(
@@ -383,23 +450,19 @@ class _BrowserScreenState extends State<BrowserScreen>
     );
   }
 
+  /// Responsive Top/Bottom Dock Bar:
+  /// [ Home ] [ Forward -> ] [ Search / URL Pill ... Mic | Reload ] [ Tabs ] [ Menu ]
   Widget _buildCommandCapsuleBar(BuildContext context, ColorScheme colors) {
     final BrowserEngine engine = _activeEngine;
     final bool incognito = widget.tabManager.isActiveIncognito;
     final bool isDark = Theme.of(context).brightness == Brightness.dark;
-    final String? url = engine.currentUrl;
-    final bool canBookmark =
-        url != null &&
-        !engine.isShowingStartPage &&
-        !engine.isShowingHeavenSearch;
-    final bool bookmarked = widget.settings.isBookmarked(url);
 
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 7),
+      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 6),
       decoration: BoxDecoration(
         color: incognito
-            ? const Color(0xFF0E061B)
-            : (isDark ? const Color(0xFF080D1B) : Colors.white),
+            ? const Color(0xFF0A0F1A)
+            : (isDark ? const Color(0xFF0A0518) : Colors.white),
         border: Border(
           top: widget.settings.bottomOmnibox
               ? BorderSide(color: colors.outlineVariant.withValues(alpha: 0.35))
@@ -411,24 +474,38 @@ class _BrowserScreenState extends State<BrowserScreen>
       ),
       child: Row(
         children: <Widget>[
+          // Home Button right in the search dock area
           IconButton(
-            onPressed: engine.canGoBack ? engine.goBack : null,
-            icon: const Icon(Icons.arrow_back_ios_new_rounded, size: 18),
-            tooltip: 'Back',
+            onPressed: engine.isShowingStartPage ? null : engine.goHome,
+            icon: const Icon(Icons.home_rounded, size: 20),
+            tooltip: 'Home',
             visualDensity: VisualDensity.compact,
+            padding: EdgeInsets.zero,
+            constraints: const BoxConstraints(minWidth: 34, minHeight: 36),
           ),
+          // Reversed navigation button: Forward (->)
+          IconButton(
+            onPressed: engine.canGoForward ? engine.goForward : null,
+            icon: const Icon(Icons.arrow_forward_rounded, size: 20),
+            tooltip: 'Forward',
+            visualDensity: VisualDensity.compact,
+            padding: EdgeInsets.zero,
+            constraints: const BoxConstraints(minWidth: 32, minHeight: 36),
+          ),
+          const SizedBox(width: 2),
+          // Expanded Search / URL Capsule
           Expanded(
             child: Container(
-              height: 44,
+              height: 42,
               decoration: BoxDecoration(
                 color: incognito
-                    ? const Color(0xFF1B0F30)
+                    ? const Color(0xFF151E30)
                     : (isDark
-                          ? const Color(0xFF121C33)
+                          ? const Color(0xFF160E2E)
                           : colors.surfaceContainerHighest.withValues(
                               alpha: 0.65,
                             )),
-                borderRadius: BorderRadius.circular(22),
+                borderRadius: BorderRadius.circular(21),
                 border: Border.all(
                   color: _isEditingOmnibox
                       ? colors.primary
@@ -438,56 +515,77 @@ class _BrowserScreenState extends State<BrowserScreen>
               ),
               child: _isEditingOmnibox
                   ? _buildEditingField(colors)
-                  : _buildDisplayPill(
-                      context,
-                      colors,
-                      engine,
-                      incognito,
-                      canBookmark,
-                      bookmarked,
-                    ),
+                  : _buildDisplayPill(context, colors, engine, incognito),
             ),
           ),
           const SizedBox(width: 6),
-          // Multi-Tab Counter Pill
+          // Full-Screen Tabs Switcher Badge
           InkWell(
-            borderRadius: BorderRadius.circular(11),
-            onTap: _openTabSwitcher,
+            borderRadius: BorderRadius.circular(10),
+            onTap: _openTabsScreen,
             onLongPress: () =>
                 widget.tabManager.openNewTab(incognito: incognito),
             child: Tooltip(
-              message: 'Switch Tabs (Hold for New Tab)',
+              message: 'Switch Tabs',
               child: Container(
-                width: 32,
-                height: 32,
+                width: 30,
+                height: 30,
                 alignment: Alignment.center,
                 decoration: BoxDecoration(
-                  borderRadius: BorderRadius.circular(10),
+                  borderRadius: BorderRadius.circular(9),
                   border: Border.all(
                     color: incognito
-                        ? AppTheme.incognitoOrchid
-                        : colors.primary.withValues(alpha: 0.8),
+                        ? AppTheme.incognitoCyan
+                        : colors.primary.withValues(alpha: 0.85),
                     width: 1.8,
                   ),
                 ),
-                child: Text(
-                  '${widget.tabManager.totalTabCount}',
-                  style: TextStyle(
-                    fontSize: 12.5,
-                    fontWeight: FontWeight.w900,
-                    color: incognito
-                        ? AppTheme.incognitoOrchid
-                        : colors.primary,
+                child: FittedBox(
+                  fit: BoxFit.scaleDown,
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 3),
+                    child: Text(
+                      '${widget.tabManager.totalTabCount}',
+                      style: TextStyle(
+                        fontSize: 12,
+                        fontWeight: FontWeight.w900,
+                        color: incognito
+                            ? AppTheme.incognitoCyan
+                            : colors.primary,
+                      ),
+                    ),
                   ),
                 ),
               ),
             ),
           ),
-          IconButton(
-            onPressed: () => _openCommandDeck(context),
-            icon: const Icon(Icons.grid_view_rounded, size: 21),
-            tooltip: 'Command Deck',
-            visualDensity: VisualDensity.compact,
+          const SizedBox(width: 2),
+          // Browser Menu Button (with active download dot if downloading)
+          Stack(
+            clipBehavior: Clip.none,
+            children: <Widget>[
+              IconButton(
+                onPressed: () => _openBrowserMenu(context),
+                icon: const Icon(Icons.more_vert_rounded, size: 21),
+                tooltip: 'Browser Menu',
+                visualDensity: VisualDensity.compact,
+                padding: EdgeInsets.zero,
+                constraints: const BoxConstraints(minWidth: 34, minHeight: 36),
+              ),
+              if (widget.downloads.hasActiveDownloads)
+                Positioned(
+                  right: 6,
+                  top: 6,
+                  child: Container(
+                    width: 8,
+                    height: 8,
+                    decoration: const BoxDecoration(
+                      color: AppTheme.shieldEmerald,
+                      shape: BoxShape.circle,
+                    ),
+                  ),
+                ),
+            ],
           ),
         ],
       ),
@@ -497,9 +595,9 @@ class _BrowserScreenState extends State<BrowserScreen>
   Widget _buildEditingField(ColorScheme colors) {
     return Row(
       children: <Widget>[
-        const SizedBox(width: 12),
-        Icon(Icons.search_rounded, size: 18, color: colors.primary),
-        const SizedBox(width: 8),
+        const SizedBox(width: 10),
+        Icon(Icons.search_rounded, size: 17, color: colors.primary),
+        const SizedBox(width: 6),
         Expanded(
           child: TextField(
             controller: _omniboxController,
@@ -513,11 +611,19 @@ class _BrowserScreenState extends State<BrowserScreen>
             style: const TextStyle(fontSize: 14),
             decoration: InputDecoration(
               hintText:
-                  'Search ${widget.settings.searchEngine.shortLabel} or enter address',
+                  'Search ${widget.settings.searchEngine.shortLabel} or enter URL',
               border: InputBorder.none,
               isDense: true,
             ),
           ),
+        ),
+        IconButton(
+          onPressed: _triggerVoiceSearch,
+          icon: Icon(Icons.mic_rounded, size: 19, color: colors.primary),
+          visualDensity: VisualDensity.compact,
+          padding: EdgeInsets.zero,
+          constraints: const BoxConstraints(minWidth: 30, minHeight: 32),
+          tooltip: 'Voice Search',
         ),
         if (_omniboxController.text.isNotEmpty)
           IconButton(
@@ -525,10 +631,13 @@ class _BrowserScreenState extends State<BrowserScreen>
               _omniboxController.clear();
               setState(() => _liveSuggestions = <String>[]);
             },
-            icon: const Icon(Icons.cancel_rounded, size: 18),
+            icon: const Icon(Icons.cancel_rounded, size: 17),
             visualDensity: VisualDensity.compact,
+            padding: EdgeInsets.zero,
+            constraints: const BoxConstraints(minWidth: 30, minHeight: 32),
             tooltip: 'Clear',
           ),
+        const SizedBox(width: 4),
       ],
     );
   }
@@ -538,8 +647,6 @@ class _BrowserScreenState extends State<BrowserScreen>
     ColorScheme colors,
     BrowserEngine engine,
     bool incognito,
-    bool canBookmark,
-    bool bookmarked,
   ) {
     return Row(
       children: <Widget>[
@@ -548,7 +655,7 @@ class _BrowserScreenState extends State<BrowserScreen>
           borderRadius: BorderRadius.circular(18),
           onTap: () => _openShieldSheet(context),
           child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+            padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 6),
             child: Icon(
               incognito
                   ? Icons.shield_moon_rounded
@@ -557,9 +664,9 @@ class _BrowserScreenState extends State<BrowserScreen>
                         : (engine.isSecure
                               ? Icons.lock_outline_rounded
                               : Icons.warning_amber_rounded)),
-              size: 17,
+              size: 16.5,
               color: incognito
-                  ? AppTheme.incognitoOrchid
+                  ? AppTheme.incognitoCyan
                   : (engine.isShowingStartPage
                         ? colors.primary
                         : (engine.isSecure
@@ -574,7 +681,7 @@ class _BrowserScreenState extends State<BrowserScreen>
             onTap: _beginOmniboxEdit,
             child: Text(
               engine.isShowingStartPage
-                  ? 'Search ${widget.settings.searchEngine.shortLabel} or type URL'
+                  ? 'Search or type URL'
                   : OmniboxParser.formatDisplayUrl(engine.currentUrl),
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
@@ -594,60 +701,31 @@ class _BrowserScreenState extends State<BrowserScreen>
           GestureDetector(
             onTap: () => _openShieldSheet(context),
             child: Container(
-              margin: const EdgeInsets.only(right: 4),
+              margin: const EdgeInsets.only(right: 2),
               padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
               decoration: BoxDecoration(
                 color: AppTheme.shieldEmerald.withValues(alpha: 0.16),
                 borderRadius: BorderRadius.circular(999),
               ),
-              child: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: <Widget>[
-                  const Icon(
-                    Icons.shield_rounded,
-                    size: 11,
-                    color: AppTheme.shieldEmerald,
-                  ),
-                  const SizedBox(width: 2),
-                  Text(
-                    '${engine.pageBlockedCount}',
-                    style: const TextStyle(
-                      fontSize: 10.5,
-                      fontWeight: FontWeight.w800,
-                      color: AppTheme.shieldEmerald,
-                    ),
-                  ),
-                ],
+              child: Text(
+                '${engine.pageBlockedCount}',
+                style: const TextStyle(
+                  fontSize: 10.5,
+                  fontWeight: FontWeight.w800,
+                  color: AppTheme.shieldEmerald,
+                ),
               ),
             ),
           ),
-        if (canBookmark)
-          IconButton(
-            onPressed: () async {
-              final bool saved = await widget.settings.toggleBookmark(
-                url: engine.currentUrl!,
-                title: engine.pageTitle,
-              );
-              if (context.mounted) {
-                ScaffoldMessenger.of(context).showSnackBar(
-                  SnackBar(
-                    content: Text(
-                      saved ? 'Saved to Bookmarks' : 'Removed from Bookmarks',
-                    ),
-                    behavior: SnackBarBehavior.floating,
-                    duration: const Duration(seconds: 1),
-                  ),
-                );
-              }
-            },
-            icon: Icon(
-              bookmarked ? Icons.star_rounded : Icons.star_outline_rounded,
-              size: 19,
-              color: bookmarked ? AppTheme.warningAmber : null,
-            ),
-            visualDensity: VisualDensity.compact,
-            tooltip: 'Bookmark page',
-          ),
+        // Voice Search Mic Button always accessible in Search Bar
+        IconButton(
+          onPressed: _triggerVoiceSearch,
+          icon: Icon(Icons.mic_rounded, size: 18.5, color: colors.primary),
+          visualDensity: VisualDensity.compact,
+          padding: EdgeInsets.zero,
+          constraints: const BoxConstraints(minWidth: 30, minHeight: 32),
+          tooltip: 'Voice Search',
+        ),
         if (!engine.isShowingStartPage)
           IconButton(
             onPressed: engine.reloadOrStop,
@@ -656,10 +734,12 @@ class _BrowserScreenState extends State<BrowserScreen>
               size: 18,
             ),
             visualDensity: VisualDensity.compact,
+            padding: EdgeInsets.zero,
+            constraints: const BoxConstraints(minWidth: 30, minHeight: 32),
             tooltip: engine.isLoading ? 'Stop' : 'Reload',
           )
         else
-          const SizedBox(width: 8),
+          const SizedBox(width: 4),
       ],
     );
   }
@@ -717,12 +797,35 @@ class _BrowserScreenState extends State<BrowserScreen>
     );
   }
 
-  Future<void> _openTabSwitcher() async {
-    await showModalBottomSheet<void>(
-      context: context,
-      isScrollControlled: true,
-      backgroundColor: Colors.transparent,
-      builder: (_) => TabSwitcherSheet(tabManager: widget.tabManager),
+  void _openTabsScreen() {
+    Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) => TabsScreen(tabManager: widget.tabManager),
+      ),
+    );
+  }
+
+  void _openLibraryScreen({required int initialTabIndex}) {
+    Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) => LibraryScreen(
+          settings: widget.settings,
+          initialTabIndex: initialTabIndex,
+          onSelectUrl: (String url) => _activeEngine.loadUserEntry(url),
+          onOpenInNewTab: (String url) =>
+              widget.tabManager.openNewTab(incognito: false, initialInput: url),
+          onOpenInIncognitoTab: (String url) =>
+              widget.tabManager.openNewTab(incognito: true, initialInput: url),
+        ),
+      ),
+    );
+  }
+
+  void _openDownloadsScreen() {
+    Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) => DownloadsScreen(downloads: widget.downloads),
+      ),
     );
   }
 
@@ -732,18 +835,6 @@ class _BrowserScreenState extends State<BrowserScreen>
       isScrollControlled: true,
       builder: (_) =>
           ShieldSheet(engine: _activeEngine, settings: widget.settings),
-    );
-  }
-
-  Future<void> _openLibrarySheet({required int initialTabIndex}) async {
-    await showModalBottomSheet<void>(
-      context: context,
-      isScrollControlled: true,
-      builder: (_) => LibrarySheet(
-        settings: widget.settings,
-        initialTabIndex: initialTabIndex,
-        onSelectUrl: (String url) => _activeEngine.loadUserEntry(url),
-      ),
     );
   }
 
@@ -815,13 +906,14 @@ class _BrowserScreenState extends State<BrowserScreen>
     }
   }
 
-  Future<void> _openCommandDeck(BuildContext context) async {
+  Future<void> _openBrowserMenu(BuildContext context) async {
     final BrowserEngine engine = _activeEngine;
     final String? url = engine.currentUrl;
     final bool hasWebPage =
         url != null &&
         !engine.isShowingStartPage &&
         !engine.isShowingHeavenSearch;
+    final bool bookmarked = widget.settings.isBookmarked(url);
 
     await showModalBottomSheet<void>(
       context: context,
@@ -829,198 +921,290 @@ class _BrowserScreenState extends State<BrowserScreen>
       builder: (BuildContext sheetContext) {
         final ColorScheme colors = Theme.of(sheetContext).colorScheme;
         return SafeArea(
-          child: Padding(
-            padding: const EdgeInsets.fromLTRB(16, 4, 16, 16),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: <Widget>[
-                // Top navigation quick row
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                  children: <Widget>[
-                    IconButton(
-                      tooltip: 'Forward',
-                      onPressed: engine.canGoForward
-                          ? () {
-                              Navigator.pop(sheetContext);
-                              engine.goForward();
-                            }
-                          : null,
-                      icon: const Icon(Icons.arrow_forward_rounded),
-                    ),
-                    IconButton(
-                      tooltip: 'Start Deck',
-                      onPressed: () {
-                        Navigator.pop(sheetContext);
-                        engine.goHome();
-                      },
-                      icon: const Icon(Icons.home_outlined),
-                    ),
-                    IconButton(
-                      tooltip: 'Reload',
-                      onPressed: !engine.isShowingStartPage
-                          ? () {
-                              Navigator.pop(sheetContext);
-                              engine.reloadOrStop();
-                            }
-                          : null,
-                      icon: const Icon(Icons.refresh_rounded),
-                    ),
-                    IconButton(
-                      tooltip: 'Burn All Data',
-                      onPressed: () {
-                        Navigator.pop(sheetContext);
-                        _confirmAndBurnAll();
-                      },
-                      icon: const Icon(
-                        Icons.local_fire_department_rounded,
-                        color: AppTheme.fireCrimson,
+          child: ConstrainedBox(
+            constraints: BoxConstraints(
+              maxHeight: MediaQuery.sizeOf(sheetContext).height * 0.82,
+            ),
+            child: SingleChildScrollView(
+              padding: const EdgeInsets.fromLTRB(16, 4, 16, 16),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: <Widget>[
+                  // Top quick bar: Back, Forward, Bookmark, Reload, Burn
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                    children: <Widget>[
+                      IconButton(
+                        tooltip: 'Back',
+                        onPressed: engine.canGoBack
+                            ? () {
+                                Navigator.pop(sheetContext);
+                                engine.goBack();
+                              }
+                            : null,
+                        icon: const Icon(Icons.arrow_back_rounded),
                       ),
-                    ),
-                  ],
-                ),
-                const Divider(),
-                GridView.count(
-                  shrinkWrap: true,
-                  physics: const NeverScrollableScrollPhysics(),
-                  crossAxisCount: 4,
-                  mainAxisSpacing: 10,
-                  crossAxisSpacing: 10,
-                  childAspectRatio: 1.05,
-                  children: <Widget>[
-                    _DeckActionTile(
-                      icon: Icons.add_box_outlined,
-                      label: 'New Tab',
-                      accent: colors.primary,
-                      onTap: () {
-                        Navigator.pop(sheetContext);
-                        widget.tabManager.openNewTab(incognito: false);
-                      },
-                    ),
-                    _DeckActionTile(
-                      icon: Icons.shield_moon_outlined,
-                      label: 'Incognito',
-                      accent: AppTheme.incognitoOrchid,
-                      onTap: () {
-                        Navigator.pop(sheetContext);
-                        widget.tabManager.openNewTab(incognito: true);
-                      },
-                    ),
-                    _DeckActionTile(
-                      icon: Icons.bookmarks_outlined,
-                      label: 'Bookmarks',
-                      accent: AppTheme.warningAmber,
-                      onTap: () {
-                        Navigator.pop(sheetContext);
-                        _openLibrarySheet(initialTabIndex: 0);
-                      },
-                    ),
-                    _DeckActionTile(
-                      icon: Icons.history_rounded,
-                      label: 'History',
-                      accent: colors.primary,
-                      onTap: () {
-                        Navigator.pop(sheetContext);
-                        _openLibrarySheet(initialTabIndex: 1);
-                      },
-                    ),
-                    _DeckActionTile(
-                      icon: Icons.menu_book_rounded,
-                      label: 'Reader',
-                      accent: AppTheme.shieldEmerald,
-                      enabled: hasWebPage,
-                      onTap: () {
-                        Navigator.pop(sheetContext);
-                        _triggerReaderMode();
-                      },
-                    ),
-                    _DeckActionTile(
-                      icon: Icons.find_in_page_outlined,
-                      label: 'Find Text',
-                      accent: colors.primary,
-                      enabled: hasWebPage,
-                      onTap: () {
-                        Navigator.pop(sheetContext);
-                        setState(() => _showFindBar = true);
-                      },
-                    ),
-                    _DeckActionTile(
-                      icon: Icons.share_outlined,
-                      label: 'Share',
-                      accent: colors.primary,
-                      enabled: url != null && !engine.isShowingStartPage,
+                      IconButton(
+                        tooltip: 'Forward',
+                        onPressed: engine.canGoForward
+                            ? () {
+                                Navigator.pop(sheetContext);
+                                engine.goForward();
+                              }
+                            : null,
+                        icon: const Icon(Icons.arrow_forward_rounded),
+                      ),
+                      IconButton(
+                        tooltip: bookmarked
+                            ? 'Remove Bookmark'
+                            : 'Bookmark Page',
+                        onPressed: hasWebPage
+                            ? () async {
+                                Navigator.pop(sheetContext);
+                                final bool saved = await widget.settings
+                                    .toggleBookmark(
+                                      url: url,
+                                      title: engine.pageTitle,
+                                    );
+                                if (context.mounted) {
+                                  ScaffoldMessenger.of(context).showSnackBar(
+                                    SnackBar(
+                                      content: Text(
+                                        saved
+                                            ? 'Saved to Bookmarks'
+                                            : 'Removed from Bookmarks',
+                                      ),
+                                      behavior: SnackBarBehavior.floating,
+                                    ),
+                                  );
+                                }
+                              }
+                            : null,
+                        icon: Icon(
+                          bookmarked
+                              ? Icons.star_rounded
+                              : Icons.star_outline_rounded,
+                          color: bookmarked ? AppTheme.warningAmber : null,
+                        ),
+                      ),
+                      IconButton(
+                        tooltip: 'Reload',
+                        onPressed: !engine.isShowingStartPage
+                            ? () {
+                                Navigator.pop(sheetContext);
+                                engine.reloadOrStop();
+                              }
+                            : null,
+                        icon: const Icon(Icons.refresh_rounded),
+                      ),
+                      IconButton(
+                        tooltip: 'Burn All Data',
+                        onPressed: () {
+                          Navigator.pop(sheetContext);
+                          _confirmAndBurnAll();
+                        },
+                        icon: const Icon(
+                          Icons.local_fire_department_rounded,
+                          color: AppTheme.fireCrimson,
+                        ),
+                      ),
+                    ],
+                  ),
+                  const Divider(),
+                  GridView.builder(
+                    shrinkWrap: true,
+                    physics: const NeverScrollableScrollPhysics(),
+                    gridDelegate:
+                        const SliverGridDelegateWithFixedCrossAxisCount(
+                          crossAxisCount: 4,
+                          mainAxisSpacing: 10,
+                          crossAxisSpacing: 10,
+                          mainAxisExtent: 74,
+                        ),
+                    itemCount: 8,
+                    itemBuilder: (BuildContext _, int idx) {
+                      return switch (idx) {
+                        0 => _DeckActionTile(
+                          icon: Icons.add_box_outlined,
+                          label: 'New Tab',
+                          accent: colors.primary,
+                          onTap: () {
+                            Navigator.pop(sheetContext);
+                            widget.tabManager.openNewTab(incognito: false);
+                          },
+                        ),
+                        1 => _DeckActionTile(
+                          icon: Icons.shield_moon_outlined,
+                          label: 'Incognito',
+                          accent: AppTheme.incognitoCyan,
+                          onTap: () {
+                            Navigator.pop(sheetContext);
+                            widget.tabManager.openNewTab(incognito: true);
+                          },
+                        ),
+                        2 => _DeckActionTile(
+                          icon: Icons.bookmarks_outlined,
+                          label: 'Bookmarks',
+                          accent: AppTheme.warningAmber,
+                          onTap: () {
+                            Navigator.pop(sheetContext);
+                            _openLibraryScreen(initialTabIndex: 0);
+                          },
+                        ),
+                        3 => _DeckActionTile(
+                          icon: Icons.history_rounded,
+                          label: 'History',
+                          accent: colors.primary,
+                          onTap: () {
+                            Navigator.pop(sheetContext);
+                            _openLibraryScreen(initialTabIndex: 1);
+                          },
+                        ),
+                        4 => _DeckActionTile(
+                          icon: Icons.download_rounded,
+                          label: widget.downloads.activeCount > 0
+                              ? 'Downloads (${widget.downloads.activeCount})'
+                              : 'Downloads',
+                          accent: AppTheme.shieldEmerald,
+                          onTap: () {
+                            Navigator.pop(sheetContext);
+                            _openDownloadsScreen();
+                          },
+                        ),
+                        5 => _DeckActionTile(
+                          icon: Icons.menu_book_rounded,
+                          label: 'Reader',
+                          accent: colors.primary,
+                          enabled: hasWebPage,
+                          onTap: () {
+                            Navigator.pop(sheetContext);
+                            _triggerReaderMode();
+                          },
+                        ),
+                        6 => _DeckActionTile(
+                          icon: Icons.find_in_page_outlined,
+                          label: 'Find Text',
+                          accent: colors.primary,
+                          enabled: hasWebPage,
+                          onTap: () {
+                            Navigator.pop(sheetContext);
+                            setState(() => _showFindBar = true);
+                          },
+                        ),
+                        _ => _DeckActionTile(
+                          icon: Icons.settings_outlined,
+                          label: 'Settings',
+                          accent: colors.primary,
+                          onTap: () {
+                            Navigator.pop(sheetContext);
+                            Navigator.of(context).push(
+                              MaterialPageRoute<void>(
+                                builder: (_) => SettingsScreen(
+                                  settings: widget.settings,
+                                  tabManager: widget.tabManager,
+                                ),
+                              ),
+                            );
+                          },
+                        ),
+                      };
+                    },
+                  ),
+                  const SizedBox(height: 8),
+                  SwitchListTile.adaptive(
+                    dense: true,
+                    secondary: const Icon(Icons.desktop_windows_outlined),
+                    title: const Text('Desktop Site'),
+                    subtitle: const Text('Full 1280px desktop layout'),
+                    value: widget.settings.desktopMode,
+                    onChanged: (bool value) async {
+                      Navigator.pop(sheetContext);
+                      await engine.setDesktopModeAndReload(value);
+                    },
+                  ),
+                  if (hasWebPage)
+                    ListTile(
+                      dense: true,
+                      contentPadding: const EdgeInsets.symmetric(horizontal: 8),
+                      leading: const Icon(Icons.share_outlined, size: 20),
+                      title: const Text(
+                        'Share Link',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                      trailing: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: <Widget>[
+                          IconButton(
+                            tooltip: 'Download Current URL',
+                            icon: const Icon(Icons.download_outlined, size: 19),
+                            visualDensity: VisualDensity.compact,
+                            padding: EdgeInsets.zero,
+                            constraints: const BoxConstraints(
+                              minWidth: 32,
+                              minHeight: 32,
+                            ),
+                            onPressed: () {
+                              Navigator.pop(sheetContext);
+                              widget.downloads.startUrlDownload(url: url);
+                            },
+                          ),
+                          IconButton(
+                            tooltip: 'Copy Link',
+                            icon: const Icon(Icons.copy_rounded, size: 18),
+                            visualDensity: VisualDensity.compact,
+                            padding: EdgeInsets.zero,
+                            constraints: const BoxConstraints(
+                              minWidth: 32,
+                              minHeight: 32,
+                            ),
+                            onPressed: () async {
+                              Navigator.pop(sheetContext);
+                              await Clipboard.setData(ClipboardData(text: url));
+                              if (context.mounted) {
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                  const SnackBar(
+                                    content: Text('URL copied to clipboard'),
+                                    behavior: SnackBarBehavior.floating,
+                                  ),
+                                );
+                              }
+                            },
+                          ),
+                          IconButton(
+                            tooltip: 'Open externally',
+                            icon: const Icon(
+                              Icons.open_in_new_rounded,
+                              size: 18,
+                            ),
+                            visualDensity: VisualDensity.compact,
+                            padding: EdgeInsets.zero,
+                            constraints: const BoxConstraints(
+                              minWidth: 32,
+                              minHeight: 32,
+                            ),
+                            onPressed: () async {
+                              Navigator.pop(sheetContext);
+                              final Uri? parsed = Uri.tryParse(url);
+                              if (parsed != null) {
+                                await launchUrl(
+                                  parsed,
+                                  mode: LaunchMode.externalApplication,
+                                );
+                              }
+                            },
+                          ),
+                        ],
+                      ),
                       onTap: () {
                         Navigator.pop(sheetContext);
                         SharePlus.instance.share(
-                          ShareParams(text: url!, subject: engine.pageTitle),
+                          ShareParams(text: url, subject: engine.pageTitle),
                         );
                       },
                     ),
-                    _DeckActionTile(
-                      icon: Icons.settings_outlined,
-                      label: 'Settings',
-                      accent: colors.primary,
-                      onTap: () {
-                        Navigator.pop(sheetContext);
-                        Navigator.of(context).push(
-                          MaterialPageRoute<void>(
-                            builder: (_) => SettingsScreen(
-                              settings: widget.settings,
-                              tabManager: widget.tabManager,
-                            ),
-                          ),
-                        );
-                      },
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 8),
-                SwitchListTile.adaptive(
-                  dense: true,
-                  secondary: const Icon(Icons.desktop_windows_outlined),
-                  title: const Text('Desktop Site Mode'),
-                  value: widget.settings.desktopMode,
-                  onChanged: (bool value) async {
-                    Navigator.pop(sheetContext);
-                    await widget.settings.setDesktopMode(value);
-                    if (hasWebPage) {
-                      await engine.reloadOrStop();
-                    }
-                  },
-                ),
-                if (hasWebPage)
-                  ListTile(
-                    dense: true,
-                    leading: const Icon(Icons.copy_rounded),
-                    title: const Text('Copy Current Link'),
-                    trailing: IconButton(
-                      tooltip: 'Open externally',
-                      icon: const Icon(Icons.open_in_new_rounded, size: 19),
-                      onPressed: () async {
-                        Navigator.pop(sheetContext);
-                        final Uri? parsed = Uri.tryParse(url);
-                        if (parsed != null) {
-                          await launchUrl(
-                            parsed,
-                            mode: LaunchMode.externalApplication,
-                          );
-                        }
-                      },
-                    ),
-                    onTap: () async {
-                      Navigator.pop(sheetContext);
-                      await Clipboard.setData(ClipboardData(text: url));
-                      if (context.mounted) {
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          const SnackBar(
-                            content: Text('URL copied to clipboard'),
-                            behavior: SnackBarBehavior.floating,
-                          ),
-                        );
-                      }
-                    },
-                  ),
-              ],
+                ],
+              ),
             ),
           ),
         );
@@ -1053,6 +1237,7 @@ class _DeckActionTile extends StatelessWidget {
         borderRadius: BorderRadius.circular(16),
         onTap: enabled ? onTap : null,
         child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 6),
           decoration: BoxDecoration(
             color: colors.surfaceContainerHighest.withValues(alpha: 0.4),
             borderRadius: BorderRadius.circular(16),
@@ -1060,15 +1245,17 @@ class _DeckActionTile extends StatelessWidget {
           child: Column(
             mainAxisAlignment: MainAxisAlignment.center,
             children: <Widget>[
-              Icon(icon, color: accent, size: 23),
-              const SizedBox(height: 6),
-              Text(
-                label,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: const TextStyle(
-                  fontSize: 11.5,
-                  fontWeight: FontWeight.w600,
+              Icon(icon, color: accent, size: 22),
+              const SizedBox(height: 5),
+              FittedBox(
+                fit: BoxFit.scaleDown,
+                child: Text(
+                  label,
+                  maxLines: 1,
+                  style: const TextStyle(
+                    fontSize: 11.5,
+                    fontWeight: FontWeight.w600,
+                  ),
                 ),
               ),
             ],
