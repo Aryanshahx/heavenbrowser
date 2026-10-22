@@ -7,6 +7,8 @@ typedef NativePullProgressCallback = void Function(double progress);
 typedef NativePullRefreshCallback = void Function();
 typedef NativeDownloadStartedCallback =
     void Function(Map<String, Object?> downloadInfo);
+typedef NativeWebViewDownloadInterceptedCallback =
+    void Function(bool wasEmptyPage);
 
 class NativeShieldBridge {
   NativeShieldBridge._() {
@@ -25,6 +27,9 @@ class NativeShieldBridge {
       <int, NativePullProgressCallback>{};
   final Map<int, NativePullRefreshCallback> _pullRefreshListeners =
       <int, NativePullRefreshCallback>{};
+  final Map<int, NativeWebViewDownloadInterceptedCallback>
+  _downloadInterceptListeners =
+      <int, NativeWebViewDownloadInterceptedCallback>{};
 
   NativeDownloadStartedCallback? onDownloadStarted;
 
@@ -56,6 +61,12 @@ class NativeShieldBridge {
         for (final MapEntry<Object?, Object?> e in rawArgs.entries)
           if (e.key != null) e.key.toString(): e.value,
       };
+      final Object? wvVal = normalized['webViewId'];
+      final int webViewId = wvVal is num ? wvVal.toInt() : -1;
+      final bool wasEmpty = normalized['wasEmptyPage'] == true;
+      if (webViewId >= 0) {
+        _downloadInterceptListeners[webViewId]?.call(wasEmpty);
+      }
       onDownloadStarted?.call(normalized);
     }
     return null;
@@ -94,10 +105,14 @@ class NativeShieldBridge {
     required NativeBlockedCallback onBlocked,
     required NativePullProgressCallback onPullProgress,
     required NativePullRefreshCallback onPullRefresh,
+    NativeWebViewDownloadInterceptedCallback? onDownloadIntercepted,
   }) async {
     _blockedListeners[webViewId] = onBlocked;
     _pullProgressListeners[webViewId] = onPullProgress;
     _pullRefreshListeners[webViewId] = onPullRefresh;
+    if (onDownloadIntercepted != null) {
+      _downloadInterceptListeners[webViewId] = onDownloadIntercepted;
+    }
     try {
       await _channel.invokeMethod<bool>('attachToWebView', <String, Object?>{
         'webViewId': webViewId,
@@ -127,6 +142,20 @@ class NativeShieldBridge {
     }
   }
 
+  Future<Uint8List?> captureWebViewPreview(int webViewId) async {
+    try {
+      final Uint8List? bytes = await _channel.invokeMethod<Uint8List>(
+        'captureWebViewPreview',
+        <String, Object>{'webViewId': webViewId},
+      );
+      return (bytes != null && bytes.isNotEmpty) ? bytes : null;
+    } on MissingPluginException {
+      return null;
+    } on PlatformException {
+      return null;
+    }
+  }
+
   Future<void> updatePageHost({
     required int webViewId,
     required String? pageHost,
@@ -147,6 +176,20 @@ class NativeShieldBridge {
     _blockedListeners.remove(webViewId);
     _pullProgressListeners.remove(webViewId);
     _pullRefreshListeners.remove(webViewId);
+    _downloadInterceptListeners.remove(webViewId);
+  }
+
+  Future<bool> openDefaultBrowserSettings() async {
+    try {
+      final bool? opened = await _channel.invokeMethod<bool>(
+        'openDefaultBrowserSettings',
+      );
+      return opened ?? false;
+    } on MissingPluginException {
+      return false;
+    } on PlatformException {
+      return false;
+    }
   }
 
   Future<String?> startVoiceSearch() async {
@@ -157,7 +200,10 @@ class NativeShieldBridge {
       return spoken;
     } on MissingPluginException {
       return '__UNAVAILABLE__';
-    } on PlatformException {
+    } on PlatformException catch (e) {
+      if (e.code == 'NO_VOICE_ENGINE') {
+        return '__UNAVAILABLE__';
+      }
       return null;
     }
   }
@@ -185,6 +231,8 @@ class NativeShieldBridge {
           'url': url,
           'fileName': fileName ?? 'download.bin',
           'mimeType': mimeType ?? '',
+          'state': 'running',
+          'bytesDownloaded': 0,
           'totalBytes': -1,
         };
       }
@@ -198,10 +246,66 @@ class NativeShieldBridge {
         'url': url,
         'fileName': fileName ?? 'download.bin',
         'mimeType': mimeType ?? '',
+        'state': 'running',
+        'bytesDownloaded': 0,
         'totalBytes': -1,
       };
     } on PlatformException {
       return null;
+    }
+  }
+
+  Future<void> restoreDownload({
+    required int downloadId,
+    required String url,
+    required String fileName,
+    required String mimeType,
+    required String localUri,
+    required String state,
+    required int totalBytes,
+  }) async {
+    try {
+      await _channel.invokeMethod<bool>('restoreDownload', <String, Object>{
+        'downloadId': downloadId,
+        'url': url,
+        'fileName': fileName,
+        'mimeType': mimeType,
+        'localUri': localUri,
+        'state': state,
+        'totalBytes': totalBytes,
+      });
+    } on MissingPluginException {
+      // Expected in tests.
+    } on PlatformException {
+      // Non-fatal.
+    }
+  }
+
+  Future<bool> pauseDownload(int downloadId) async {
+    try {
+      final bool? paused = await _channel.invokeMethod<bool>(
+        'pauseDownload',
+        <String, Object>{'downloadId': downloadId},
+      );
+      return paused ?? true;
+    } on MissingPluginException {
+      return true;
+    } on PlatformException {
+      return false;
+    }
+  }
+
+  Future<bool> resumeDownload(int downloadId) async {
+    try {
+      final bool? resumed = await _channel.invokeMethod<bool>(
+        'resumeDownload',
+        <String, Object>{'downloadId': downloadId},
+      );
+      return resumed ?? true;
+    } on MissingPluginException {
+      return true;
+    } on PlatformException {
+      return false;
     }
   }
 
@@ -245,24 +349,19 @@ class NativeShieldBridge {
     }
   }
 
-  Future<bool> openDownloadedFile(int downloadId) async {
+  Future<bool> openDownloadedFile({
+    required int downloadId,
+    required String localUri,
+    required String mimeType,
+  }) async {
     try {
       final bool? ok = await _channel.invokeMethod<bool>(
         'openDownloadedFile',
-        <String, Object>{'downloadId': downloadId},
-      );
-      return ok ?? false;
-    } on MissingPluginException {
-      return false;
-    } on PlatformException {
-      return false;
-    }
-  }
-
-  Future<bool> openDefaultBrowserSettings() async {
-    try {
-      final bool? ok = await _channel.invokeMethod<bool>(
-        'openDefaultBrowserSettings',
+        <String, Object>{
+          'downloadId': downloadId,
+          'localUri': localUri,
+          'mimeType': mimeType,
+        },
       );
       return ok ?? false;
     } on MissingPluginException {

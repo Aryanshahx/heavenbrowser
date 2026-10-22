@@ -56,6 +56,8 @@ class BrowserEngine extends ChangeNotifier {
   int _pageBlockedCount = 0;
   final Set<String> _pageBlockedDomains = <String>{};
   String? _errorMessage;
+  String? _lastCompletedWebUrl;
+  int _lastDownloadInterceptMs = 0;
 
   WebViewController? get controller => _controller;
   String? get currentUrl => _currentUrl;
@@ -159,6 +161,7 @@ class BrowserEngine extends ChangeNotifier {
               return;
             }
             _currentUrl = url;
+            _lastCompletedWebUrl = url;
             _isLoading = false;
             _progress = 1.0;
             _pullProgress = 0;
@@ -184,6 +187,26 @@ class BrowserEngine extends ChangeNotifier {
           },
           onWebResourceError: (WebResourceError error) {
             if (error.isForMainFrame ?? true) {
+              final String desc = error.description.toUpperCase();
+              final bool recentlyInterceptedDownload =
+                  (DateTime.now().millisecondsSinceEpoch -
+                      _lastDownloadInterceptMs) <
+                  3500;
+              // Do NOT replace the page with an error screen when a download aborts navigation!
+              if (recentlyInterceptedDownload ||
+                  desc.contains('ERR_ABORTED') ||
+                  desc.contains('INTERRUPTED') ||
+                  error.errorCode == -999) {
+                _isLoading = false;
+                _progress = 0;
+                _errorMessage = null;
+                if (_lastCompletedWebUrl != null) {
+                  _currentUrl = _lastCompletedWebUrl;
+                  _syncVirtualEntryWithWebUrl(_lastCompletedWebUrl!);
+                }
+                notifyListeners();
+                return;
+              }
               _isLoading = false;
               _errorMessage = error.description;
               notifyListeners();
@@ -214,9 +237,33 @@ class BrowserEngine extends ChangeNotifier {
             _pullProgress = 0;
             unawaited(reloadFullPage());
           },
+          onDownloadIntercepted: (bool wasEmptyPage) {
+            _lastDownloadInterceptMs = DateTime.now().millisecondsSinceEpoch;
+            _isLoading = false;
+            _progress = 0;
+            _errorMessage = null;
+            if (wasEmptyPage && _lastCompletedWebUrl == null) {
+              _currentUrl = null;
+            } else if (_lastCompletedWebUrl != null) {
+              _currentUrl = _lastCompletedWebUrl;
+              _syncVirtualEntryWithWebUrl(_lastCompletedWebUrl!);
+            }
+            notifyListeners();
+          },
         ),
       );
     }
+  }
+
+  Future<Uint8List?> captureNativeWebViewPreview() async {
+    if (_androidWebViewId == null ||
+        isShowingStartPage ||
+        isShowingHeavenSearch) {
+      return null;
+    }
+    return NativeShieldBridge.instance.captureWebViewPreview(
+      _androidWebViewId!,
+    );
   }
 
   void _syncVirtualEntryWithWebUrl(String url) {

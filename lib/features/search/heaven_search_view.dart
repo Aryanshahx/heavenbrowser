@@ -241,7 +241,7 @@ class _HeavenSearchViewState extends State<HeavenSearchView> {
             height: 44,
             decoration: BoxDecoration(
               color: isDark
-                  ? const Color(0xFF140D29)
+                  ? AppTheme.navyElevated
                   : colors.surfaceContainerHighest.withValues(alpha: 0.55),
               borderRadius: BorderRadius.circular(22),
               border: Border.all(color: colors.primary.withValues(alpha: 0.38)),
@@ -361,7 +361,7 @@ class _HeavenSearchViewState extends State<HeavenSearchView> {
                 _FilterPillButton(
                   icon: Icons.verified_user_outlined,
                   label: _filters.safe.label,
-                  active: _filters.safe != HeavenSafeFilter.moderate,
+                  active: _filters.safe != HeavenSafeFilter.off,
                   onTap: () => _pickSafeFilter(context),
                 ),
                 if (_filters.hasActiveCustomFilter) ...<Widget>[
@@ -468,7 +468,7 @@ class _HeavenSearchViewState extends State<HeavenSearchView> {
     return Container(
       margin: const EdgeInsets.only(bottom: 12),
       decoration: BoxDecoration(
-        color: isDark ? const Color(0xFF120B24) : Colors.white,
+        color: isDark ? AppTheme.navySurface : Colors.white,
         borderRadius: BorderRadius.circular(18),
         border: Border.all(
           color: colors.outlineVariant.withValues(alpha: 0.35),
@@ -724,7 +724,7 @@ class _HeavenSearchViewState extends State<HeavenSearchView> {
     return Container(
       margin: const EdgeInsets.only(bottom: 10),
       decoration: BoxDecoration(
-        color: isDark ? const Color(0xFF120B24) : Colors.white,
+        color: isDark ? AppTheme.navySurface : Colors.white,
         borderRadius: BorderRadius.circular(18),
         border: Border.all(
           color: colors.outlineVariant.withValues(alpha: 0.35),
@@ -790,9 +790,7 @@ class _HeavenSearchViewState extends State<HeavenSearchView> {
                 style: Theme.of(context).textTheme.titleSmall?.copyWith(
                   fontSize: 15.5,
                   fontWeight: FontWeight.w700,
-                  color: isDark
-                      ? AppTheme.luminousLavender
-                      : const Color(0xFF5B21B6),
+                  color: isDark ? AppTheme.skyHighlight : AppTheme.sapphireBlue,
                   height: 1.3,
                 ),
               ),

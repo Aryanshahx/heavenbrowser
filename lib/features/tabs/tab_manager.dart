@@ -1,6 +1,9 @@
 import 'dart:async';
+import 'dart:ui' as ui;
 
 import 'package:flutter/foundation.dart';
+import 'package:flutter/rendering.dart';
+import 'package:flutter/widgets.dart';
 import 'package:webview_flutter/webview_flutter.dart';
 
 import '../browser/engine/browser_engine.dart';
@@ -12,16 +15,18 @@ class BrowserTab {
     required this.isIncognito,
     required this.engine,
     required this.createdAt,
-  });
+  }) : repaintKey = GlobalKey();
 
   final String id;
   final bool isIncognito;
   final BrowserEngine engine;
   final DateTime createdAt;
+  final GlobalKey repaintKey;
+  Uint8List? previewBytes;
 
   String get displayTitle {
     if (engine.isShowingStartPage) {
-      return isIncognito ? 'Incognito Tab' : 'Start Page';
+      return isIncognito ? 'Incognito Home' : 'Home';
     }
     if (engine.isShowingHeavenSearch) {
       final String q = engine.heavenSearchQuery;
@@ -32,10 +37,10 @@ class BrowserTab {
 
   String get displaySubtitle {
     if (engine.isShowingStartPage) {
-      return isIncognito ? 'Private stealth session' : 'Heaven Start Deck';
+      return isIncognito ? 'Private stealth session' : 'Heaven Home & News';
     }
     if (engine.isShowingHeavenSearch) {
-      return 'Heaven Private Search';
+      return 'Heaven Search';
     }
     return engine.currentHost ?? (engine.currentUrl ?? '');
   }
@@ -81,6 +86,38 @@ class TabManagerController extends ChangeNotifier {
   BrowserEngine get activeEngine => activeTab.engine;
   bool get isActiveIncognito => activeTab.isIncognito;
 
+  Future<void> captureTabPreview(BrowserTab tab) async {
+    if (!enablePlatformWebView) {
+      return;
+    }
+    try {
+      // 1. If showing a native WebView website, capture live Android WebView pixels
+      final Uint8List? webShot = await tab.engine.captureNativeWebViewPreview();
+      if (webShot != null && webShot.isNotEmpty) {
+        tab.previewBytes = webShot;
+        notifyListeners();
+        return;
+      }
+      // 2. Otherwise capture the Flutter RepaintBoundary (Home / Search screen)
+      final BuildContext? ctx = tab.repaintKey.currentContext;
+      if (ctx == null || !ctx.mounted) return;
+      final RenderObject? ro = ctx.findRenderObject();
+      if (ro is RenderRepaintBoundary && !ro.debugNeedsPaint) {
+        final ui.Image img = await ro.toImage(pixelRatio: 1.25);
+        final ByteData? byteData = await img.toByteData(
+          format: ui.ImageByteFormat.png,
+        );
+        img.dispose();
+        if (byteData != null) {
+          tab.previewBytes = byteData.buffer.asUint8List();
+          notifyListeners();
+        }
+      }
+    } catch (_) {
+      // Non-fatal fallback if surface isn't ready yet.
+    }
+  }
+
   BrowserTab _spawnTab({required bool incognito, required bool switchTo}) {
     final String id = 'tab_${_nextIdCounter++}';
     final BrowserEngine engine = BrowserEngine(
@@ -112,6 +149,9 @@ class TabManagerController extends ChangeNotifier {
     String? initialInput,
     bool switchTo = true,
   }) async {
+    if (switchTo && _tabs.isNotEmpty) {
+      unawaited(captureTabPreview(activeTab));
+    }
     final BrowserTab tab = _spawnTab(incognito: incognito, switchTo: switchTo);
     notifyListeners();
     if (initialInput != null && initialInput.trim().isNotEmpty) {
@@ -128,6 +168,7 @@ class TabManagerController extends ChangeNotifier {
     if (!exists) {
       return;
     }
+    unawaited(captureTabPreview(activeTab));
     _activeTabId = tabId;
     notifyListeners();
   }
@@ -141,7 +182,6 @@ class TabManagerController extends ChangeNotifier {
     removed.engine.removeListener(_onTabEngineChanged);
 
     if (removed.isIncognito) {
-      // Wipe tab WebView data if this was the last Incognito tab
       final bool moreIncognito = _tabs.any((BrowserTab t) => t.isIncognito);
       if (!moreIncognito && enablePlatformWebView) {
         await _scrubIncognitoSession(removed.engine);
@@ -152,7 +192,6 @@ class TabManagerController extends ChangeNotifier {
     if (_tabs.isEmpty) {
       _spawnTab(incognito: false, switchTo: true);
     } else if (_activeTabId == tabId) {
-      // Prefer staying in same mode if another tab of same mode exists
       final List<BrowserTab> sameMode = _tabs
           .where((BrowserTab t) => t.isIncognito == removed.isIncognito)
           .toList();

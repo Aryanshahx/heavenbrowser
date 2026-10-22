@@ -275,7 +275,7 @@ class _LibraryScreenState extends State<LibraryScreen>
     required VoidCallback onDelete,
   }) {
     return Material(
-      color: isDark ? const Color(0xFF130B26) : Colors.white,
+      color: isDark ? AppTheme.navySurface : Colors.white,
       borderRadius: BorderRadius.circular(18),
       child: InkWell(
         borderRadius: BorderRadius.circular(18),

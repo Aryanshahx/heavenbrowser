@@ -1,12 +1,20 @@
 package com.hypertechlabs.heavenbrowser;
 
+import android.Manifest;
 import android.app.Activity;
-import android.app.DownloadManager;
+import android.app.Notification;
+import android.app.NotificationChannel;
+import android.app.NotificationManager;
+import android.app.PendingIntent;
 import android.content.ActivityNotFoundException;
+import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
-import android.database.Cursor;
+import android.content.IntentFilter;
+import android.content.pm.PackageManager;
 import android.graphics.Bitmap;
+import android.graphics.Canvas;
+import android.media.MediaScannerConnection;
 import android.net.Uri;
 import android.net.http.SslError;
 import android.os.Build;
@@ -23,6 +31,7 @@ import android.view.View;
 import android.webkit.ClientCertRequest;
 import android.webkit.CookieManager;
 import android.webkit.HttpAuthHandler;
+import android.webkit.MimeTypeMap;
 import android.webkit.ServiceWorkerClient;
 import android.webkit.ServiceWorkerController;
 import android.webkit.SslErrorHandler;
@@ -41,6 +50,13 @@ import io.flutter.plugin.common.MethodChannel;
 import io.flutter.plugin.common.PluginRegistry;
 import io.flutter.plugins.webviewflutter.WebViewFlutterAndroidExternalApi;
 import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
+import java.io.File;
+import java.io.FileOutputStream;
+import java.io.IOException;
+import java.io.InputStream;
+import java.net.HttpURLConnection;
+import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -51,6 +67,9 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicLong;
 
 public class HeavenShieldPlugin
     implements FlutterPlugin,
@@ -59,7 +78,12 @@ public class HeavenShieldPlugin
         PluginRegistry.ActivityResultListener {
 
   private static final String CHANNEL_NAME = "com.hypertechlabs.heavenbrowser/native_shield";
+  private static final String ACTION_DOWNLOAD_CONTROL =
+      "com.hypertechlabs.heavenbrowser.DOWNLOAD_CONTROL";
+  private static final String NOTIF_CHANNEL_PROGRESS = "heaven_dl_progress_v5";
+  private static final String NOTIF_CHANNEL_COMPLETE = "heaven_dl_complete_v5";
   private static final int VOICE_SEARCH_REQUEST_CODE = 49021;
+  private static final int NOTIF_PERM_REQUEST_CODE = 49022;
 
   private static final byte[] TRANSPARENT_GIF = new byte[] {
     0x47, 0x49, 0x46, 0x38, 0x39, 0x61, 0x01, 0x00, 0x01, 0x00, (byte) 0x80, 0x00,
@@ -101,12 +125,82 @@ public class HeavenShieldPlugin
           + "}catch(_){}"
           + "})();";
 
+  private static final class DownloadJob {
+    final long id;
+    final String url;
+    final String fileName;
+    volatile String mimeType;
+    final String userAgent;
+    final String cookies;
+    final String referer;
+    final File targetFile;
+    final File partFile;
+
+    volatile String state = "running"; // running, paused, completed, failed, canceled
+    final AtomicLong bytesDownloaded = new AtomicLong(0L);
+    volatile long totalBytes = -1L;
+    volatile long speedBytesPerSec = 0L;
+    volatile boolean supportsRange = true;
+    volatile String etag = "";
+    volatile boolean pauseRequested = false;
+    volatile boolean cancelRequested = false;
+    volatile HttpURLConnection activeConn;
+    volatile InputStream activeStream;
+
+    DownloadJob(
+        long id,
+        String url,
+        String fileName,
+        String mimeType,
+        String userAgent,
+        String cookies,
+        String referer,
+        File targetFile,
+        File partFile) {
+      this.id = id;
+      this.url = url;
+      this.fileName = fileName;
+      this.mimeType = mimeType != null ? mimeType : "";
+      this.userAgent = userAgent != null ? userAgent : "";
+      this.cookies = cookies != null ? cookies : "";
+      this.referer = referer != null ? referer : "";
+      this.targetFile = targetFile;
+      this.partFile = partFile;
+    }
+
+    int notifId() {
+      return 70000 + (int) (Math.abs(id) % 20000L);
+    }
+
+    Map<String, Object> toMap() {
+      Map<String, Object> m = new HashMap<>();
+      m.put("downloadId", id);
+      m.put("url", url);
+      m.put("fileName", fileName);
+      m.put("mimeType", mimeType);
+      m.put("state", state);
+      m.put("bytesDownloaded", bytesDownloaded.get());
+      m.put("totalBytes", totalBytes);
+      m.put("speedBytesPerSec", speedBytesPerSec);
+      m.put("supportsRange", supportsRange);
+      File f = "completed".equals(state) ? targetFile : partFile;
+      m.put("localUri", f.getAbsolutePath());
+      return m;
+    }
+  }
+
   private Activity activity;
   private ActivityPluginBinding activityBinding;
   private final Handler mainHandler = new Handler(Looper.getMainLooper());
   private FlutterPluginBinding pluginBinding;
   private MethodChannel channel;
   private MethodChannel.Result pendingVoiceResult;
+
+  private final ExecutorService downloadPool = Executors.newCachedThreadPool();
+  private final Map<Long, DownloadJob> downloadJobs = new ConcurrentHashMap<>();
+  private final AtomicLong idGenerator = new AtomicLong(System.currentTimeMillis());
+  private BroadcastReceiver controlReceiver;
+  private boolean notifChannelsReady = false;
 
   private volatile boolean shieldEnabled = true;
   private volatile boolean desktopMode = false;
@@ -122,16 +216,28 @@ public class HeavenShieldPlugin
     this.activity = activity;
   }
 
+  private Context resolveContext() {
+    if (this.activity != null) {
+      return this.activity;
+    }
+    if (this.pluginBinding != null) {
+      return this.pluginBinding.getApplicationContext();
+    }
+    return null;
+  }
+
   @Override
   public void onAttachedToEngine(FlutterPluginBinding binding) {
     this.pluginBinding = binding;
     this.channel = new MethodChannel(binding.getBinaryMessenger(), CHANNEL_NAME);
     this.channel.setMethodCallHandler(this);
     setupServiceWorkerShield();
+    registerDownloadControlReceiver(binding.getApplicationContext());
   }
 
   @Override
   public void onDetachedFromEngine(FlutterPluginBinding binding) {
+    unregisterDownloadControlReceiver(binding.getApplicationContext());
     if (this.channel != null) {
       this.channel.setMethodCallHandler(null);
       this.channel = null;
@@ -168,39 +274,113 @@ public class HeavenShieldPlugin
     this.activity = null;
   }
 
+  private void registerDownloadControlReceiver(Context appContext) {
+    if (appContext == null || controlReceiver != null) {
+      return;
+    }
+    controlReceiver =
+        new BroadcastReceiver() {
+          @Override
+          public void onReceive(Context context, Intent intent) {
+            if (intent == null || !ACTION_DOWNLOAD_CONTROL.equals(intent.getAction())) {
+              return;
+            }
+            long id = intent.getLongExtra("downloadId", -1L);
+            String cmd = intent.getStringExtra("cmd");
+            if (id <= 0 || cmd == null) {
+              return;
+            }
+            if ("pause".equals(cmd)) {
+              pauseDownloadInternal(id);
+            } else if ("resume".equals(cmd)) {
+              resumeDownloadInternal(id);
+            } else if ("cancel".equals(cmd)) {
+              cancelDownloadInternal(id);
+            }
+          }
+        };
+    IntentFilter filter = new IntentFilter(ACTION_DOWNLOAD_CONTROL);
+    if (Build.VERSION.SDK_INT >= 33) {
+      appContext.registerReceiver(controlReceiver, filter, Context.RECEIVER_NOT_EXPORTED);
+    } else {
+      appContext.registerReceiver(controlReceiver, filter);
+    }
+  }
+
+  private void unregisterDownloadControlReceiver(Context appContext) {
+    if (appContext != null && controlReceiver != null) {
+      try {
+        appContext.unregisterReceiver(controlReceiver);
+      } catch (IllegalArgumentException ignored) {
+        // Already unregistered.
+      }
+      controlReceiver = null;
+    }
+  }
+
+  private void ensureNotificationSetup() {
+    Context ctx = resolveContext();
+    if (ctx == null) {
+      return;
+    }
+    if (Build.VERSION.SDK_INT >= 33 && this.activity != null) {
+      if (this.activity.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS)
+          != PackageManager.PERMISSION_GRANTED) {
+        this.activity.requestPermissions(
+            new String[] {Manifest.permission.POST_NOTIFICATIONS}, NOTIF_PERM_REQUEST_CODE);
+      }
+    }
+    if (notifChannelsReady || Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
+      return;
+    }
+    NotificationManager nm =
+        (NotificationManager) ctx.getSystemService(Context.NOTIFICATION_SERVICE);
+    if (nm == null) {
+      return;
+    }
+    NotificationChannel progressChannel =
+        new NotificationChannel(
+            NOTIF_CHANNEL_PROGRESS,
+            "Active Downloads",
+            NotificationManager.IMPORTANCE_LOW);
+    progressChannel.setDescription("Live progress for files downloading in Heaven Browser");
+    progressChannel.setShowBadge(false);
+    nm.createNotificationChannel(progressChannel);
+
+    NotificationChannel completeChannel =
+        new NotificationChannel(
+            NOTIF_CHANNEL_COMPLETE,
+            "Completed Downloads",
+            NotificationManager.IMPORTANCE_DEFAULT);
+    completeChannel.setDescription("Alerts when a download finishes");
+    nm.createNotificationChannel(completeChannel);
+    notifChannelsReady = true;
+  }
+
   @Override
   public boolean onActivityResult(int requestCode, int resultCode, Intent data) {
     if (requestCode == VOICE_SEARCH_REQUEST_CODE) {
       MethodChannel.Result callback = this.pendingVoiceResult;
       this.pendingVoiceResult = null;
-      if (callback != null) {
-        if (resultCode == Activity.RESULT_OK && data != null) {
-          ArrayList<String> matches =
-              data.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS);
-          if (matches != null && !matches.isEmpty() && matches.get(0) != null) {
-            callback.success(matches.get(0).trim());
-            return true;
-          }
-        }
-        callback.success(null);
+      if (callback == null) {
+        return true;
       }
+      if (resultCode == Activity.RESULT_OK && data != null) {
+        ArrayList<String> matches =
+            data.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS);
+        if (matches != null && !matches.isEmpty() && matches.get(0) != null) {
+          callback.success(matches.get(0).trim());
+          return true;
+        }
+      }
+      callback.success(null);
       return true;
     }
     return false;
   }
 
-  private Context getAppContext() {
-    if (activity != null) {
-      return activity.getApplicationContext();
-    }
-    if (pluginBinding != null) {
-      return pluginBinding.getApplicationContext();
-    }
-    return null;
-  }
-
   private void setupServiceWorkerShield() {
-    if (serviceWorkerHooked || Build.VERSION.SDK_INT < Build.VERSION_CODES.N) {
+    if (serviceWorkerHooked) {
       return;
     }
     try {
@@ -209,336 +389,373 @@ public class HeavenShieldPlugin
           new ServiceWorkerClient() {
             @Override
             public WebResourceResponse shouldInterceptRequest(WebResourceRequest request) {
-              String matched = evaluateRequestBlock(request, null);
-              if (matched != null) {
-                notifyBlocked(-1L, matched);
-                return buildSurrogateResponse(request);
-              }
-              return null;
+              return interceptIfAdOrTracker(-1L, request);
             }
           });
       serviceWorkerHooked = true;
     } catch (Throwable ignored) {
+      // Older WebView builds may lack ServiceWorkerController support.
     }
   }
 
   @Override
-  @SuppressWarnings("unchecked")
   public void onMethodCall(MethodCall call, MethodChannel.Result result) {
     switch (call.method) {
-      case "updateConfig": {
-        Boolean enabled = call.argument("shieldEnabled");
-        Boolean desktop = call.argument("desktopMode");
-        List<String> domains = call.argument("blockedDomains");
-        List<String> trusted = call.argument("trustedHosts");
-        String script = call.argument("cosmeticScript");
+      case "openDefaultBrowserSettings":
+        result.success(openDefaultBrowserSettings());
+        break;
 
-        if (enabled != null) {
-          this.shieldEnabled = enabled;
-        }
-        if (desktop != null) {
-          this.desktopMode = desktop;
-        }
-        if (domains != null) {
-          Set<String> next = new HashSet<>(domains.size() * 2);
-          for (String d : domains) {
-            if (d != null && !d.isEmpty()) {
-              next.add(d.trim().toLowerCase(Locale.US));
-            }
-          }
-          this.blockedDomains = next;
-        }
-        if (trusted != null) {
-          Set<String> nextTrusted = new HashSet<>(trusted.size() * 2);
-          for (String t : trusted) {
-            if (t != null && !t.isEmpty()) {
-              nextTrusted.add(normalizeHost(t));
-            }
-          }
-          this.trustedHosts = nextTrusted;
-        }
-        if (script != null) {
-          this.cosmeticScript = script;
-        }
+      case "startVoiceSearch":
+        startVoiceSearch(result);
+        break;
+
+      case "updateConfig":
+      case "updateShieldConfig":
+        handleUpdateConfig(call);
         result.success(true);
         break;
-      }
-      case "attachToWebView": {
-        Number idNum = call.argument("webViewId");
-        String pageHost = call.argument("pageHost");
-        Boolean desktop = call.argument("desktopMode");
-        if (idNum == null || pluginBinding == null) {
+
+      case "attachToWebView":
+        Object idObj = call.argument("webViewId");
+        String initHost = call.argument("pageHost");
+        Boolean initDesktop = call.argument("desktopMode");
+        if (initDesktop != null) {
+          this.desktopMode = initDesktop;
+        }
+        if (idObj instanceof Number) {
+          long wvId = ((Number) idObj).longValue();
+          if (initHost != null && !initHost.trim().isEmpty()) {
+            currentPageHosts.put(wvId, normalizeHost(initHost));
+          }
+          boolean attached = attachShieldToWebView(wvId);
+          result.success(attached);
+        } else {
           result.success(false);
-          return;
-        }
-        long webViewId = idNum.longValue();
-        if (desktop != null) {
-          this.desktopMode = desktop;
-        }
-        if (pageHost != null && !pageHost.isEmpty()) {
-          currentPageHosts.put(webViewId, normalizeHost(pageHost));
-        }
-        boolean attached = attachShieldClient(webViewId);
-        result.success(attached);
-        break;
-      }
-      case "applyDesktopViewport": {
-        Number idNum = call.argument("webViewId");
-        Boolean desktop = call.argument("desktopMode");
-        if (desktop != null) {
-          this.desktopMode = desktop;
-        }
-        if (idNum != null && pluginBinding != null) {
-          WebView webView =
-              WebViewFlutterAndroidExternalApi.getWebView(pluginBinding, idNum.longValue());
-          if (webView != null) {
-            configureWebViewViewport(webView, this.desktopMode);
-          }
-        }
-        result.success(true);
-        break;
-      }
-      case "updatePageHost": {
-        Number idNum = call.argument("webViewId");
-        String pageHost = call.argument("pageHost");
-        if (idNum != null) {
-          long webViewId = idNum.longValue();
-          if (pageHost == null || pageHost.isEmpty()) {
-            currentPageHosts.remove(webViewId);
-          } else {
-            currentPageHosts.put(webViewId, normalizeHost(pageHost));
-          }
-        }
-        result.success(true);
-        break;
-      }
-      case "startVoiceSearch": {
-        if (activity == null) {
-          result.success(null);
-          return;
-        }
-        if (pendingVoiceResult != null) {
-          pendingVoiceResult.success(null);
-          pendingVoiceResult = null;
-        }
-        try {
-          Intent intent = new Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH);
-          intent.putExtra(
-              RecognizerIntent.EXTRA_LANGUAGE_MODEL,
-              RecognizerIntent.LANGUAGE_MODEL_WEB_SEARCH);
-          intent.putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1);
-          intent.putExtra(RecognizerIntent.EXTRA_PROMPT, "Speak to search");
-          pendingVoiceResult = result;
-          activity.startActivityForResult(intent, VOICE_SEARCH_REQUEST_CODE);
-        } catch (ActivityNotFoundException e) {
-          pendingVoiceResult = null;
-          result.success("__UNAVAILABLE__");
-        } catch (Throwable t) {
-          pendingVoiceResult = null;
-          result.success(null);
         }
         break;
-      }
-      case "startDownload": {
-        String url = call.argument("url");
-        String fileName = call.argument("fileName");
-        String mimeType = call.argument("mimeType");
-        String userAgent = call.argument("userAgent");
-        Map<String, Object> dlInfo =
-            enqueueSystemDownload(url, userAgent, null, mimeType, fileName, -1L);
-        result.success(dlInfo);
-        break;
-      }
-      case "queryDownloads": {
-        List<Number> rawIds = call.argument("downloadIds");
-        result.success(queryDownloadStatuses(rawIds));
-        break;
-      }
-      case "cancelDownload": {
-        Number idNum = call.argument("downloadId");
-        Context ctx = getAppContext();
-        if (idNum != null && ctx != null) {
-          DownloadManager dm =
-              (DownloadManager) ctx.getSystemService(Context.DOWNLOAD_SERVICE);
-          if (dm != null) {
-            dm.remove(idNum.longValue());
-          }
-        }
-        result.success(true);
-        break;
-      }
-      case "openDownloadedFile": {
-        Number idNum = call.argument("downloadId");
-        result.success(openDownloadedItem(idNum != null ? idNum.longValue() : -1L));
-        break;
-      }
-      case "openDefaultBrowserSettings": {
-        try {
-          if (activity != null) {
-            Intent intent = new Intent(Settings.ACTION_MANAGE_DEFAULT_APPS_SETTINGS);
-            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-            activity.startActivity(intent);
+
+      case "applyDesktopViewport":
+        Object dvId = call.argument("webViewId");
+        Boolean enabledArg = call.argument("desktopMode");
+        boolean wantDesktop = enabledArg != null && enabledArg;
+        this.desktopMode = wantDesktop;
+        if (dvId instanceof Number && pluginBinding != null) {
+          WebView wv =
+              WebViewFlutterAndroidExternalApi.getWebView(
+                  pluginBinding, ((Number) dvId).longValue());
+          if (wv != null) {
+            applyDesktopSettingsToWebView(wv, wantDesktop);
             result.success(true);
-          } else {
-            result.success(false);
+            return;
           }
-        } catch (Throwable t) {
+        }
+        result.success(false);
+        break;
+
+      case "captureWebViewPreview":
+        Object capId = call.argument("webViewId");
+        if (capId instanceof Number && pluginBinding != null) {
+          captureWebViewPreview(((Number) capId).longValue(), result);
+        } else {
+          result.success(null);
+        }
+        break;
+
+      case "updatePageHost":
+      case "setWebViewPageHost":
+        Object wvIdObj = call.argument("webViewId");
+        String pageHost = call.argument("pageHost");
+        if (pageHost == null) {
+          pageHost = call.argument("host");
+        }
+        if (wvIdObj instanceof Number) {
+          long id = ((Number) wvIdObj).longValue();
+          if (pageHost == null || pageHost.trim().isEmpty()) {
+            currentPageHosts.remove(id);
+          } else {
+            currentPageHosts.put(id, normalizeHost(pageHost));
+          }
+        }
+        result.success(true);
+        break;
+
+      case "startDownload":
+        handleStartDownload(call, result);
+        break;
+
+      case "restoreDownload":
+        handleRestoreDownload(call, result);
+        break;
+
+      case "pauseDownload":
+        Object pauseId = call.argument("downloadId");
+        if (pauseId instanceof Number) {
+          result.success(pauseDownloadInternal(((Number) pauseId).longValue()));
+        } else {
           result.success(false);
         }
         break;
-      }
+
+      case "resumeDownload":
+        Object resumeId = call.argument("downloadId");
+        if (resumeId instanceof Number) {
+          result.success(resumeDownloadInternal(((Number) resumeId).longValue()));
+        } else {
+          result.success(false);
+        }
+        break;
+
+      case "queryDownloads":
+        handleQueryDownloads(call, result);
+        break;
+
+      case "cancelDownload":
+        Object cancelId = call.argument("downloadId");
+        if (cancelId instanceof Number) {
+          result.success(cancelDownloadInternal(((Number) cancelId).longValue()));
+        } else {
+          result.success(false);
+        }
+        break;
+
+      case "openDownloadedFile":
+        handleOpenDownloadedFile(call, result);
+        break;
+
       default:
         result.notImplemented();
         break;
     }
   }
 
-  private void configureWebViewViewport(WebView webView, boolean desktop) {
-    WebSettings ws = webView.getSettings();
-    ws.setSupportZoom(true);
-    ws.setBuiltInZoomControls(true);
-    ws.setDisplayZoomControls(false);
-    ws.setUseWideViewPort(desktop);
-    ws.setLoadWithOverviewMode(desktop);
-    ws.setLayoutAlgorithm(
-        desktop
-            ? WebSettings.LayoutAlgorithm.NORMAL
-            : WebSettings.LayoutAlgorithm.TEXT_AUTOSIZING);
-    webView.setInitialScale(0);
+  private void captureWebViewPreview(long webViewId, MethodChannel.Result result) {
+    WebView webView = WebViewFlutterAndroidExternalApi.getWebView(pluginBinding, webViewId);
+    if (webView == null || webView.getWidth() <= 0 || webView.getHeight() <= 0) {
+      result.success(null);
+      return;
+    }
+    try {
+      int srcW = webView.getWidth();
+      int srcH = webView.getHeight();
+      int targetW = 360;
+      float scale = (float) targetW / (float) srcW;
+      int targetH = Math.max(240, Math.min(760, Math.round(srcH * scale)));
+
+      Bitmap bitmap = Bitmap.createBitmap(targetW, targetH, Bitmap.Config.ARGB_8888);
+      Canvas canvas = new Canvas(bitmap);
+      canvas.scale(scale, scale);
+      canvas.translate(-webView.getScrollX(), -webView.getScrollY());
+      webView.draw(canvas);
+
+      downloadPool.execute(
+          () -> {
+            try {
+              ByteArrayOutputStream out = new ByteArrayOutputStream(28 * 1024);
+              bitmap.compress(Bitmap.CompressFormat.JPEG, 82, out);
+              bitmap.recycle();
+              byte[] bytes = out.toByteArray();
+              mainHandler.post(() -> result.success(bytes));
+            } catch (Throwable t) {
+              bitmap.recycle();
+              mainHandler.post(() -> result.success(null));
+            }
+          });
+    } catch (Throwable t) {
+      result.success(null);
+    }
   }
 
-  private boolean attachShieldClient(long webViewId) {
-    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O || pluginBinding == null) {
+  private void startVoiceSearch(MethodChannel.Result result) {
+    if (this.activity == null) {
+      result.error("NO_ACTIVITY", "Voice search requires foreground activity", null);
+      return;
+    }
+    if (this.pendingVoiceResult != null) {
+      this.pendingVoiceResult.success(null);
+      this.pendingVoiceResult = null;
+    }
+    try {
+      Intent intent = new Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH);
+      intent.putExtra(
+          RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_WEB_SEARCH);
+      intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE, Locale.getDefault().toLanguageTag());
+      intent.putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1);
+      intent.putExtra(RecognizerIntent.EXTRA_PROMPT, "Speak to search Heaven...");
+      this.pendingVoiceResult = result;
+      this.activity.startActivityForResult(intent, VOICE_SEARCH_REQUEST_CODE);
+    } catch (ActivityNotFoundException e) {
+      this.pendingVoiceResult = null;
+      result.error("NO_VOICE_ENGINE", "Speech recognition is not available on this device", null);
+    }
+  }
+
+  private void handleUpdateConfig(MethodCall call) {
+    Boolean enabledArg = call.argument("shieldEnabled");
+    if (enabledArg != null) {
+      this.shieldEnabled = enabledArg;
+    }
+    Boolean desktopArg = call.argument("desktopMode");
+    if (desktopArg != null) {
+      this.desktopMode = desktopArg;
+    }
+    List<String> domainsArg = call.argument("blockedDomains");
+    if (domainsArg != null) {
+      Set<String> next = new HashSet<>(domainsArg.size() * 2);
+      for (String d : domainsArg) {
+        if (d != null && !d.isEmpty()) {
+          next.add(normalizeHost(d));
+        }
+      }
+      this.blockedDomains = next;
+    }
+    List<String> trustedArg = call.argument("trustedHosts");
+    if (trustedArg != null) {
+      Set<String> nextTrusted = new HashSet<>(trustedArg.size() * 2);
+      for (String h : trustedArg) {
+        if (h != null && !h.isEmpty()) {
+          nextTrusted.add(normalizeHost(h));
+        }
+      }
+      this.trustedHosts = nextTrusted;
+    }
+    String scriptArg = call.argument("cosmeticScript");
+    if (scriptArg != null) {
+      this.cosmeticScript = scriptArg;
+    }
+  }
+
+  private void applyDesktopSettingsToWebView(WebView webView, boolean enableDesktop) {
+    WebSettings settings = webView.getSettings();
+    settings.setUseWideViewPort(enableDesktop);
+    settings.setLoadWithOverviewMode(enableDesktop);
+    settings.setSupportZoom(true);
+    settings.setBuiltInZoomControls(true);
+    settings.setDisplayZoomControls(false);
+    if (enableDesktop) {
+      webView.setInitialScale(0);
+      webView.evaluateJavascript(DESKTOP_VIEWPORT_SCRIPT, null);
+    } else {
+      webView.setInitialScale(0);
+      webView.evaluateJavascript(MOBILE_VIEWPORT_RESET_SCRIPT, null);
+    }
+  }
+
+  private boolean attachShieldToWebView(final long webViewId) {
+    if (pluginBinding == null) {
       return false;
     }
     WebView webView = WebViewFlutterAndroidExternalApi.getWebView(pluginBinding, webViewId);
     if (webView == null) {
       return false;
     }
-    configureWebViewViewport(webView, this.desktopMode);
-    webView.getSettings().setSupportMultipleWindows(false);
-    webView.getSettings().setJavaScriptCanOpenWindowsAutomatically(false);
 
-    // Attach native DownloadListener so tapping any downloadable file starts DownloadManager
-    webView.setDownloadListener(
-        (String url,
-            String userAgent,
-            String contentDisposition,
-            String mimetype,
-            long contentLength) -> {
-          Map<String, Object> info =
-              enqueueSystemDownload(
-                  url, userAgent, contentDisposition, mimetype, null, contentLength);
-          if (info != null) {
-            mainHandler.post(
-                () -> {
-                  if (channel != null) {
-                    channel.invokeMethod("onDownloadStarted", info);
-                  }
-                });
-          }
-        });
+    applyDesktopSettingsToWebView(webView, this.desktopMode);
+    installPullToRefreshListener(webView, webViewId);
+    installDownloadListener(webView, webViewId);
 
-    // Attach non-blocking Pull-to-Refresh gesture tracker
-    attachPullToRefreshListener(webViewId, webView);
-
-    WebViewClient existing = webView.getWebViewClient();
-    if (existing instanceof ShieldWebViewClient) {
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+      WebViewClient existing = webView.getWebViewClient();
+      if (!(existing instanceof ShieldWebViewClient)) {
+        webView.setWebViewClient(new ShieldWebViewClient(webViewId, existing));
+      }
       return true;
     }
-    webView.setWebViewClient(new ShieldWebViewClient(webViewId, existing));
-    return true;
+    return false;
   }
 
-  private void attachPullToRefreshListener(long webViewId, WebView webView) {
+  private void installPullToRefreshListener(final WebView webView, final long webViewId) {
     final float density = webView.getResources().getDisplayMetrics().density;
-    final float slopPx = 22.0f * density;
-    final float triggerDistancePx = 118.0f * density;
+    final float triggerPx = 118.0f * density;
+    final float touchSlopPx = 12.0f * density;
 
     webView.setOnTouchListener(
         new View.OnTouchListener() {
-          private float startX = 0f;
-          private float startY = 0f;
+          private float startY = -1f;
+          private float startX = -1f;
           private boolean trackingTopPull = false;
-          private float lastProgress = 0f;
-          private long lastEmitUptime = 0L;
+          private boolean draggingRefresh = false;
 
           @Override
           public boolean onTouch(View v, MotionEvent event) {
             int action = event.getActionMasked();
+            if (event.getPointerCount() > 1) {
+              if (draggingRefresh) {
+                emitPullProgress(webViewId, 0.0);
+              }
+              trackingTopPull = false;
+              draggingRefresh = false;
+              return false;
+            }
+
             switch (action) {
-              case MotionEvent.ACTION_DOWN: {
-                if (!webView.canScrollVertically(-1)
-                    && webView.getScrollY() <= 2
-                    && event.getPointerCount() == 1) {
-                  startX = event.getX();
-                  startY = event.getY();
+              case MotionEvent.ACTION_DOWN:
+                if (webView.getScrollY() <= 2 && !webView.canScrollVertically(-1)) {
+                  startY = event.getRawY();
+                  startX = event.getRawX();
                   trackingTopPull = true;
-                  lastProgress = 0f;
+                  draggingRefresh = false;
                 } else {
                   trackingTopPull = false;
+                  draggingRefresh = false;
                 }
                 break;
-              }
-              case MotionEvent.ACTION_POINTER_DOWN: {
-                if (trackingTopPull && lastProgress > 0f) {
-                  emitPullProgress(webViewId, 0f);
-                }
-                trackingTopPull = false;
-                lastProgress = 0f;
-                break;
-              }
-              case MotionEvent.ACTION_MOVE: {
+
+              case MotionEvent.ACTION_MOVE:
                 if (!trackingTopPull) {
                   break;
                 }
-                if (webView.canScrollVertically(-1) || event.getPointerCount() > 1) {
-                  trackingTopPull = false;
-                  if (lastProgress > 0f) {
-                    lastProgress = 0f;
-                    emitPullProgress(webViewId, 0f);
+                if (webView.getScrollY() > 2 || webView.canScrollVertically(-1)) {
+                  if (draggingRefresh) {
+                    emitPullProgress(webViewId, 0.0);
                   }
+                  trackingTopPull = false;
+                  draggingRefresh = false;
                   break;
                 }
-                float dy = event.getY() - startY;
-                float dx = Math.abs(event.getX() - startX);
-                if (dy > slopPx && dy > dx * 1.4f) {
-                  float raw = (dy - slopPx) / triggerDistancePx;
-                  float clamped = Math.max(0f, Math.min(1f, raw));
-                  long now = SystemClock.uptimeMillis();
-                  if (Math.abs(clamped - lastProgress) >= 0.04f && (now - lastEmitUptime) >= 24L) {
-                    lastProgress = clamped;
-                    lastEmitUptime = now;
-                    emitPullProgress(webViewId, clamped);
+                float dy = event.getRawY() - startY;
+                float dx = Math.abs(event.getRawX() - startX);
+                if (!draggingRefresh) {
+                  if (dy > touchSlopPx && dy > dx * 1.35f) {
+                    draggingRefresh = true;
+                    MotionEvent cancel =
+                        MotionEvent.obtain(
+                            SystemClock.uptimeMillis(),
+                            SystemClock.uptimeMillis(),
+                            MotionEvent.ACTION_CANCEL,
+                            event.getX(),
+                            event.getY(),
+                            0);
+                    webView.onTouchEvent(cancel);
+                    cancel.recycle();
+                  } else if (dy < -touchSlopPx || dx > touchSlopPx * 2.0f) {
+                    trackingTopPull = false;
                   }
-                } else if (dy < 0 && lastProgress > 0f) {
-                  lastProgress = 0f;
-                  emitPullProgress(webViewId, 0f);
+                }
+                if (draggingRefresh) {
+                  double progress = Math.min(1.0, Math.max(0.0, (dy - touchSlopPx) / triggerPx));
+                  emitPullProgress(webViewId, progress);
+                  return true;
                 }
                 break;
-              }
-              case MotionEvent.ACTION_UP: {
-                if (trackingTopPull) {
-                  boolean shouldRefresh = lastProgress >= 0.96f && !webView.canScrollVertically(-1);
+
+              case MotionEvent.ACTION_UP:
+              case MotionEvent.ACTION_CANCEL:
+                if (draggingRefresh) {
+                  float finalDy = event.getRawY() - startY;
+                  boolean triggered =
+                      action == MotionEvent.ACTION_UP && (finalDy - touchSlopPx) >= triggerPx;
+                  emitPullProgress(webViewId, 0.0);
                   trackingTopPull = false;
-                  if (lastProgress > 0f) {
-                    lastProgress = 0f;
-                    emitPullProgress(webViewId, 0f);
-                  }
-                  if (shouldRefresh) {
+                  draggingRefresh = false;
+                  if (triggered) {
                     emitPullRefresh(webViewId);
                   }
-                }
-                break;
-              }
-              case MotionEvent.ACTION_CANCEL: {
-                if (trackingTopPull && lastProgress > 0f) {
-                  lastProgress = 0f;
-                  emitPullProgress(webViewId, 0f);
+                  return true;
                 }
                 trackingTopPull = false;
+                draggingRefresh = false;
                 break;
-              }
+
               default:
                 break;
             }
@@ -547,361 +764,923 @@ public class HeavenShieldPlugin
         });
   }
 
-  private void emitPullProgress(long webViewId, float progress) {
+  private void emitPullProgress(final long webViewId, final double progress) {
     mainHandler.post(
         () -> {
-          if (channel != null) {
-            Map<String, Object> payload = new HashMap<>();
+          MethodChannel ch = this.channel;
+          if (ch != null) {
+            Map<String, Object> payload = new HashMap<>(4);
             payload.put("webViewId", webViewId);
-            payload.put("progress", (double) progress);
-            channel.invokeMethod("onPullProgress", payload);
+            payload.put("progress", progress);
+            ch.invokeMethod("onPullProgress", payload);
           }
         });
   }
 
-  private void emitPullRefresh(long webViewId) {
+  private void emitPullRefresh(final long webViewId) {
     mainHandler.post(
         () -> {
-          if (channel != null) {
-            Map<String, Object> payload = new HashMap<>();
+          MethodChannel ch = this.channel;
+          if (ch != null) {
+            Map<String, Object> payload = new HashMap<>(2);
             payload.put("webViewId", webViewId);
-            channel.invokeMethod("onPullRefresh", payload);
+            ch.invokeMethod("onPullRefresh", payload);
           }
         });
   }
 
-  private Map<String, Object> enqueueSystemDownload(
-      String url,
-      String userAgent,
-      String contentDisposition,
-      String mimeType,
-      String explicitFileName,
-      long contentLength) {
-    Context ctx = getAppContext();
-    if (ctx == null || url == null || url.trim().isEmpty()) {
-      return null;
+  private void installDownloadListener(final WebView webView, final long webViewId) {
+    webView.setDownloadListener(
+        (url, userAgent, contentDisposition, mimeType, contentLength) -> {
+          if (url == null || url.isEmpty()) {
+            return;
+          }
+          mainHandler.post(
+              () -> {
+                String currentUrl = webView.getUrl();
+                boolean wasEmptyPage =
+                    currentUrl == null
+                        || currentUrl.trim().isEmpty()
+                        || "about:blank".equalsIgnoreCase(currentUrl.trim());
+                // Prevent WebView from staying stuck on an aborted binary stream navigation!
+                webView.stopLoading();
+
+                String guessedName = URLUtil.guessFileName(url, contentDisposition, mimeType);
+                DownloadJob job =
+                    createAndStartJob(
+                        url,
+                        guessedName,
+                        mimeType,
+                        userAgent,
+                        currentUrl,
+                        contentLength,
+                        null,
+                        true);
+                if (job != null && this.channel != null) {
+                  Map<String, Object> info = job.toMap();
+                  info.put("webViewId", webViewId);
+                  info.put("wasEmptyPage", wasEmptyPage);
+                  this.channel.invokeMethod("onDownloadStarted", info);
+                }
+              });
+        });
+  }
+
+  private File resolveDownloadsDir(Context ctx) {
+    File pub = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS);
+    if (pub != null && (pub.exists() || pub.mkdirs()) && pub.canWrite()) {
+      return pub;
     }
-    String trimmedUrl = url.trim();
-    if (!trimmedUrl.startsWith("http://") && !trimmedUrl.startsWith("https://")) {
-      return null;
+    File fallback = ctx.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS);
+    if (fallback != null && !fallback.exists()) {
+      //noinspection ResultOfMethodCallIgnored
+      fallback.mkdirs();
+    }
+    return fallback != null ? fallback : ctx.getFilesDir();
+  }
+
+  private File uniqueTargetFile(File dir, String rawName) {
+    String safe =
+        rawName == null || rawName.trim().isEmpty()
+            ? "download.bin"
+            : rawName.replaceAll("[\\\\/:*?\"<>|]", "_").trim();
+    File candidate = new File(dir, safe);
+    if (!candidate.exists() && !new File(dir, safe + ".part").exists()) {
+      return candidate;
+    }
+    int dot = safe.lastIndexOf('.');
+    String base = dot > 0 ? safe.substring(0, dot) : safe;
+    String ext = dot > 0 ? safe.substring(dot) : "";
+    for (int i = 1; i <= 999; i++) {
+      String numbered = base + " (" + i + ")" + ext;
+      File c = new File(dir, numbered);
+      if (!c.exists() && !new File(dir, numbered + ".part").exists()) {
+        return c;
+      }
+    }
+    return new File(dir, System.currentTimeMillis() + "_" + safe);
+  }
+
+  private void handleStartDownload(MethodCall call, MethodChannel.Result result) {
+    String url = call.argument("url");
+    String fileName = call.argument("fileName");
+    String mimeType = call.argument("mimeType");
+    String userAgent = call.argument("userAgent");
+    if (url == null || url.trim().isEmpty()) {
+      result.error("INVALID_URL", "Download URL is empty", null);
+      return;
+    }
+    String cleanUrl = url.trim();
+    String resolvedName =
+        (fileName != null && !fileName.trim().isEmpty())
+            ? fileName.trim()
+            : URLUtil.guessFileName(cleanUrl, null, mimeType);
+    DownloadJob job =
+        createAndStartJob(cleanUrl, resolvedName, mimeType, userAgent, null, -1L, null, true);
+    if (job == null) {
+      result.error("DOWNLOAD_ERROR", "Unable to initialize download", null);
+      return;
+    }
+    result.success(job.toMap());
+  }
+
+  private void handleRestoreDownload(MethodCall call, MethodChannel.Result result) {
+    Object idObj = call.argument("downloadId");
+    String url = call.argument("url");
+    String fileName = call.argument("fileName");
+    String mimeType = call.argument("mimeType");
+    String localPath = call.argument("localUri");
+    String savedState = call.argument("state");
+    Object totalObj = call.argument("totalBytes");
+    if (!(idObj instanceof Number) || url == null || url.isEmpty()) {
+      result.success(false);
+      return;
+    }
+    long id = ((Number) idObj).longValue();
+    if (downloadJobs.containsKey(id)) {
+      result.success(true);
+      return;
+    }
+    Context ctx = resolveContext();
+    if (ctx == null) {
+      result.success(false);
+      return;
+    }
+    File dir = resolveDownloadsDir(ctx);
+    String safeName = (fileName != null && !fileName.isEmpty()) ? fileName : "download.bin";
+    File targetFile;
+    File partFile;
+    if (localPath != null && !localPath.isEmpty()) {
+      if (localPath.endsWith(".part")) {
+        partFile = new File(localPath);
+        targetFile = new File(localPath.substring(0, localPath.length() - 5));
+      } else {
+        targetFile = new File(localPath);
+        partFile = new File(localPath + ".part");
+      }
+    } else {
+      targetFile = new File(dir, safeName);
+      partFile = new File(dir, safeName + ".part");
     }
 
+    String cookies = "";
     try {
-      DownloadManager dm = (DownloadManager) ctx.getSystemService(Context.DOWNLOAD_SERVICE);
-      if (dm == null) {
-        return null;
-      }
-      Uri uri = Uri.parse(trimmedUrl);
-      String resolvedName =
-          (explicitFileName != null && !explicitFileName.trim().isEmpty())
-              ? explicitFileName.trim()
-              : URLUtil.guessFileName(trimmedUrl, contentDisposition, mimeType);
-      resolvedName = resolvedName.replaceAll("[\\\\/:*?\"<>|]", "_");
-
-      DownloadManager.Request req = new DownloadManager.Request(uri);
-      req.setTitle(resolvedName);
-      req.setDescription("Downloading via Heaven Browser");
-      req.setNotificationVisibility(
-          DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED);
-      req.setAllowedOverMetered(true);
-      req.setAllowedOverRoaming(true);
-
-      if (mimeType != null && !mimeType.isEmpty()) {
-        req.setMimeType(mimeType);
-      }
-      if (userAgent != null && !userAgent.isEmpty()) {
-        req.addRequestHeader("User-Agent", userAgent);
-      }
-      try {
-        String cookie = CookieManager.getInstance().getCookie(trimmedUrl);
-        if (cookie != null && !cookie.isEmpty()) {
-          req.addRequestHeader("Cookie", cookie);
-        }
-      } catch (Throwable ignored) {
-      }
-
-      try {
-        req.setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, resolvedName);
-      } catch (Throwable fallbackErr) {
-        req.setDestinationInExternalFilesDir(ctx, Environment.DIRECTORY_DOWNLOADS, resolvedName);
-      }
-
-      long downloadId = dm.enqueue(req);
-      Map<String, Object> result = new HashMap<>();
-      result.put("downloadId", downloadId);
-      result.put("url", trimmedUrl);
-      result.put("fileName", resolvedName);
-      result.put("mimeType", mimeType != null ? mimeType : "");
-      result.put("totalBytes", contentLength > 0 ? contentLength : -1L);
-      return result;
-    } catch (Throwable t) {
-      return null;
+      String c = CookieManager.getInstance().getCookie(url);
+      if (c != null) cookies = c;
+    } catch (Throwable ignored) {
     }
+
+    DownloadJob job =
+        new DownloadJob(id, url, safeName, mimeType, "", cookies, "", targetFile, partFile);
+    if (totalObj instanceof Number) {
+      job.totalBytes = ((Number) totalObj).longValue();
+    }
+    if (targetFile.exists() && "completed".equals(savedState)) {
+      job.state = "completed";
+      job.bytesDownloaded.set(targetFile.length());
+      if (job.totalBytes <= 0) job.totalBytes = targetFile.length();
+    } else {
+      job.state = "paused".equals(savedState) ? "paused" : "failed";
+      if (partFile.exists()) {
+        job.bytesDownloaded.set(partFile.length());
+      }
+    }
+    downloadJobs.put(id, job);
+    result.success(true);
   }
 
-  private List<Map<String, Object>> queryDownloadStatuses(List<Number> rawIds) {
-    Context ctx = getAppContext();
-    if (ctx == null || rawIds == null || rawIds.isEmpty()) {
-      return Collections.emptyList();
+  private DownloadJob createAndStartJob(
+      String url,
+      String fileName,
+      String mimeType,
+      String userAgent,
+      String referer,
+      long initialTotal,
+      Long explicitId,
+      boolean startImmediately) {
+    Context ctx = resolveContext();
+    if (ctx == null) {
+      return null;
     }
-    DownloadManager dm = (DownloadManager) ctx.getSystemService(Context.DOWNLOAD_SERVICE);
-    if (dm == null) {
-      return Collections.emptyList();
-    }
+    ensureNotificationSetup();
 
-    long[] ids = new long[rawIds.size()];
-    for (int i = 0; i < rawIds.size(); i++) {
-      ids[i] = rawIds.get(i).longValue();
-    }
+    File dir = resolveDownloadsDir(ctx);
+    File target = uniqueTargetFile(dir, fileName);
+    File part = new File(target.getParentFile(), target.getName() + ".part");
+    long id = explicitId != null ? explicitId : idGenerator.incrementAndGet();
 
-    List<Map<String, Object>> items = new ArrayList<>();
-    DownloadManager.Query query = new DownloadManager.Query().setFilterById(ids);
-    try (Cursor cursor = dm.query(query)) {
-      if (cursor == null) {
-        return items;
-      }
-      int idxId = cursor.getColumnIndex(DownloadManager.COLUMN_ID);
-      int idxStatus = cursor.getColumnIndex(DownloadManager.COLUMN_STATUS);
-      int idxDownloaded =
-          cursor.getColumnIndex(DownloadManager.COLUMN_BYTES_DOWNLOADED_SO_FAR);
-      int idxTotal = cursor.getColumnIndex(DownloadManager.COLUMN_TOTAL_SIZE_BYTES);
-      int idxLocalUri = cursor.getColumnIndex(DownloadManager.COLUMN_LOCAL_URI);
-      int idxMime = cursor.getColumnIndex(DownloadManager.COLUMN_MEDIA_TYPE);
-
-      while (cursor.moveToNext()) {
-        Map<String, Object> row = new HashMap<>();
-        long id = idxId >= 0 ? cursor.getLong(idxId) : -1L;
-        int status = idxStatus >= 0 ? cursor.getInt(idxStatus) : 0;
-        long downloaded = idxDownloaded >= 0 ? cursor.getLong(idxDownloaded) : 0L;
-        long total = idxTotal >= 0 ? cursor.getLong(idxTotal) : -1L;
-        String localUri = idxLocalUri >= 0 ? cursor.getString(idxLocalUri) : null;
-        String mime = idxMime >= 0 ? cursor.getString(idxMime) : null;
-
-        String stateStr;
-        if (status == DownloadManager.STATUS_SUCCESSFUL) {
-          stateStr = "completed";
-        } else if (status == DownloadManager.STATUS_FAILED) {
-          stateStr = "failed";
-        } else if (status == DownloadManager.STATUS_PAUSED) {
-          stateStr = "paused";
-        } else {
-          stateStr = "running";
-        }
-
-        row.put("downloadId", id);
-        row.put("state", stateStr);
-        row.put("bytesDownloaded", downloaded);
-        row.put("totalBytes", total);
-        row.put("localUri", localUri != null ? localUri : "");
-        row.put("mimeType", mime != null ? mime : "");
-        items.add(row);
+    String cookies = "";
+    try {
+      String rawCookie = CookieManager.getInstance().getCookie(url);
+      if (rawCookie != null) {
+        cookies = rawCookie;
       }
     } catch (Throwable ignored) {
     }
-    return items;
+
+    DownloadJob job =
+        new DownloadJob(
+            id, url, target.getName(), mimeType, userAgent, cookies, referer, target, part);
+    if (initialTotal > 0) {
+      job.totalBytes = initialTotal;
+    }
+    downloadJobs.put(id, job);
+    if (startImmediately) {
+      postDownloadNotification(job);
+      downloadPool.execute(() -> executeDownloadLoop(job));
+    }
+    return job;
   }
 
-  private boolean openDownloadedItem(long downloadId) {
-    Context ctx = getAppContext();
-    if (ctx == null || downloadId < 0) {
+  private boolean pauseDownloadInternal(long id) {
+    DownloadJob job = downloadJobs.get(id);
+    if (job == null) {
+      return false;
+    }
+    if (!"running".equals(job.state)) {
+      return "paused".equals(job.state);
+    }
+    job.pauseRequested = true;
+    job.state = "paused";
+    job.speedBytesPerSec = 0L;
+    closeActiveStreamAsync(job);
+    postDownloadNotification(job);
+    return true;
+  }
+
+  private boolean resumeDownloadInternal(long id) {
+    DownloadJob job = downloadJobs.get(id);
+    if (job == null || "completed".equals(job.state)) {
+      return false;
+    }
+    if ("running".equals(job.state)) {
+      return true;
+    }
+    ensureNotificationSetup();
+    if (job.partFile.exists()) {
+      job.bytesDownloaded.set(job.partFile.length());
+    } else {
+      job.bytesDownloaded.set(0L);
+    }
+    job.pauseRequested = false;
+    job.cancelRequested = false;
+    job.state = "running";
+    postDownloadNotification(job);
+    downloadPool.execute(() -> executeDownloadLoop(job));
+    return true;
+  }
+
+  private boolean cancelDownloadInternal(long id) {
+    DownloadJob job = downloadJobs.remove(id);
+    if (job == null) {
+      return false;
+    }
+    job.cancelRequested = true;
+    job.pauseRequested = false;
+    job.state = "canceled";
+    closeActiveStreamAsync(job);
+    downloadPool.execute(
+        () -> {
+          if (job.partFile.exists()) {
+            //noinspection ResultOfMethodCallIgnored
+            job.partFile.delete();
+          }
+        });
+    cancelNotification(job.notifId());
+    return true;
+  }
+
+  private void closeActiveStreamAsync(final DownloadJob job) {
+    downloadPool.execute(
+        () -> {
+          InputStream in = job.activeStream;
+          HttpURLConnection conn = job.activeConn;
+          job.activeStream = null;
+          job.activeConn = null;
+          if (in != null) {
+            try {
+              in.close();
+            } catch (IOException ignored) {
+            }
+          }
+          if (conn != null) {
+            try {
+              conn.disconnect();
+            } catch (Throwable ignored) {
+            }
+          }
+        });
+  }
+
+  private HttpURLConnection openFollowingRedirects(DownloadJob job, long resumeOffset)
+      throws IOException {
+    String currentUrl = job.url;
+    for (int hop = 0; hop < 8; hop++) {
+      HttpURLConnection conn = (HttpURLConnection) URI.create(currentUrl).toURL().openConnection();
+      conn.setInstanceFollowRedirects(false);
+      conn.setConnectTimeout(15000);
+      conn.setReadTimeout(25000);
+      conn.setRequestProperty(
+          "User-Agent",
+          !job.userAgent.isEmpty()
+              ? job.userAgent
+              : "Mozilla/5.0 (Linux; Android 15) AppleWebKit/537.36 Chrome/134.0.0.0 Mobile Safari/537.36");
+      conn.setRequestProperty("Accept", "*/*");
+      conn.setRequestProperty("Accept-Encoding", "identity");
+      if (!job.cookies.isEmpty()) {
+        conn.setRequestProperty("Cookie", job.cookies);
+      }
+      if (!job.referer.isEmpty()) {
+        conn.setRequestProperty("Referer", job.referer);
+      }
+      if (resumeOffset > 0) {
+        conn.setRequestProperty("Range", "bytes=" + resumeOffset + "-");
+        if (!job.etag.isEmpty()) {
+          conn.setRequestProperty("If-Range", job.etag);
+        }
+      }
+      int status = conn.getResponseCode();
+      if (status == HttpURLConnection.HTTP_MOVED_PERM
+          || status == HttpURLConnection.HTTP_MOVED_TEMP
+          || status == HttpURLConnection.HTTP_SEE_OTHER
+          || status == 307
+          || status == 308) {
+        String loc = conn.getHeaderField("Location");
+        conn.disconnect();
+        if (loc == null || loc.isEmpty()) {
+          throw new IOException("Empty redirect Location");
+        }
+        currentUrl = URI.create(currentUrl).resolve(loc).toString();
+        continue;
+      }
+      return conn;
+    }
+    throw new IOException("Too many redirects");
+  }
+
+  private void executeDownloadLoop(final DownloadJob job) {
+    HttpURLConnection conn = null;
+    InputStream in = null;
+    FileOutputStream out = null;
+    try {
+      File parent = job.partFile.getParentFile();
+      if (parent != null && !parent.exists()) {
+        //noinspection ResultOfMethodCallIgnored
+        parent.mkdirs();
+      }
+      long resumeFrom = job.partFile.exists() ? job.partFile.length() : 0L;
+      job.bytesDownloaded.set(resumeFrom);
+
+      conn = openFollowingRedirects(job, resumeFrom);
+      job.activeConn = conn;
+      if (job.cancelRequested || job.pauseRequested) {
+        return;
+      }
+
+      int code = conn.getResponseCode();
+      String acceptRanges = conn.getHeaderField("Accept-Ranges");
+      if (acceptRanges != null && "none".equalsIgnoreCase(acceptRanges.trim())) {
+        job.supportsRange = false;
+      }
+      String etagHeader = conn.getHeaderField("ETag");
+      if (etagHeader != null && !etagHeader.isEmpty()) {
+        job.etag = etagHeader;
+      }
+      String serverMime = conn.getContentType();
+      if (serverMime != null && !serverMime.isEmpty()) {
+        int semi = serverMime.indexOf(';');
+        job.mimeType = (semi > 0 ? serverMime.substring(0, semi) : serverMime).trim();
+      }
+
+      boolean append;
+      if (code == HttpURLConnection.HTTP_PARTIAL && resumeFrom > 0) {
+        append = true;
+        job.supportsRange = true;
+        long partLen = conn.getContentLengthLong();
+        String contentRange = conn.getHeaderField("Content-Range");
+        long parsedTotal = parseTotalFromContentRange(contentRange);
+        if (parsedTotal > 0) {
+          job.totalBytes = parsedTotal;
+        } else if (partLen > 0) {
+          job.totalBytes = resumeFrom + partLen;
+        }
+      } else if (code >= 200 && code < 300) {
+        append = false;
+        resumeFrom = 0L;
+        job.bytesDownloaded.set(0L);
+        long fullLen = conn.getContentLengthLong();
+        if (fullLen > 0) {
+          job.totalBytes = fullLen;
+        }
+      } else if (code == 416 && resumeFrom > 0 && job.totalBytes > 0 && resumeFrom >= job.totalBytes) {
+        completeDownloadFile(job);
+        return;
+      } else {
+        throw new IOException("HTTP " + code);
+      }
+
+      in = conn.getInputStream();
+      job.activeStream = in;
+      out = new FileOutputStream(job.partFile, append);
+
+      byte[] buf = new byte[32 * 1024];
+      long lastTickTime = SystemClock.elapsedRealtime();
+      long lastTickBytes = job.bytesDownloaded.get();
+      long lastNotifTime = 0L;
+
+      int n;
+      while ((n = in.read(buf)) != -1) {
+        if (job.cancelRequested || job.pauseRequested) {
+          break;
+        }
+        out.write(buf, 0, n);
+        long nowBytes = job.bytesDownloaded.addAndGet(n);
+
+        long nowMs = SystemClock.elapsedRealtime();
+        long elapsed = nowMs - lastTickTime;
+        if (elapsed >= 500L) {
+          job.speedBytesPerSec = ((nowBytes - lastTickBytes) * 1000L) / Math.max(1L, elapsed);
+          lastTickTime = nowMs;
+          lastTickBytes = nowBytes;
+        }
+        if (nowMs - lastNotifTime >= 900L) {
+          lastNotifTime = nowMs;
+          postDownloadNotification(job);
+        }
+      }
+      out.flush();
+
+      if (job.cancelRequested) {
+        cancelNotification(job.notifId());
+        return;
+      }
+      if (job.pauseRequested) {
+        job.state = "paused";
+        job.speedBytesPerSec = 0L;
+        postDownloadNotification(job);
+        return;
+      }
+
+      completeDownloadFile(job);
+    } catch (Throwable err) {
+      if (job.cancelRequested) {
+        cancelNotification(job.notifId());
+      } else if (job.pauseRequested) {
+        job.state = "paused";
+        job.speedBytesPerSec = 0L;
+        postDownloadNotification(job);
+      } else {
+        job.state = "failed";
+        job.speedBytesPerSec = 0L;
+        postDownloadNotification(job);
+      }
+    } finally {
+      job.activeStream = null;
+      job.activeConn = null;
+      if (out != null) {
+        try {
+          out.close();
+        } catch (IOException ignored) {
+        }
+      }
+      if (in != null) {
+        try {
+          in.close();
+        } catch (IOException ignored) {
+        }
+      }
+      if (conn != null) {
+        try {
+          conn.disconnect();
+        } catch (Throwable ignored) {
+        }
+      }
+    }
+  }
+
+  private long parseTotalFromContentRange(String header) {
+    if (header == null) {
+      return -1L;
+    }
+    int slash = header.lastIndexOf('/');
+    if (slash > 0 && slash + 1 < header.length()) {
+      String tail = header.substring(slash + 1).trim();
+      if (!"*".equals(tail)) {
+        try {
+          return Long.parseLong(tail);
+        } catch (NumberFormatException ignored) {
+        }
+      }
+    }
+    return -1L;
+  }
+
+  private void completeDownloadFile(DownloadJob job) throws IOException {
+    if (job.targetFile.exists()) {
+      //noinspection ResultOfMethodCallIgnored
+      job.targetFile.delete();
+    }
+    if (job.partFile.exists() && !job.partFile.renameTo(job.targetFile)) {
+      throw new IOException("Unable to finalize downloaded file");
+    }
+    long finalLen = job.targetFile.length();
+    job.bytesDownloaded.set(finalLen);
+    job.totalBytes = finalLen;
+    job.speedBytesPerSec = 0L;
+    job.state = "completed";
+
+    Context ctx = resolveContext();
+    if (ctx != null) {
+      String resolvedMime = resolveMimeForFile(job.targetFile, job.mimeType);
+      job.mimeType = resolvedMime;
+      try {
+        MediaScannerConnection.scanFile(
+            ctx,
+            new String[] {job.targetFile.getAbsolutePath()},
+            new String[] {resolvedMime},
+            null);
+      } catch (Throwable ignored) {
+      }
+    }
+    postDownloadNotification(job);
+  }
+
+  private String resolveMimeForFile(File file, String fallbackMime) {
+    String name = file.getName();
+    int dot = name.lastIndexOf('.');
+    if (dot >= 0 && dot + 1 < name.length()) {
+      String ext = name.substring(dot + 1).toLowerCase(Locale.US);
+      String fromExt = MimeTypeMap.getSingleton().getMimeTypeFromExtension(ext);
+      if (fromExt != null && !fromExt.isEmpty()) {
+        return fromExt;
+      }
+    }
+    if (fallbackMime != null && !fallbackMime.isEmpty() && !"*/*".equals(fallbackMime)) {
+      return fallbackMime;
+    }
+    return "application/octet-stream";
+  }
+
+  private static String formatBytesShort(long bytes) {
+    if (bytes <= 0) return "0 B";
+    if (bytes < 1024) return bytes + " B";
+    double kb = bytes / 1024.0;
+    if (kb < 1024.0) return String.format(Locale.US, "%.1f KB", kb);
+    double mb = kb / 1024.0;
+    if (mb < 1024.0) return String.format(Locale.US, "%.1f MB", mb);
+    return String.format(Locale.US, "%.2f GB", mb / 1024.0);
+  }
+
+  private PendingIntent buildControlPendingIntent(Context ctx, long id, String cmd, int reqOffset) {
+    Intent intent = new Intent(ACTION_DOWNLOAD_CONTROL);
+    intent.setPackage(ctx.getPackageName());
+    intent.putExtra("downloadId", id);
+    intent.putExtra("cmd", cmd);
+    int flags = PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE;
+    return PendingIntent.getBroadcast(
+        ctx, (int) ((Math.abs(id) % 10000L) * 10L) + reqOffset, intent, flags);
+  }
+
+  @SuppressWarnings("deprecation")
+  private void postDownloadNotification(DownloadJob job) {
+    Context ctx = resolveContext();
+    if (ctx == null) {
+      return;
+    }
+    NotificationManager nm =
+        (NotificationManager) ctx.getSystemService(Context.NOTIFICATION_SERVICE);
+    if (nm == null) {
+      return;
+    }
+    ensureNotificationSetup();
+
+    boolean done = "completed".equals(job.state);
+    boolean paused = "paused".equals(job.state);
+    boolean failed = "failed".equals(job.state);
+
+    Notification.Builder builder;
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+      builder =
+          new Notification.Builder(ctx, done ? NOTIF_CHANNEL_COMPLETE : NOTIF_CHANNEL_PROGRESS);
+    } else {
+      builder = new Notification.Builder(ctx);
+    }
+
+    builder.setContentTitle(job.fileName);
+    builder.setOnlyAlertOnce(!done);
+    builder.setAutoCancel(done || failed);
+
+    long dl = job.bytesDownloaded.get();
+    long tot = job.totalBytes;
+    int pct = (tot > 0) ? (int) Math.min(100L, (dl * 100L) / tot) : 0;
+
+    if (done) {
+      builder.setSmallIcon(android.R.drawable.stat_sys_download_done);
+      builder.setContentText("Download complete \u2022 " + formatBytesShort(tot) + " \u2022 Tap to open");
+      builder.setOngoing(false);
+      try {
+        Uri uri = HeavenFileProvider.getUriForFile(job.targetFile);
+        Intent viewIntent = new Intent(Intent.ACTION_VIEW);
+        viewIntent.setDataAndType(uri, resolveMimeForFile(job.targetFile, job.mimeType));
+        viewIntent.addFlags(
+            Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_GRANT_READ_URI_PERMISSION);
+        PendingIntent pi =
+            PendingIntent.getActivity(
+                ctx,
+                job.notifId(),
+                viewIntent,
+                PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
+        builder.setContentIntent(pi);
+      } catch (Throwable ignored) {
+      }
+    } else if (paused) {
+      builder.setSmallIcon(android.R.drawable.ic_media_pause);
+      String sub =
+          tot > 0
+              ? "Paused \u2022 " + pct + "% (" + formatBytesShort(dl) + " / " + formatBytesShort(tot) + ")"
+              : "Paused \u2022 " + formatBytesShort(dl);
+      builder.setContentText(sub);
+      builder.setProgress(100, pct, false);
+      builder.setOngoing(false);
+      builder.addAction(
+          new Notification.Action.Builder(
+                  null, "Resume", buildControlPendingIntent(ctx, job.id, "resume", 1))
+              .build());
+      builder.addAction(
+          new Notification.Action.Builder(
+                  null, "Cancel", buildControlPendingIntent(ctx, job.id, "cancel", 2))
+              .build());
+    } else if (failed) {
+      builder.setSmallIcon(android.R.drawable.stat_notify_error);
+      builder.setContentText("Download interrupted \u2022 Tap Resume to retry");
+      builder.setOngoing(false);
+      builder.addAction(
+          new Notification.Action.Builder(
+                  null, "Resume", buildControlPendingIntent(ctx, job.id, "resume", 1))
+              .build());
+    } else {
+      builder.setSmallIcon(android.R.drawable.stat_sys_download);
+      String speedTxt =
+          job.speedBytesPerSec > 0 ? " \u2022 " + formatBytesShort(job.speedBytesPerSec) + "/s" : "";
+      String sub =
+          tot > 0
+              ? pct + "% \u2022 " + formatBytesShort(dl) + " / " + formatBytesShort(tot) + speedTxt
+              : formatBytesShort(dl) + speedTxt;
+      builder.setContentText(sub);
+      builder.setProgress(100, pct, tot <= 0);
+      builder.setOngoing(true);
+      builder.addAction(
+          new Notification.Action.Builder(
+                  null, "Pause", buildControlPendingIntent(ctx, job.id, "pause", 3))
+              .build());
+      builder.addAction(
+          new Notification.Action.Builder(
+                  null, "Cancel", buildControlPendingIntent(ctx, job.id, "cancel", 2))
+              .build());
+    }
+
+    try {
+      nm.notify(job.notifId(), builder.build());
+    } catch (SecurityException ignored) {
+      // User declined notification permission on Android 13+.
+    }
+  }
+
+  private void cancelNotification(int notifId) {
+    Context ctx = resolveContext();
+    if (ctx == null) return;
+    NotificationManager nm =
+        (NotificationManager) ctx.getSystemService(Context.NOTIFICATION_SERVICE);
+    if (nm != null) {
+      nm.cancel(notifId);
+    }
+  }
+
+  private void handleQueryDownloads(MethodCall call, MethodChannel.Result result) {
+    List<Number> rawIds = call.argument("downloadIds");
+    if (rawIds == null || rawIds.isEmpty()) {
+      result.success(Collections.emptyList());
+      return;
+    }
+    List<Map<String, Object>> out = new ArrayList<>(rawIds.size());
+    for (Number n : rawIds) {
+      if (n == null) continue;
+      DownloadJob job = downloadJobs.get(n.longValue());
+      if (job != null) {
+        out.add(job.toMap());
+      }
+    }
+    result.success(out);
+  }
+
+  private void handleOpenDownloadedFile(MethodCall call, MethodChannel.Result result) {
+    Context ctx = resolveContext();
+    if (ctx == null) {
+      result.success(false);
+      return;
+    }
+    Object idObj = call.argument("downloadId");
+    String localUriArg = call.argument("localUri");
+    String mimeArg = call.argument("mimeType");
+
+    File fileToOpen = null;
+    if (idObj instanceof Number) {
+      DownloadJob job = downloadJobs.get(((Number) idObj).longValue());
+      if (job != null && job.targetFile.exists()) {
+        fileToOpen = job.targetFile;
+        if (mimeArg == null || mimeArg.isEmpty()) {
+          mimeArg = job.mimeType;
+        }
+      }
+    }
+    if (fileToOpen == null && localUriArg != null && !localUriArg.isEmpty()) {
+      String cleanPath =
+          localUriArg.startsWith("file://") ? Uri.parse(localUriArg).getPath() : localUriArg;
+      if (cleanPath != null) {
+        File candidate = new File(cleanPath);
+        if (candidate.exists()) {
+          fileToOpen = candidate;
+        }
+      }
+    }
+    if (fileToOpen == null || !fileToOpen.exists()) {
+      result.success(false);
+      return;
+    }
+
+    try {
+      Uri contentUri = HeavenFileProvider.getUriForFile(fileToOpen);
+      String resolvedMime = resolveMimeForFile(fileToOpen, mimeArg);
+      Intent viewIntent = new Intent(Intent.ACTION_VIEW);
+      viewIntent.setDataAndType(contentUri, resolvedMime);
+      viewIntent.addFlags(
+          Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_GRANT_READ_URI_PERMISSION);
+      ctx.startActivity(viewIntent);
+      result.success(true);
+    } catch (Throwable e) {
+      result.success(false);
+    }
+  }
+
+  private boolean openDefaultBrowserSettings() {
+    if (this.activity == null) {
       return false;
     }
     try {
-      DownloadManager dm = (DownloadManager) ctx.getSystemService(Context.DOWNLOAD_SERVICE);
-      if (dm == null) {
-        return false;
+      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+        Intent intent = new Intent(Settings.ACTION_MANAGE_DEFAULT_APPS_SETTINGS);
+        this.activity.startActivity(intent);
+        return true;
       }
-      Uri contentUri = dm.getUriForDownloadedFile(downloadId);
-      String mime = dm.getMimeTypeForDownloadedFile(downloadId);
-      if (contentUri == null) {
-        return false;
-      }
-      Intent openIntent = new Intent(Intent.ACTION_VIEW);
-      openIntent.setDataAndType(
-          contentUri, (mime != null && !mime.isEmpty()) ? mime : "*/*");
-      openIntent.addFlags(
-          Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_GRANT_READ_URI_PERMISSION);
-      ctx.startActivity(openIntent);
+    } catch (Exception ignored) {
+    }
+    try {
+      Intent fallback = new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS);
+      fallback.setData(Uri.parse("package:" + this.activity.getPackageName()));
+      this.activity.startActivity(fallback);
       return true;
-    } catch (Throwable t) {
+    } catch (Exception ignored) {
       return false;
     }
   }
 
-  private static String normalizeHost(String host) {
-    if (host == null) return "";
-    String clean = host.trim().toLowerCase(Locale.US);
-    if (clean.startsWith("www.") && clean.length() > 4) {
+  private WebResourceResponse interceptIfAdOrTracker(long webViewId, WebResourceRequest request) {
+    if (!shieldEnabled || request == null) {
+      return null;
+    }
+    Uri url = request.getUrl();
+    if (url == null) {
+      return null;
+    }
+    String scheme = url.getScheme();
+    if (scheme == null || (!"http".equalsIgnoreCase(scheme) && !"https".equalsIgnoreCase(scheme))) {
+      return null;
+    }
+    String host = normalizeHost(url.getHost());
+    if (host.isEmpty()) {
+      return null;
+    }
+    String activePageHost = webViewId >= 0 ? currentPageHosts.get(webViewId) : null;
+    if (activePageHost != null && isTrustedHost(activePageHost)) {
+      return null;
+    }
+    if (request.isForMainFrame() && isTrustedHost(host)) {
+      return null;
+    }
+    String fullPath = url.getEncodedPath() != null ? url.getEncodedPath().toLowerCase() : "";
+    if (matchesBlockedDomain(host) || matchesAdPathSignature(host, fullPath, activePageHost)) {
+      notifyBlockedOnMainThread(webViewId, host);
+      return buildEmptyResponseForPath(fullPath, request);
+    }
+    return null;
+  }
+
+  private boolean isTrustedHost(String host) {
+    for (String trusted : trustedHosts) {
+      if (host.equals(trusted) || host.endsWith("." + trusted)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  private boolean matchesBlockedDomain(String host) {
+    Set<String> snapshot = this.blockedDomains;
+    if (snapshot.contains(host)) {
+      return true;
+    }
+    int dot = host.indexOf('.');
+    while (dot != -1 && dot + 1 < host.length()) {
+      String parent = host.substring(dot + 1);
+      if (snapshot.contains(parent)) {
+        return true;
+      }
+      dot = host.indexOf('.', dot + 1);
+    }
+    return false;
+  }
+
+  private boolean matchesAdPathSignature(String reqHost, String lowerPath, String pageHost) {
+    boolean thirdParty =
+        pageHost != null
+            && !pageHost.isEmpty()
+            && !reqHost.equals(pageHost)
+            && !reqHost.endsWith("." + pageHost);
+    if (!thirdParty) {
+      return false;
+    }
+    return lowerPath.contains("/pagead/")
+        || lowerPath.contains("/ads/ga-audiences")
+        || lowerPath.contains("/adserver/")
+        || lowerPath.contains("/prebid")
+        || lowerPath.contains("/popunder")
+        || lowerPath.endsWith("/adsbygoogle.js")
+        || lowerPath.endsWith("/gpt.js")
+        || lowerPath.endsWith("/analytics.js");
+  }
+
+  private WebResourceResponse buildEmptyResponseForPath(
+      String lowerPath, WebResourceRequest request) {
+    Map<String, String> headers = new HashMap<>(4);
+    headers.put("Access-Control-Allow-Origin", "*");
+    headers.put("Cache-Control", "no-store");
+
+    String accept = "";
+    Map<String, String> reqHeaders = request.getRequestHeaders();
+    if (reqHeaders != null) {
+      for (Map.Entry<String, String> e : reqHeaders.entrySet()) {
+        if ("accept".equalsIgnoreCase(e.getKey()) && e.getValue() != null) {
+          accept = e.getValue().toLowerCase();
+          break;
+        }
+      }
+    }
+    if (lowerPath.endsWith(".js") || accept.contains("javascript")) {
+      return new WebResourceResponse(
+          "application/javascript", "UTF-8", 200, "OK", headers, new ByteArrayInputStream(EMPTY_JS));
+    }
+    if (lowerPath.endsWith(".gif")
+        || lowerPath.endsWith(".png")
+        || lowerPath.endsWith(".jpg")
+        || lowerPath.endsWith(".jpeg")
+        || lowerPath.endsWith(".webp")
+        || accept.contains("image/")) {
+      return new WebResourceResponse(
+          "image/gif", null, 200, "OK", headers, new ByteArrayInputStream(TRANSPARENT_GIF));
+    }
+    if (request.isForMainFrame() || accept.contains("text/html")) {
+      return new WebResourceResponse(
+          "text/html", "UTF-8", 200, "OK", headers, new ByteArrayInputStream(EMPTY_HTML));
+    }
+    return new WebResourceResponse(
+        "text/plain", "UTF-8", 200, "OK", headers, new ByteArrayInputStream(EMPTY_TEXT));
+  }
+
+  private void notifyBlockedOnMainThread(final long webViewId, final String domain) {
+    mainHandler.post(
+        () -> {
+          MethodChannel ch = this.channel;
+          if (ch != null) {
+            Map<String, Object> payload = new HashMap<>(4);
+            payload.put("webViewId", webViewId);
+            payload.put("domain", domain);
+            ch.invokeMethod("onResourceBlocked", payload);
+          }
+        });
+  }
+
+  private static String normalizeHost(String raw) {
+    if (raw == null) {
+      return "";
+    }
+    String clean = raw.trim().toLowerCase();
+    if (clean.startsWith("www.")) {
       clean = clean.substring(4);
     }
     return clean;
   }
 
-  private static String extractRegistrableRoot(String host) {
-    String clean = normalizeHost(host);
-    String[] parts = clean.split("\\.");
-    if (parts.length <= 2) {
-      return clean;
-    }
-    return parts[parts.length - 2] + "." + parts[parts.length - 1];
-  }
-
-  private boolean isHostTrusted(String host) {
-    if (host == null || host.isEmpty()) return false;
-    Set<String> trusted = this.trustedHosts;
-    if (trusted.isEmpty()) return false;
-    String clean = normalizeHost(host);
-    while (true) {
-      if (trusted.contains(clean)) {
-        return true;
-      }
-      int dot = clean.indexOf('.');
-      if (dot < 0 || dot == clean.length() - 1) {
-        break;
-      }
-      clean = clean.substring(dot + 1);
-    }
-    return false;
-  }
-
-  private String matchBlockedDomain(String host) {
-    if (host == null || host.isEmpty()) return null;
-    Set<String> blocked = this.blockedDomains;
-    if (blocked.isEmpty()) return null;
-    String clean = host.trim().toLowerCase(Locale.US);
-    while (true) {
-      if (blocked.contains(clean)) {
-        return clean;
-      }
-      int dot = clean.indexOf('.');
-      if (dot < 0 || dot == clean.length() - 1) {
-        break;
-      }
-      clean = clean.substring(dot + 1);
-    }
-    return null;
-  }
-
-  private String evaluateRequestBlock(WebResourceRequest request, String pageHost) {
-    if (!shieldEnabled || request == null) {
-      return null;
-    }
-    Uri uri = request.getUrl();
-    if (uri == null) {
-      return null;
-    }
-    String scheme = uri.getScheme();
-    if (scheme == null || (!scheme.equalsIgnoreCase("http") && !scheme.equalsIgnoreCase("https"))) {
-      return null;
-    }
-    String reqHost = uri.getHost();
-    if (reqHost == null || reqHost.isEmpty()) {
-      return null;
-    }
-    if (isHostTrusted(pageHost) || isHostTrusted(reqHost)) {
-      return null;
-    }
-
-    String matchedDomain = matchBlockedDomain(reqHost);
-    if (matchedDomain != null) {
-      return matchedDomain;
-    }
-
-    if (!request.isForMainFrame()) {
-      String pathAndQuery =
-          ((uri.getPath() != null ? uri.getPath() : "")
-                  + (uri.getQuery() != null ? "?" + uri.getQuery() : ""))
-              .toLowerCase(Locale.US);
-      boolean thirdParty =
-          pageHost != null
-              && !pageHost.isEmpty()
-              && !extractRegistrableRoot(reqHost).equals(extractRegistrableRoot(pageHost));
-
-      if (pathAndQuery.contains("/adsbygoogle")
-          || pathAndQuery.contains("/pagead/")
-          || pathAndQuery.contains("/gpt.js")
-          || pathAndQuery.contains("/pubads_impl")
-          || pathAndQuery.contains("/prebid")
-          || pathAndQuery.contains("/popunder")
-          || (thirdParty
-              && (pathAndQuery.contains("/adserver")
-                  || pathAndQuery.contains("/adframe")
-                  || pathAndQuery.contains("/ads/banner")
-                  || pathAndQuery.contains("ad_type=video")))) {
-        return normalizeHost(reqHost);
-      }
-    }
-    return null;
-  }
-
-  private WebResourceResponse buildSurrogateResponse(WebResourceRequest request) {
-    Map<String, String> headers = new HashMap<>();
-    headers.put("Access-Control-Allow-Origin", "*");
-    headers.put("Cache-Control", "no-store");
-
-    String path =
-        request.getUrl() != null && request.getUrl().getPath() != null
-            ? request.getUrl().getPath().toLowerCase(Locale.US)
-            : "";
-    Map<String, String> reqHeaders = request.getRequestHeaders();
-    String accept = reqHeaders != null && reqHeaders.get("Accept") != null
-        ? reqHeaders.get("Accept").toLowerCase(Locale.US)
-        : "";
-
-    if (path.endsWith(".js") || accept.contains("script")) {
-      return new WebResourceResponse(
-          "application/javascript",
-          "UTF-8",
-          200,
-          "OK",
-          headers,
-          new ByteArrayInputStream(EMPTY_JS));
-    }
-    if (path.endsWith(".png")
-        || path.endsWith(".gif")
-        || path.endsWith(".jpg")
-        || path.endsWith(".jpeg")
-        || path.endsWith(".webp")
-        || accept.startsWith("image/")) {
-      return new WebResourceResponse(
-          "image/gif",
-          null,
-          200,
-          "OK",
-          headers,
-          new ByteArrayInputStream(TRANSPARENT_GIF));
-    }
-    if (accept.contains("text/html") && !request.isForMainFrame()) {
-      return new WebResourceResponse(
-          "text/html",
-          "UTF-8",
-          200,
-          "OK",
-          headers,
-          new ByteArrayInputStream(EMPTY_HTML));
-    }
-    return new WebResourceResponse(
-        "text/plain",
-        "UTF-8",
-        204,
-        "Blocked",
-        headers,
-        new ByteArrayInputStream(EMPTY_TEXT));
-  }
-
-  private void notifyBlocked(long webViewId, String domain) {
-    mainHandler.post(
-        () -> {
-          if (channel != null) {
-            Map<String, Object> payload = new HashMap<>();
-            payload.put("webViewId", webViewId);
-            payload.put("domain", domain);
-            channel.invokeMethod("onResourceBlocked", payload);
-          }
-        });
-  }
-
-  private class ShieldWebViewClient extends WebViewClient {
+  private final class ShieldWebViewClient extends WebViewClient {
     private final long webViewId;
     private final WebViewClient delegate;
 
@@ -912,79 +1691,93 @@ public class HeavenShieldPlugin
 
     @Override
     public WebResourceResponse shouldInterceptRequest(WebView view, WebResourceRequest request) {
-      if (request != null && request.isForMainFrame() && request.getUrl() != null) {
-        String h = request.getUrl().getHost();
-        if (h != null && !h.isEmpty()) {
-          currentPageHosts.put(webViewId, normalizeHost(h));
-        }
+      WebResourceResponse blocked = interceptIfAdOrTracker(webViewId, request);
+      if (blocked != null) {
+        return blocked;
       }
-      String pageHost = currentPageHosts.get(webViewId);
-      String matched = evaluateRequestBlock(request, pageHost);
-      if (matched != null && !request.isForMainFrame()) {
-        notifyBlocked(webViewId, matched);
-        return buildSurrogateResponse(request);
-      }
-      return delegate != null ? delegate.shouldInterceptRequest(view, request) : null;
+      return delegate != null
+          ? delegate.shouldInterceptRequest(view, request)
+          : super.shouldInterceptRequest(view, request);
+    }
+
+    @Override
+    @SuppressWarnings("deprecation")
+    public WebResourceResponse shouldInterceptRequest(WebView view, String url) {
+      return delegate != null
+          ? delegate.shouldInterceptRequest(view, url)
+          : super.shouldInterceptRequest(view, url);
     }
 
     @Override
     public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
-      if (request != null && !request.isForMainFrame()) {
-        String pageHost = currentPageHosts.get(webViewId);
-        String matched = evaluateRequestBlock(request, pageHost);
-        if (matched != null) {
-          notifyBlocked(webViewId, matched);
-          return true;
+      if (request != null && request.isForMainFrame() && request.getUrl() != null) {
+        String host = normalizeHost(request.getUrl().getHost());
+        if (!host.isEmpty()) {
+          currentPageHosts.put(webViewId, host);
         }
       }
-      return delegate != null && delegate.shouldOverrideUrlLoading(view, request);
+      return delegate != null
+          ? delegate.shouldOverrideUrlLoading(view, request)
+          : super.shouldOverrideUrlLoading(view, request);
+    }
+
+    @Override
+    @SuppressWarnings("deprecation")
+    public boolean shouldOverrideUrlLoading(WebView view, String url) {
+      return delegate != null
+          ? delegate.shouldOverrideUrlLoading(view, url)
+          : super.shouldOverrideUrlLoading(view, url);
     }
 
     @Override
     public void onPageStarted(WebView view, String url, Bitmap favicon) {
-      if (view != null) {
-        configureWebViewViewport(view, desktopMode);
-      }
       if (url != null) {
         Uri parsed = Uri.parse(url);
-        if (parsed.getHost() != null) {
-          currentPageHosts.put(webViewId, normalizeHost(parsed.getHost()));
+        String host = normalizeHost(parsed.getHost());
+        if (!host.isEmpty()) {
+          currentPageHosts.put(webViewId, host);
         }
+      }
+      if (desktopMode) {
+        applyDesktopSettingsToWebView(view, true);
       }
       if (delegate != null) {
         delegate.onPageStarted(view, url, favicon);
+      } else {
+        super.onPageStarted(view, url, favicon);
       }
+      injectScripts(view);
     }
 
     @Override
     public void onPageCommitVisible(WebView view, String url) {
-      injectViewportAndShield(view, url);
-      if (delegate != null) {
+      if (delegate != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
         delegate.onPageCommitVisible(view, url);
+      } else {
+        super.onPageCommitVisible(view, url);
       }
+      injectScripts(view);
     }
 
     @Override
     public void onPageFinished(WebView view, String url) {
-      injectViewportAndShield(view, url);
       if (delegate != null) {
         delegate.onPageFinished(view, url);
+      } else {
+        super.onPageFinished(view, url);
       }
+      injectScripts(view);
     }
 
-    private void injectViewportAndShield(WebView view, String url) {
-      if (view == null || url == null) {
-        return;
+    private void injectScripts(WebView view) {
+      if (desktopMode) {
+        view.evaluateJavascript(DESKTOP_VIEWPORT_SCRIPT, null);
       }
-      configureWebViewViewport(view, desktopMode);
-      view.evaluateJavascript(
-          desktopMode ? DESKTOP_VIEWPORT_SCRIPT : MOBILE_VIEWPORT_RESET_SCRIPT, null);
-
       if (!shieldEnabled) {
         return;
       }
-      String host = Uri.parse(url).getHost();
-      if (isHostTrusted(host)) {
+      String pageHost = currentPageHosts.get(webViewId);
+      if (pageHost != null && isTrustedHost(pageHost)) {
         return;
       }
       String script = cosmeticScript;
@@ -994,92 +1787,90 @@ public class HeavenShieldPlugin
     }
 
     @Override
-    public void onReceivedHttpError(
-        WebView view, WebResourceRequest request, WebResourceResponse errorResponse) {
-      if (delegate != null) {
-        delegate.onReceivedHttpError(view, request, errorResponse);
-      }
+    public void onLoadResource(WebView view, String url) {
+      if (delegate != null) delegate.onLoadResource(view, url);
+      else super.onLoadResource(view, url);
     }
 
     @Override
     public void onReceivedError(
         WebView view, WebResourceRequest request, WebResourceError error) {
-      if (delegate != null) {
+      if (delegate != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
         delegate.onReceivedError(view, request, error);
-      }
-    }
-
-    @Override
-    public void doUpdateVisitedHistory(WebView view, String url, boolean isReload) {
-      if (delegate != null) {
-        delegate.doUpdateVisitedHistory(view, url, isReload);
-      }
-    }
-
-    @Override
-    public void onReceivedHttpAuthRequest(
-        WebView view, HttpAuthHandler handler, String host, String realm) {
-      if (delegate != null) {
-        delegate.onReceivedHttpAuthRequest(view, handler, host, realm);
       } else {
-        super.onReceivedHttpAuthRequest(view, handler, host, realm);
+        super.onReceivedError(view, request, error);
       }
     }
 
     @Override
-    public void onFormResubmission(WebView view, Message dontResend, Message resend) {
+    @SuppressWarnings("deprecation")
+    public void onReceivedError(
+        WebView view, int errorCode, String description, String failingUrl) {
       if (delegate != null) {
-        delegate.onFormResubmission(view, dontResend, resend);
+        delegate.onReceivedError(view, errorCode, description, failingUrl);
       } else {
-        super.onFormResubmission(view, dontResend, resend);
+        super.onReceivedError(view, errorCode, description, failingUrl);
       }
     }
 
     @Override
-    public void onLoadResource(WebView view, String url) {
-      if (delegate != null) {
-        delegate.onLoadResource(view, url);
-      }
-    }
-
-    @Override
-    public void onReceivedClientCertRequest(WebView view, ClientCertRequest request) {
-      if (delegate != null) {
-        delegate.onReceivedClientCertRequest(view, request);
+    public void onReceivedHttpError(
+        WebView view, WebResourceRequest request, WebResourceResponse errorResponse) {
+      if (delegate != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+        delegate.onReceivedHttpError(view, request, errorResponse);
       } else {
-        super.onReceivedClientCertRequest(view, request);
-      }
-    }
-
-    @Override
-    public void onReceivedLoginRequest(
-        WebView view, String realm, String account, String args) {
-      if (delegate != null) {
-        delegate.onReceivedLoginRequest(view, realm, account, args);
+        super.onReceivedHttpError(view, request, errorResponse);
       }
     }
 
     @Override
     public void onReceivedSslError(WebView view, SslErrorHandler handler, SslError error) {
-      if (delegate != null) {
-        delegate.onReceivedSslError(view, handler, error);
-      } else {
-        super.onReceivedSslError(view, handler, error);
-      }
+      if (delegate != null) delegate.onReceivedSslError(view, handler, error);
+      else super.onReceivedSslError(view, handler, error);
     }
 
     @Override
-    public void onScaleChanged(WebView view, float oldScale, float newScale) {
-      if (delegate != null) {
-        delegate.onScaleChanged(view, oldScale, newScale);
-      }
+    public void onReceivedClientCertRequest(WebView view, ClientCertRequest request) {
+      if (delegate != null) delegate.onReceivedClientCertRequest(view, request);
+      else super.onReceivedClientCertRequest(view, request);
+    }
+
+    @Override
+    public void onReceivedHttpAuthRequest(
+        WebView view, HttpAuthHandler handler, String host, String realm) {
+      if (delegate != null) delegate.onReceivedHttpAuthRequest(view, handler, host, realm);
+      else super.onReceivedHttpAuthRequest(view, handler, host, realm);
+    }
+
+    @Override
+    public void doUpdateVisitedHistory(WebView view, String url, boolean isReload) {
+      if (delegate != null) delegate.doUpdateVisitedHistory(view, url, isReload);
+      else super.doUpdateVisitedHistory(view, url, isReload);
+    }
+
+    @Override
+    public void onFormResubmission(WebView view, Message dontResend, Message resend) {
+      if (delegate != null) delegate.onFormResubmission(view, dontResend, resend);
+      else super.onFormResubmission(view, dontResend, resend);
+    }
+
+    @Override
+    public boolean shouldOverrideKeyEvent(WebView view, KeyEvent event) {
+      return delegate != null
+          ? delegate.shouldOverrideKeyEvent(view, event)
+          : super.shouldOverrideKeyEvent(view, event);
     }
 
     @Override
     public void onUnhandledKeyEvent(WebView view, KeyEvent event) {
-      if (delegate != null) {
-        delegate.onUnhandledKeyEvent(view, event);
-      }
+      if (delegate != null) delegate.onUnhandledKeyEvent(view, event);
+      else super.onUnhandledKeyEvent(view, event);
+    }
+
+    @Override
+    public void onScaleChanged(WebView view, float oldScale, float newScale) {
+      if (delegate != null) delegate.onScaleChanged(view, oldScale, newScale);
+      else super.onScaleChanged(view, oldScale, newScale);
     }
   }
 }

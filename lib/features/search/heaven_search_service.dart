@@ -48,9 +48,9 @@ enum HeavenRegionFilter {
 }
 
 enum HeavenSafeFilter {
+  off('Safe: Off', '-2'),
   moderate('Safe: Moderate', '-1'),
-  strict('Safe: Strict', '1'),
-  off('Safe: Off', '-2');
+  strict('Safe: Strict', '1');
 
   const HeavenSafeFilter(this.label, this.ddgCode);
   final String label;
@@ -60,8 +60,8 @@ enum HeavenSafeFilter {
 class HeavenSearchFilters {
   const HeavenSearchFilters({
     this.time = HeavenTimeFilter.any,
-    this.region = HeavenRegionFilter.india,
-    this.safe = HeavenSafeFilter.moderate,
+    this.region = HeavenRegionFilter.global,
+    this.safe = HeavenSafeFilter.off,
   });
 
   final HeavenTimeFilter time;
@@ -81,7 +81,7 @@ class HeavenSearchFilters {
   }
 
   bool get hasActiveCustomFilter =>
-      time != HeavenTimeFilter.any || safe != HeavenSafeFilter.moderate;
+      time != HeavenTimeFilter.any || safe != HeavenSafeFilter.off;
 }
 
 class HeavenSearchResult {
@@ -385,6 +385,13 @@ class HeavenSearchService {
     return const <String>[];
   }
 
+  Map<String, String> _ddgHeaders(HeavenSearchFilters filters) {
+    return <String, String>{
+      ..._browserHeaders,
+      'Cookie': 'p=${filters.safe.ddgCode}; kl=${filters.region.ddgLocale}',
+    };
+  }
+
   Future<List<HeavenSearchResult>> _fetchOrganicWebResults(
     String query, {
     required HeavenSearchFilters filters,
@@ -398,12 +405,12 @@ class HeavenSearchService {
         '&kl=${filters.region.ddgLocale}&kp=${filters.safe.ddgCode}$dfPart',
       );
       final http.Response res = await _client
-          .get(uri, headers: _browserHeaders)
+          .get(uri, headers: _ddgHeaders(filters))
           .timeout(const Duration(seconds: 7));
       if (res.statusCode != 200 || res.body.isEmpty) {
         return const <HeavenSearchResult>[];
       }
-      return parseOrganicHtmlResults(res.body, maxItems: 20);
+      return parseOrganicHtmlResults(res.body, maxItems: 22);
     } catch (_) {
       return const <HeavenSearchResult>[];
     }
@@ -414,17 +421,18 @@ class HeavenSearchService {
     required HeavenSearchFilters filters,
   }) async {
     try {
-      final String videoQuery =
-          '$query (site:youtube.com/watch OR site:vimeo.com OR site:dailymotion.com)';
+      final String videoQuery = filters.safe == HeavenSafeFilter.off
+          ? '$query video watch'
+          : '$query (site:youtube.com/watch OR site:vimeo.com OR site:dailymotion.com)';
       final String dfPart = filters.time.ddgCode.isNotEmpty
           ? '&df=${filters.time.ddgCode}'
           : '';
       final Uri uri = Uri.parse(
         'https://html.duckduckgo.com/html/?q=${Uri.encodeQueryComponent(videoQuery)}'
-        '&kp=${filters.safe.ddgCode}$dfPart',
+        '&kl=${filters.region.ddgLocale}&kp=${filters.safe.ddgCode}$dfPart',
       );
       final http.Response res = await _client
-          .get(uri, headers: _browserHeaders)
+          .get(uri, headers: _ddgHeaders(filters))
           .timeout(const Duration(seconds: 7));
       if (res.statusCode != 200 || res.body.isEmpty) {
         return const <HeavenSearchResult>[];

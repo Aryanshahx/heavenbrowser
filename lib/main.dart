@@ -2,12 +2,15 @@ import 'dart:async';
 import 'dart:ui';
 
 import 'package:flutter/material.dart';
+import 'package:http/testing.dart';
+import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'core/constants/app_constants.dart';
 import 'core/theme/app_theme.dart';
 import 'features/browser/presentation/browser_screen.dart';
 import 'features/downloads/downloads_controller.dart';
+import 'features/news/interest_news_service.dart';
 import 'features/search/heaven_search_service.dart';
 import 'features/settings/browser_settings.dart';
 import 'features/tabs/tab_manager.dart';
@@ -17,8 +20,20 @@ Future<void> main() async {
   final SharedPreferences prefs = await SharedPreferences.getInstance();
   final BrowserSettingsController settings = BrowserSettingsController(prefs);
   final DownloadsController downloads = DownloadsController(prefs);
+  final InterestProfileController interests = InterestProfileController(prefs);
+  final HeavenNewsFeedService newsService = HeavenNewsFeedService(
+    prefs: prefs,
+    interests: interests,
+  );
 
-  runApp(HeavenBrowserApp(settings: settings, downloads: downloads));
+  runApp(
+    HeavenBrowserApp(
+      settings: settings,
+      downloads: downloads,
+      interests: interests,
+      newsService: newsService,
+    ),
+  );
 }
 
 class HeavenBrowserApp extends StatefulWidget {
@@ -26,12 +41,16 @@ class HeavenBrowserApp extends StatefulWidget {
     super.key,
     required this.settings,
     this.downloads,
+    this.interests,
+    this.newsService,
     this.enablePlatformWebView = true,
     this.searchService,
   });
 
   final BrowserSettingsController settings;
   final DownloadsController? downloads;
+  final InterestProfileController? interests;
+  final HeavenNewsFeedService? newsService;
   final bool enablePlatformWebView;
   final HeavenSearchService? searchService;
 
@@ -44,9 +63,15 @@ class _HeavenBrowserAppState extends State<HeavenBrowserApp>
   late final TabManagerController _tabManager;
   late final HeavenSearchService _searchService;
   DownloadsController? _ownedDownloads;
+  InterestProfileController? _ownedInterests;
+  HeavenNewsFeedService? _ownedNewsService;
 
   DownloadsController get _effectiveDownloads =>
       widget.downloads ?? _ownedDownloads!;
+  InterestProfileController get _effectiveInterests =>
+      widget.interests ?? _ownedInterests!;
+  HeavenNewsFeedService get _effectiveNews =>
+      widget.newsService ?? _ownedNewsService!;
 
   @override
   void initState() {
@@ -57,6 +82,25 @@ class _HeavenBrowserAppState extends State<HeavenBrowserApp>
       enablePlatformWebView: widget.enablePlatformWebView,
     );
     _searchService = widget.searchService ?? HeavenSearchService();
+
+    if (widget.downloads == null) {
+      _ownedDownloads = DownloadsController(
+        widget.settings.prefs,
+        enableNativePolling: widget.enablePlatformWebView,
+      );
+    }
+    if (widget.interests == null) {
+      _ownedInterests = InterestProfileController(widget.settings.prefs);
+    }
+    if (widget.newsService == null) {
+      _ownedNewsService = HeavenNewsFeedService(
+        prefs: widget.settings.prefs,
+        interests: _effectiveInterests,
+        client: widget.enablePlatformWebView
+            ? null
+            : MockClient((_) async => http.Response('<rss></rss>', 200)),
+      );
+    }
 
     final String initialRoute = PlatformDispatcher.instance.defaultRouteName;
     if (initialRoute.startsWith('http://') ||
@@ -82,31 +126,13 @@ class _HeavenBrowserAppState extends State<HeavenBrowserApp>
     WidgetsBinding.instance.removeObserver(this);
     _tabManager.dispose();
     _ownedDownloads?.dispose();
+    _ownedInterests?.dispose();
+    _ownedNewsService?.dispose();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
-    if (widget.downloads == null && _ownedDownloads == null) {
-      return FutureBuilder<SharedPreferences>(
-        future: SharedPreferences.getInstance(),
-        builder:
-            (BuildContext context, AsyncSnapshot<SharedPreferences> snapshot) {
-              if (!snapshot.hasData) {
-                return const SizedBox.shrink();
-              }
-              _ownedDownloads ??= DownloadsController(
-                snapshot.data!,
-                enableNativePolling: widget.enablePlatformWebView,
-              );
-              return _buildMaterialApp();
-            },
-      );
-    }
-    return _buildMaterialApp();
-  }
-
-  Widget _buildMaterialApp() {
     return ListenableBuilder(
       listenable: widget.settings,
       builder: (BuildContext context, _) {
@@ -123,6 +149,8 @@ class _HeavenBrowserAppState extends State<HeavenBrowserApp>
                 tabManager: _tabManager,
                 searchService: _searchService,
                 downloads: _effectiveDownloads,
+                newsService: _effectiveNews,
+                interests: _effectiveInterests,
               ),
             ),
           ],
@@ -140,6 +168,8 @@ class _HeavenBrowserAppState extends State<HeavenBrowserApp>
                 tabManager: _tabManager,
                 searchService: _searchService,
                 downloads: _effectiveDownloads,
+                newsService: _effectiveNews,
+                interests: _effectiveInterests,
               ),
             );
           },

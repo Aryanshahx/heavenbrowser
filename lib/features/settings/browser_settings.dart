@@ -173,6 +173,7 @@ class BrowserSettingsController extends ChangeNotifier {
   List<BookmarkItem> _bookmarks = <BookmarkItem>[];
   List<HistoryItem> _history = <HistoryItem>[];
 
+  SharedPreferences get prefs => _prefs;
   SearchEngine get searchEngine => _searchEngine;
   ThemeMode get themeMode => _themeMode;
   bool get bottomOmnibox => _bottomOmnibox;

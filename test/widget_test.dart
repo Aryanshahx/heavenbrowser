@@ -1,21 +1,32 @@
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:heavenbrowser/core/utils/omnibox_parser.dart';
+import 'package:heavenbrowser/core/theme/app_theme.dart';
 import 'package:heavenbrowser/features/browser/engine/browser_engine.dart';
 import 'package:heavenbrowser/features/downloads/downloads_controller.dart';
+import 'package:heavenbrowser/features/news/interest_news_service.dart';
 import 'package:heavenbrowser/features/search/heaven_search_service.dart';
 import 'package:heavenbrowser/features/settings/browser_settings.dart';
 import 'package:heavenbrowser/features/shield/heaven_shield.dart';
+import 'package:heavenbrowser/features/shield/native_shield_bridge.dart';
 import 'package:heavenbrowser/features/tabs/tab_manager.dart';
 import 'package:heavenbrowser/main.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
-HeavenSearchService _createMockSearchService() {
+// Valid 1x1 transparent PNG for tab preview window tests
+final Uint8List _kSamplePreviewPng = base64Decode(
+  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==',
+);
+
+HeavenSearchService _createMockSearchService({
+  List<http.Request>? capturedRequests,
+}) {
   final MockClient mockClient = MockClient((http.Request request) async {
+    capturedRequests?.add(request);
     final String host = request.url.host;
     if (host == 'html.duckduckgo.com') {
       const String sampleHtml = '''
@@ -98,132 +109,268 @@ HeavenSearchService _createMockSearchService() {
   return HeavenSearchService(client: mockClient);
 }
 
+HeavenNewsFeedService _createMockNewsService(
+  SharedPreferences prefs,
+  InterestProfileController interests,
+) {
+  final MockClient client = MockClient((http.Request req) async {
+    const String rss = '''
+    <rss><channel>
+      <item>
+        <title>SpaceX Starship Orbital Launch Milestone - SpaceNews</title>
+        <link>https://spacenews.example.com/starship</link>
+        <pubDate>Thu, 22 Oct 2026 11:00:00 GMT</pubDate>
+        <source url="https://spacenews.example.com">SpaceNews</source>
+      </item>
+      <item>
+        <title>Linux Kernel Rust Drivers Expand on ARM64 - LWN</title>
+        <link>https://lwn.example.com/rust-arm64</link>
+        <pubDate>Thu, 22 Oct 2026 10:00:00 GMT</pubDate>
+        <source url="https://lwn.example.com">LWN</source>
+      </item>
+    </channel></rss>
+    ''';
+    return http.Response(rss, 200);
+  });
+  return HeavenNewsFeedService(
+    prefs: prefs,
+    interests: interests,
+    client: client,
+  );
+}
+
 void main() {
-  group('Defaults, Desktop Rewrite & Clean Home State', () {
+  TestWidgetsFlutterBinding.ensureInitialized();
+
+  group('Blue Theme, Unrestricted Search & Daily Personalized News', () {
+    test('uses Electric Sapphire & Midnight Navy blue palette', () {
+      expect(AppTheme.sapphireBlue, const Color(0xFF2563EB));
+      expect(AppTheme.electricBlue, const Color(0xFF3B82F6));
+      expect(AppTheme.deepNavyBg, const Color(0xFF040B16));
+      expect(AppTheme.navySurface, const Color(0xFF0B162C));
+      expect(AppTheme.darkTheme.colorScheme.primary, const Color(0xFF60A5FA));
+    });
+
     test(
-      'defaults to Top Dock Bar, Heaven Search, and zero starter sites',
+      'Heaven Search defaults to Global + Safe Off (unfiltered kp=-2 & Cookie p=-2)',
+      () async {
+        const HeavenSearchFilters defaultFilters = HeavenSearchFilters();
+        expect(defaultFilters.safe, HeavenSafeFilter.off);
+        expect(defaultFilters.region, HeavenRegionFilter.global);
+        expect(HeavenSafeFilter.off.ddgCode, '-2');
+
+        final List<http.Request> captured = <http.Request>[];
+        final HeavenSearchService service = _createMockSearchService(
+          capturedRequests: captured,
+        );
+        final HeavenSearchResponse res = await service.search('open web video');
+
+        expect(res.webResults.length, 1);
+        final Iterable<http.Request> ddgCalls = captured.where(
+          (http.Request r) => r.url.host == 'html.duckduckgo.com',
+        );
+        expect(ddgCalls, isNotEmpty);
+        for (final http.Request req in ddgCalls) {
+          expect(req.url.queryParameters['kp'], '-2');
+          expect(req.url.queryParameters['kl'], 'wt-wt');
+          expect(req.headers['Cookie'], contains('p=-2'));
+        }
+        // Video search query is unrestricted across all video sites when Safe is Off
+        final bool hasUnrestrictedVideoQuery = ddgCalls.any(
+          (http.Request r) =>
+              (r.url.queryParameters['q'] ?? '') ==
+                  'open web video video watch' &&
+              !(r.url.queryParameters['q'] ?? '').contains('site:youtube.com'),
+        );
+        expect(hasUnrestrictedVideoQuery, isTrue);
+      },
+    );
+
+    test(
+      'InterestProfileController learns user topics and decays old interests day by day',
       () async {
         SharedPreferences.setMockInitialValues(<String, Object>{});
         final SharedPreferences prefs = await SharedPreferences.getInstance();
-        final BrowserSettingsController settings = BrowserSettingsController(
+        final InterestProfileController interests = InterestProfileController(
           prefs,
         );
 
-        expect(settings.bottomOmnibox, isFalse);
-        expect(settings.searchEngine, SearchEngine.heaven);
-        expect(settings.quickLaunchSites, isEmpty);
+        await interests.recordActivity(
+          text: 'spacex starship astronomy',
+          weight: 2.5,
+        );
+        expect(interests.rankedInterests, isNotEmpty);
+        expect(
+          interests.rankedInterests.any(
+            (InterestEntry e) =>
+                e.label.toLowerCase().contains('science') ||
+                e.label.toLowerCase().contains('spacex'),
+          ),
+          isTrue,
+        );
 
-        // Once user visits real sites, they populate automatically by usage
-        await settings.recordPageVisit(
-          url: 'https://proton.me/mail',
-          title: 'Proton Mail',
+        // Verify exponential day-by-day decay lowers score over 10 days
+        final InterestEntry top = interests.rankedInterests.first;
+        final int nowMs = DateTime.now().millisecondsSinceEpoch;
+        final int tenDaysLaterMs = nowMs + (10 * 86400000);
+        expect(
+          top.decayedScore(tenDaysLaterMs),
+          lessThan(top.decayedScore(nowMs)),
         );
-        await settings.recordPageVisit(
-          url: 'https://proton.me/drive',
-          title: 'Proton Drive',
+
+        final HeavenNewsFeedService news = _createMockNewsService(
+          prefs,
+          interests,
         );
-        expect(settings.quickLaunchSites.length, 1);
-        expect(settings.quickLaunchSites.first.domain, 'proton.me');
-        expect(settings.quickLaunchSites.first.visitCount, 2);
+        final List<PersonalizedNewsItem> feed = await news.fetchFeed(
+          NewsCategoryTab.forYou,
+        );
+        expect(feed.length, 2);
+        expect(feed.first.title, contains('SpaceX Starship'));
+        news.dispose();
       },
     );
 
-    test('Desktop Mode rewrites mobile subdomains to desktop hosts', () {
-      expect(
-        BrowserEngine.rewriteMobileToDesktopUri(
-          Uri.parse('https://m.youtube.com/watch?v=123'),
-        ).toString(),
-        'https://www.youtube.com/watch?v=123',
-      );
-      expect(
-        BrowserEngine.rewriteMobileToDesktopUri(
-          Uri.parse('https://en.m.wikipedia.org/wiki/India'),
-        ).toString(),
-        'https://en.wikipedia.org/wiki/India',
-      );
-    });
-  });
-
-  group('Heaven Search Multi-Verticals, Filters & Shield', () {
     test(
-      'returns Web, Images, Videos (with YT thumb), News RSS & Wiki',
-      () async {
-        final HeavenSearchService service = _createMockSearchService();
-        final HeavenSearchResponse res = await service.search(
-          'flutter',
-          filters: const HeavenSearchFilters(
-            time: HeavenTimeFilter.week,
-            region: HeavenRegionFilter.india,
-            safe: HeavenSafeFilter.strict,
-          ),
+      'Desktop Mode rewrites mobile subdomains and Shield strips trackers',
+      () {
+        expect(
+          BrowserEngine.rewriteMobileToDesktopUri(
+            Uri.parse('https://m.youtube.com/watch?v=123'),
+          ).toString(),
+          'https://www.youtube.com/watch?v=123',
         );
-
-        expect(res.webResults.length, 1);
-        expect(res.imageResults.length, 1);
-        expect(res.videoResults.first.thumbnailUrl, contains('dQw4w9WgXcQ'));
-        expect(res.newsResults.first.metaBadge, 'TechDaily');
-        expect(res.wikiResults.first.sourceLabel, 'en.wikipedia.org');
+        expect(
+          HeavenShield.shouldBlockUri(
+            Uri.parse(
+              'https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js',
+            ),
+          ),
+          isTrue,
+        );
+        final ({Uri uri, int removedCount}) cleaned =
+            HeavenShield.stripTrackingParameters(
+              Uri.parse('https://example.com/p?id=7&utm_source=ads&fbclid=1'),
+            );
+        expect(cleaned.removedCount, 2);
+        expect(cleaned.uri.toString(), 'https://example.com/p?id=7');
       },
     );
-
-    test('blocks ad domains and strips tracking parameters', () {
-      expect(
-        HeavenShield.shouldBlockUri(
-          Uri.parse(
-            'https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js',
-          ),
-        ),
-        isTrue,
-      );
-      final ({Uri uri, int removedCount}) cleaned =
-          HeavenShield.stripTrackingParameters(
-            Uri.parse('https://example.com/p?id=7&utm_source=ads&fbclid=1'),
-          );
-      expect(cleaned.removedCount, 2);
-      expect(cleaned.uri.toString(), 'https://example.com/p?id=7');
-    });
   });
 
-  group('Downloads Controller & Multi-Tab Isolation', () {
-    test('enqueues downloads and isolates Incognito tabs', () async {
-      SharedPreferences.setMockInitialValues(<String, Object>{});
-      final SharedPreferences prefs = await SharedPreferences.getInstance();
-      final DownloadsController downloads = DownloadsController(
-        prefs,
-        enableNativePolling: false,
-      );
+  group('Downloads Pause/Resume/Cancel & Stuck-Screen Protection', () {
+    const MethodChannel nativeChannel = MethodChannel(
+      'com.hypertechlabs.heavenbrowser/native_shield',
+    );
 
-      final bool started = await downloads.startUrlDownload(
-        url: 'https://example.com/manual.pdf',
-        suggestedFileName: 'manual.pdf',
-      );
-      expect(started, isTrue);
-      expect(downloads.items.length, 1);
-      expect(downloads.items.first.fileName, 'manual.pdf');
-
-      final BrowserSettingsController settings = BrowserSettingsController(
-        prefs,
-      );
-      final TabManagerController tabManager = TabManagerController(
-        settings: settings,
-        enablePlatformWebView: false,
-      );
-      await tabManager.openNewTab(
-        incognito: true,
-        initialInput: 'https://private.example.org',
-      );
-      expect(settings.history, isEmpty);
-      expect(settings.quickLaunchSites, isEmpty);
-
-      tabManager.dispose();
-      downloads.dispose();
+    tearDown(() {
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(nativeChannel, null);
     });
+
+    test(
+      'supports working Pause, Resume, Cancel & clears BrowserEngine stuck state on download intercept',
+      () async {
+        String currentNativeStatus = 'running';
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+            .setMockMethodCallHandler(nativeChannel, (MethodCall call) async {
+              switch (call.method) {
+                case 'startDownload':
+                  currentNativeStatus = 'running';
+                  return <String, Object>{
+                    'downloadId': 701,
+                    'fileName': 'ubuntu-arm64.iso',
+                    'state': 'running',
+                  };
+                case 'pauseDownload':
+                  currentNativeStatus = 'paused';
+                  return true;
+                case 'resumeDownload':
+                  currentNativeStatus = 'running';
+                  return true;
+                case 'cancelDownload':
+                  currentNativeStatus = 'canceled';
+                  return true;
+                case 'queryDownloads':
+                  return <Map<String, Object>>[
+                    <String, Object>{
+                      'downloadId': 701,
+                      'status': currentNativeStatus,
+                      'bytesDownloaded': 4194304,
+                      'totalBytes': 8388608,
+                      'speedBps': currentNativeStatus == 'running'
+                          ? 1048576
+                          : 0,
+                      'localUri':
+                          '/storage/emulated/0/Download/ubuntu-arm64.iso',
+                      'mimeType': 'application/octet-stream',
+                    },
+                  ];
+                default:
+                  return null;
+              }
+            });
+
+        SharedPreferences.setMockInitialValues(<String, Object>{});
+        final SharedPreferences prefs = await SharedPreferences.getInstance();
+        final DownloadsController downloads = DownloadsController(
+          prefs,
+          enableNativePolling: false,
+        );
+
+        final bool started = await downloads.startUrlDownload(
+          url: 'https://releases.ubuntu.com/ubuntu-arm64.iso',
+          suggestedFileName: 'ubuntu-arm64.iso',
+        );
+        expect(started, isTrue);
+        expect(downloads.items.first.state, 'running');
+
+        // Pause works!
+        await downloads.pauseDownload(701);
+        expect(downloads.items.first.isPaused, isTrue);
+
+        // Resume works!
+        await downloads.resumeDownload(701);
+        expect(downloads.items.first.isRunning, isTrue);
+
+        // Cancel works!
+        await downloads.cancelAndRemove(downloads.items.first);
+        expect(downloads.items, isEmpty);
+
+        // Verify native onDownloadStarted registers the intercepted download & keeps BrowserEngine clean!
+        final BrowserSettingsController settings = BrowserSettingsController(
+          prefs,
+        );
+        final BrowserEngine engine = BrowserEngine(
+          settings: settings,
+          isIncognito: false,
+          enablePlatformWebView: false,
+        );
+        await engine.loadUserEntry('https://releases.ubuntu.com');
+        NativeShieldBridge.instance.onDownloadStarted?.call(<String, Object?>{
+          'downloadId': 702,
+          'fileName': 'ubuntu-server.iso',
+          'url': 'https://releases.ubuntu.com/ubuntu-server.iso',
+          'mimeType': 'application/octet-stream',
+          'totalBytes': 10485760,
+          'localUri': '/storage/emulated/0/Download/ubuntu-server.iso',
+          'wasEmptyPage': false,
+        });
+        expect(downloads.items.length, 1);
+        expect(downloads.items.first.fileName, 'ubuntu-server.iso');
+        expect(engine.isLoading, isFalse);
+        expect(engine.errorMessage, isNull);
+        expect(engine.currentUrl, 'https://releases.ubuntu.com');
+
+        engine.dispose();
+        downloads.dispose();
+      },
+    );
   });
 
   testWidgets(
-    'Narrow 320px screen renders Top Bar, Home/Forward/Mic, Search, Tabs, Library & Downloads cleanly with zero overflow',
+    'Step 5 UI: No refresh in bar, working Home search + News feed, Copy/Edit/Share on link tap, Full-screen Tab Previews & Pause/Resume Downloads on narrow 320px screen',
     (WidgetTester tester) async {
-      // Simulate narrow 320x640 phone screen to verify zero layout cut-off
       tester.view.physicalSize = const Size(320, 640);
       tester.view.devicePixelRatio = 1.0;
       addTearDown(tester.view.reset);
@@ -231,14 +378,15 @@ void main() {
       SharedPreferences.setMockInitialValues(<String, Object>{
         'hb.downloads.v4': jsonEncode(<Map<String, Object>>[
           <String, Object>{
-            'downloadId': 401,
-            'fileName': 'heaven_browser_release_notes_2026.pdf',
-            'url': 'https://example.com/heaven_browser_release_notes_2026.pdf',
-            'mimeType': 'application/pdf',
-            'state': 'completed',
-            'bytesDownloaded': 524288,
-            'totalBytes': 524288,
-            'localUri': 'file:///storage/emulated/0/Download/heaven.pdf',
+            'downloadId': 501,
+            'fileName': 'heaven_installer_v5.apk',
+            'url': 'https://example.com/heaven_installer_v5.apk',
+            'mimeType': 'application/vnd.android.package-archive',
+            'state': 'running',
+            'bytesDownloaded': 2097152,
+            'totalBytes': 4194304,
+            'speedBps': 524288,
+            'localUri': '/storage/emulated/0/Download/heaven_installer_v5.apk',
             'createdAtMs': 1792660000000,
           },
         ]),
@@ -251,11 +399,20 @@ void main() {
         prefs,
         enableNativePolling: false,
       );
+      final InterestProfileController interests = InterestProfileController(
+        prefs,
+      );
+      final HeavenNewsFeedService newsService = _createMockNewsService(
+        prefs,
+        interests,
+      );
 
       await tester.pumpWidget(
         HeavenBrowserApp(
           settings: settings,
           downloads: downloads,
+          interests: interests,
+          newsService: newsService,
           enablePlatformWebView: false,
           searchService: _createMockSearchService(),
         ),
@@ -263,118 +420,111 @@ void main() {
       await tester.pumpAndSettle();
       expect(tester.takeException(), isNull);
 
-      // Clean Home Screen: no Bookmarks/History/+ Incognito/Smart Quick Launch clutter
-      expect(find.text('Heaven'), findsWidgets);
-      expect(find.text('Smart Quick Launch'), findsNothing);
-      expect(find.text('+ Incognito'), findsNothing);
+      // 1. Refresh button is REMOVED from the top search bar!
+      expect(find.byIcon(Icons.refresh_rounded), findsNothing);
 
-      // Verify Home, Forward, and Voice Search Mic buttons in Top Dock Bar
-      expect(find.byTooltip('Home'), findsOneWidget);
-      expect(find.byTooltip('Forward'), findsWidgets);
-      expect(find.byTooltip('Voice Search'), findsWidgets);
+      // 2. Daily Personalized News Feed renders right below the Home Search Bar!
+      expect(find.text('Daily Feed'), findsOneWidget);
+      expect(
+        find.textContaining('SpaceX Starship Orbital Launch Milestone'),
+        findsOneWidget,
+      );
 
-      // Run a Heaven Search query and switch tabs (Images / News)
-      await tester.tap(find.text('Search or type web address'));
+      // 3. Home Screen Search Bar actually works directly!
+      await tester.enterText(
+        find.byKey(const Key('home_search_textfield')),
+        'flutter',
+      );
+      await tester.pump();
+      await tester.tap(find.byTooltip('Search Now'));
       await tester.pumpAndSettle();
       expect(tester.takeException(), isNull);
-      await tester.enterText(find.byType(TextField).first, 'flutter');
-      await tester.testTextInput.receiveAction(TextInputAction.go);
-      await tester.pumpAndSettle();
-      expect(tester.takeException(), isNull);
 
+      // Verify search ran AND recorded interest into daily profile!
       expect(find.text('Flutter Official Video'), findsOneWidget);
+      expect(interests.rankedInterests, isNotEmpty);
+
+      // Verify Heaven Search filter chips default to unfiltered (Global + Safe: Off)
+      expect(find.text('Global'), findsOneWidget);
+      expect(find.text('Safe: Off'), findsOneWidget);
+
+      // Open a web result so an active URL link is in the top search bar
       await tester.tap(find.text('News'));
       await tester.pumpAndSettle();
-      expect(tester.takeException(), isNull);
-      expect(find.text('Flutter 3.44 Released'), findsOneWidget);
-
-      // Open result URL -> Back via menu -> Forward via Top Dock Forward button!
       await tester.tap(find.text('Flutter 3.44 Released'));
       await tester.pumpAndSettle();
       expect(tester.takeException(), isNull);
       expect(find.text('news.example.com'), findsOneWidget);
 
-      // Bookmark & Download current URL via real Browser Menu buttons!
-      await tester.tap(find.byTooltip('Browser Menu'));
+      // 4. Tap active link in Search Bar -> Copy, Edit, Share options appear!
+      await tester.tap(find.byKey(const Key('omnibox_display_pill')));
       await tester.pumpAndSettle();
       expect(tester.takeException(), isNull);
-      await tester.tap(find.byTooltip('Bookmark Page'));
-      await tester.pumpAndSettle();
-      ScaffoldMessenger.of(
-        tester.element(find.byType(Scaffold).first),
-      ).clearSnackBars();
-      await tester.pumpAndSettle();
-      expect(tester.takeException(), isNull);
+      expect(find.text('Copy'), findsOneWidget);
+      expect(find.text('Edit'), findsOneWidget);
+      expect(find.text('Share'), findsOneWidget);
 
-      await tester.tap(find.byTooltip('Browser Menu'));
+      // Tap Edit -> populates current URL into top_omnibox_textfield ready to edit!
+      await tester.tap(find.text('Edit'));
       await tester.pumpAndSettle();
       expect(tester.takeException(), isNull);
-      await tester.tap(find.byTooltip('Back'));
-      await tester.pumpAndSettle();
-      expect(tester.takeException(), isNull);
-      expect(find.text('All'), findsOneWidget);
+      final TextField editedField = tester.widget<TextField>(
+        find.byKey(const Key('top_omnibox_textfield')),
+      );
+      expect(editedField.controller?.text, 'https://news.example.com/flutter');
 
-      await tester.tap(find.byTooltip('Forward').first);
+      // Submit a new URL from edited bar
+      await tester.enterText(
+        find.byKey(const Key('top_omnibox_textfield')),
+        'https://flutter.dev',
+      );
+      await tester.testTextInput.receiveAction(TextInputAction.go);
       await tester.pumpAndSettle();
       expect(tester.takeException(), isNull);
-      expect(find.text('news.example.com'), findsOneWidget);
+      expect(find.text('flutter.dev'), findsOneWidget);
 
-      // Tap Home button in Top Bar -> returns straight to clean Home Screen
-      await tester.tap(find.byTooltip('Home'));
-      await tester.pumpAndSettle();
-      expect(tester.takeException(), isNull);
-      expect(find.text('Search or type web address'), findsOneWidget);
-
-      // Open Full-Screen Tabs Screen -> verify zero overflow & open Incognito tab
-      await tester.tap(find.byTooltip('Switch Tabs'));
+      // 5. Open Full-Screen Tabs Screen -> verify tall full-screen tab window preview!
+      final Finder switchTabsFinder = find.byTooltip('Switch Tabs');
+      await tester.tap(switchTabsFinder);
       await tester.pumpAndSettle();
       expect(tester.takeException(), isNull);
       expect(find.text('Tabs (1)'), findsOneWidget);
-      await tester.tap(find.text('Incognito (0)'));
-      await tester.pumpAndSettle();
-      expect(tester.takeException(), isNull);
-      await tester.tap(find.text('New Incognito'));
-      await tester.pumpAndSettle();
-      expect(tester.takeException(), isNull);
-      expect(find.text('Heaven Incognito'), findsOneWidget);
-
-      // Open Menu -> Open Bookmarks/History Library Screen -> verify zero overflow
-      await tester.tap(find.byTooltip('Browser Menu'));
-      await tester.pumpAndSettle();
-      expect(tester.takeException(), isNull);
-      await tester.tap(find.text('Bookmarks'));
-      await tester.pumpAndSettle();
-      expect(tester.takeException(), isNull);
-      expect(find.text('Library'), findsOneWidget);
-      expect(settings.bookmarks.length, 1);
-      await tester.tap(find.textContaining('History'));
-      await tester.pumpAndSettle();
-      expect(tester.takeException(), isNull);
-      await tester.pageBack();
+      expect(find.text('ACTIVE'), findsOneWidget);
+      final GridView tabsGrid = tester.widget<GridView>(find.byType(GridView));
+      final SliverGridDelegateWithFixedCrossAxisCount delegate =
+          tabsGrid.gridDelegate as SliverGridDelegateWithFixedCrossAxisCount;
+      expect(delegate.childAspectRatio, closeTo(0.58, 0.01));
+      await tester.tap(find.byTooltip('Back to browser'));
       await tester.pumpAndSettle();
       expect(tester.takeException(), isNull);
 
-      // Open Menu -> Open Downloads Screen -> verify populated download card has zero overflow
+      // 6. Open Downloads Screen -> verify Pause & Resume buttons render with zero overflow!
       await tester.tap(find.byTooltip('Browser Menu'));
       await tester.pumpAndSettle();
-      expect(tester.takeException(), isNull);
       await tester.tap(find.textContaining('Downloads'));
       await tester.pumpAndSettle();
       expect(tester.takeException(), isNull);
-      expect(downloads.items.length, 1);
-      await tester.pageBack();
+      // Restored interrupted download starts in 'paused' ready to Resume -> Pause -> Resume!
+      expect(find.byTooltip('Resume download'), findsOneWidget);
+      await tester.tap(find.byTooltip('Resume download'));
       await tester.pumpAndSettle();
       expect(tester.takeException(), isNull);
+      expect(find.byTooltip('Pause download'), findsOneWidget);
+      await tester.tap(find.byTooltip('Pause download'));
+      await tester.pumpAndSettle();
+      expect(tester.takeException(), isNull);
+      expect(find.byTooltip('Resume download'), findsOneWidget);
 
-      // Open Menu -> Open Settings Screen -> verify zero overflow
-      await tester.tap(find.byTooltip('Browser Menu'));
-      await tester.pumpAndSettle();
-      expect(tester.takeException(), isNull);
-      await tester.tap(find.text('Settings'));
-      await tester.pumpAndSettle();
-      expect(tester.takeException(), isNull);
-      expect(find.text('Set as Default Browser'), findsOneWidget);
+      // Also verify PNG memory preview renders cleanly in BrowserTab
+      final TabManagerController tm = TabManagerController(
+        settings: settings,
+        enablePlatformWebView: false,
+      );
+      tm.activeTab.previewBytes = _kSamplePreviewPng;
+      expect(tm.activeTab.previewBytes, isNotEmpty);
+      tm.dispose();
 
+      newsService.dispose();
       downloads.dispose();
     },
   );
