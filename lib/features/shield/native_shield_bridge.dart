@@ -706,6 +706,7 @@ class NativeShieldBridge {
     String tab = 'all',
     String safeMode = 'off',
     String timeCode = 'any',
+    String regionCode = '',
     String langHeader = 'en-US,en;q=0.9',
   }) async {
     try {
@@ -717,6 +718,7 @@ class NativeShieldBridge {
               'tab': tab,
               'safeMode': safeMode,
               'timeCode': timeCode,
+              'regionCode': regionCode,
               'langHeader': langHeader,
             },
           );

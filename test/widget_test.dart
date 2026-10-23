@@ -1113,5 +1113,69 @@ void main() {
         expect(bgSearchJava.contains('android.R.id.content'), isFalse);
       },
     );
+
+    test(
+      'Step 12: DOCUMENT_START YouTube ad-pruning, genuine Google SERP session, IPv6 Happy-Eyeballs CRX downloader & glitch-free link navigation',
+      () async {
+        // 1. Native DOCUMENT_START YouTube /youtubei/v1/player pruning & expanded domain shield
+        final String shieldJava = File(
+          'android/app/src/main/java/com/hypertechlabs/heavenbrowser/HeavenShieldPlugin.java',
+        ).readAsStringSync();
+        expect(shieldJava.contains('addDocumentStartJavaScript'), isTrue);
+        expect(shieldJava.contains('/youtubei/v1/player'), isTrue);
+        expect(shieldJava.contains('adBreakHeartbeatParams'), isTrue);
+        expect(HeavenShield.blockedRootDomains.length, greaterThan(250));
+        expect(HeavenShield.matchBlockedDomain('ads.clmbtech.com'), 'clmbtech.com');
+        expect(HeavenShield.matchBlockedDomain('cdn.vdo.ai'), 'vdo.ai');
+        final String cosJs = HeavenShield.buildProtectionScript(
+          shieldEnabled: true,
+          sendDntAndGpc: true,
+        );
+        expect(cosJs.contains('sweepScheduled'), isTrue);
+
+        // 2. Genuine Android Chrome Google Search session (no gen_204 block, no Win32 tamper, no &num=18)
+        final String bgSearchJava = File(
+          'android/app/src/main/java/com/hypertechlabs/heavenbrowser/HeavenGoogleBgSearch.java',
+        ).readAsStringSync();
+        expect(bgSearchJava.contains('OffscreenActiveWebView'), isTrue);
+        expect(bgSearchJava.contains('path.contains("/gen_204")'), isFalse);
+        expect(bgSearchJava.contains("'Win32'"), isFalse);
+        expect(bgSearchJava.contains('&num=18'), isFalse);
+
+        // 3. Dual-stack IPv6-first Happy Eyeballs + update.googleapis.com CRX downloader
+        final String netHelperJava = File(
+          'android/app/src/main/java/com/hypertechlabs/heavenbrowser/HeavenNetHelper.java',
+        ).readAsStringSync();
+        expect(netHelperJava.contains('Inet6Address'), isTrue);
+        expect(netHelperJava.contains('setEndpointIdentificationAlgorithm("HTTPS")'), isTrue);
+        final String extJava = File(
+          'android/app/src/main/java/com/hypertechlabs/heavenbrowser/HeavenChromeExtManager.java',
+        ).readAsStringSync();
+        expect(extJava.contains('update.googleapis.com/service/update2/crx'), isTrue);
+        expect(extJava.contains('downloadCrxViaChromiumWebView'), isTrue);
+
+        // 4. Single-shot pre-normalized HTTPS + tracking-stripped navigation when tapping search results
+        SharedPreferences.setMockInitialValues(<String, Object>{});
+        final SharedPreferences prefs = await SharedPreferences.getInstance();
+        final BrowserSettingsController settings = BrowserSettingsController(
+          prefs,
+        );
+        final BrowserEngine engine = BrowserEngine(
+          settings: settings,
+          isIncognito: false,
+          enablePlatformWebView: false,
+        );
+        await engine.loadUserEntry('flutter');
+        expect(engine.isShowingHeavenSearch, isTrue);
+
+        await engine.loadUserEntry(
+          'http://example.com/article?id=42&utm_source=google&fbclid=xyz',
+        );
+        expect(engine.isShowingHeavenSearch, isFalse);
+        expect(engine.currentUrl, 'https://example.com/article?id=42');
+
+        engine.dispose();
+      },
+    );
   });
 }

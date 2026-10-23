@@ -602,13 +602,19 @@ class BrowserSettingsController extends ChangeNotifier {
     await _prefs.setString(_keyHistory, encoded);
   }
 
+  int _lastBlockedNotifyMs = 0;
+
   Future<void> incrementBlockedCount([int delta = 1]) async {
     if (delta <= 0) {
       return;
     }
     _totalTrackersBlocked += delta;
     await _prefs.setInt(_keyTotalBlocked, _totalTrackersBlocked);
-    notifyListeners();
+    final int now = DateTime.now().millisecondsSinceEpoch;
+    if (now - _lastBlockedNotifyMs >= 350) {
+      _lastBlockedNotifyMs = now;
+      notifyListeners();
+    }
   }
 
   Future<void> setSearchEngine(SearchEngine engine) async {

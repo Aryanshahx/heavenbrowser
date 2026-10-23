@@ -69,6 +69,17 @@ class BrowserEngine extends ChangeNotifier {
   String? _lastCompletedWebUrl;
   int _lastDownloadInterceptMs = 0;
 
+  // Cached WebView configuration state (prevents redundant setInitialScale/UA resets & glitching!)
+  bool? _appliedAllowJs;
+  String? _appliedUserAgent;
+  int? _appliedTextScale;
+  bool? _appliedEffectiveDesktop;
+  bool? _appliedForceDesktopStore;
+  bool? _appliedAllow3pCookies;
+  bool _mediaGestureConfigured = false;
+  int _lastBlockedUiNotifyMs = 0;
+  double _lastNotifiedProgress = 0.0;
+
   // Desktop Inspect / DevTools runtime state
   final List<DevToolsConsoleEntry> _consoleEntries = <DevToolsConsoleEntry>[];
   final List<DevToolsNetworkEntry> _networkEntries = <DevToolsNetworkEntry>[];
@@ -244,9 +255,21 @@ class BrowserEngine extends ChangeNotifier {
             notifyListeners();
           },
           onProgress: (int value) {
-            _progress = (value.clamp(0, 100)) / 100.0;
-            _isLoading = value < 100;
-            notifyListeners();
+            if (isShowingStartPage || isShowingHeavenSearch) {
+              return;
+            }
+            final double nextProgress = (value.clamp(0, 100)) / 100.0;
+            final bool nextLoading = value < 100;
+            final bool loadingChanged = _isLoading != nextLoading;
+            final bool significantStep =
+                (nextProgress - _lastNotifiedProgress).abs() >= 0.04 ||
+                value >= 100;
+            _progress = nextProgress;
+            _isLoading = nextLoading;
+            if (loadingChanged || significantStep) {
+              _lastNotifiedProgress = nextProgress;
+              notifyListeners();
+            }
           },
           onPageFinished: (String url) async {
             if (url == 'about:blank' &&
@@ -288,11 +311,8 @@ class BrowserEngine extends ChangeNotifier {
                   (DateTime.now().millisecondsSinceEpoch -
                       _lastDownloadInterceptMs) <
                   3500;
-              // Do NOT replace the page with an error screen when a download aborts navigation!
-              if (recentlyInterceptedDownload ||
-                  desc.contains('ERR_ABORTED') ||
-                  desc.contains('INTERRUPTED') ||
-                  error.errorCode == -999) {
+              // Do NOT replace the page with an error screen when a download or redirect aborts!
+              if (recentlyInterceptedDownload) {
                 _isLoading = false;
                 _progress = 0;
                 _errorMessage = null;
@@ -301,6 +321,12 @@ class BrowserEngine extends ChangeNotifier {
                   _syncVirtualEntryWithWebUrl(_lastCompletedWebUrl!);
                 }
                 notifyListeners();
+                return;
+              }
+              if (desc.contains('ERR_ABORTED') ||
+                  desc.contains('INTERRUPTED') ||
+                  error.errorCode == -999) {
+                // In-flight redirect or superseded loadRequest — do not snap URL back or flash error!
                 return;
               }
               _isLoading = false;
@@ -417,7 +443,11 @@ class BrowserEngine extends ChangeNotifier {
       }
     }
     unawaited(settings.incrementBlockedCount(1));
-    notifyListeners();
+    final int now = DateTime.now().millisecondsSinceEpoch;
+    if (now - _lastBlockedUiNotifyMs >= 240 || _pageBlockedCount <= 2) {
+      _lastBlockedUiNotifyMs = now;
+      notifyListeners();
+    }
   }
 
   Future<NavigationDecision> _handleNavigationRequest(
@@ -573,7 +603,10 @@ class BrowserEngine extends ChangeNotifier {
     }
   }
 
-  Future<void> _applyControllerSettings({String? forHost}) async {
+  Future<void> _applyControllerSettings({
+    String? forHost,
+    bool force = false,
+  }) async {
     final WebViewController? webController = _controller;
     if (webController == null) {
       return;
@@ -587,37 +620,58 @@ class BrowserEngine extends ChangeNotifier {
     final bool effectiveDesktop = settings.desktopMode || forceDesktopStore;
 
     final bool allowJs = settings.isJavaScriptAllowedForHost(host);
-    await webController.setJavaScriptMode(
-      allowJs ? JavaScriptMode.unrestricted : JavaScriptMode.disabled,
-    );
+    if (force || _appliedAllowJs != allowJs) {
+      _appliedAllowJs = allowJs;
+      await webController.setJavaScriptMode(
+        allowJs ? JavaScriptMode.unrestricted : JavaScriptMode.disabled,
+      );
+    }
 
-    await webController.setUserAgent(
-      effectiveDesktop
-          ? AppConstants.desktopUserAgent
-          : AppConstants.mobileUserAgent,
-    );
+    final String desiredUa = effectiveDesktop
+        ? AppConstants.desktopUserAgent
+        : AppConstants.mobileUserAgent;
+    if (force || _appliedUserAgent != desiredUa) {
+      _appliedUserAgent = desiredUa;
+      await webController.setUserAgent(desiredUa);
+    }
 
     if (webController.platform
         case final AndroidWebViewController androidCtrl) {
-      await androidCtrl.setMediaPlaybackRequiresUserGesture(false);
-      await androidCtrl.setTextZoom(settings.textScalePercent);
-      await androidCtrl.enableZoom(true);
-      if (forceDesktopStore) {
-        await NativeShieldBridge.instance.prepareChromeWebStoreView(
-          androidCtrl.webViewIdentifier,
-        );
-      } else {
-        await NativeShieldBridge.instance.applyDesktopViewport(
-          webViewId: androidCtrl.webViewIdentifier,
-          desktopMode: effectiveDesktop,
-        );
+      if (force || !_mediaGestureConfigured) {
+        _mediaGestureConfigured = true;
+        await androidCtrl.setMediaPlaybackRequiresUserGesture(false);
+        await androidCtrl.enableZoom(true);
+      }
+      final int desiredScale = settings.textScalePercent;
+      if (force || _appliedTextScale != desiredScale) {
+        _appliedTextScale = desiredScale;
+        await androidCtrl.setTextZoom(desiredScale);
+      }
+      if (force ||
+          _appliedEffectiveDesktop != effectiveDesktop ||
+          _appliedForceDesktopStore != forceDesktopStore) {
+        _appliedEffectiveDesktop = effectiveDesktop;
+        _appliedForceDesktopStore = forceDesktopStore;
+        if (forceDesktopStore) {
+          await NativeShieldBridge.instance.prepareChromeWebStoreView(
+            androidCtrl.webViewIdentifier,
+          );
+        } else {
+          await NativeShieldBridge.instance.applyDesktopViewport(
+            webViewId: androidCtrl.webViewIdentifier,
+            desktopMode: effectiveDesktop,
+          );
+        }
       }
 
-      final WebViewCookieManager cookieManager = WebViewCookieManager();
-      if (cookieManager.platform
-          case final AndroidWebViewCookieManager androidCookies) {
-        final bool allow3p = !isIncognito && !settings.blockThirdPartyCookies;
-        await androidCookies.setAcceptThirdPartyCookies(androidCtrl, allow3p);
+      final bool allow3p = !isIncognito && !settings.blockThirdPartyCookies;
+      if (force || _appliedAllow3pCookies != allow3p) {
+        _appliedAllow3pCookies = allow3p;
+        final WebViewCookieManager cookieManager = WebViewCookieManager();
+        if (cookieManager.platform
+            case final AndroidWebViewCookieManager androidCookies) {
+          await androidCookies.setAcceptThirdPartyCookies(androidCtrl, allow3p);
+        }
       }
     }
   }
@@ -626,7 +680,7 @@ class BrowserEngine extends ChangeNotifier {
   /// before reloading with Desktop Client-Hints and m. -> desktop host rewrite.
   Future<void> setDesktopModeAndReload(bool enabled) async {
     await settings.setDesktopMode(enabled);
-    await _applyControllerSettings();
+    await _applyControllerSettings(force: true);
 
     final String? activeUrl = _currentUrl;
     if (activeUrl != null &&
@@ -813,11 +867,22 @@ class BrowserEngine extends ChangeNotifier {
       _progress = 0;
       _webViewCanGoBack = false;
       _webViewCanGoForward = false;
+      if (_androidWebViewId != null) {
+        unawaited(
+          NativeShieldBridge.instance.updatePageHost(
+            webViewId: _androidWebViewId!,
+            pageHost: '',
+          ),
+        );
+      }
       notifyListeners();
       return;
     }
 
-    Uri finalUri = settings.desktopMode ? rewriteMobileToDesktopUri(uri) : uri;
+    Uri finalUri = OmniboxParser.unwrapGoogleRedirectUri(uri) ?? uri;
+    if (settings.desktopMode) {
+      finalUri = rewriteMobileToDesktopUri(finalUri);
+    }
     final bool shieldActive =
         settings.shieldEnabled && !settings.isHostTrusted(finalUri.host);
     if (shieldActive) {
@@ -829,11 +894,17 @@ class BrowserEngine extends ChangeNotifier {
         await settings.incrementBlockedCount(stripped.removedCount);
       }
     }
+    if (settings.httpsUpgrade &&
+        finalUri.scheme == 'http' &&
+        !OmniboxParser.isLocalOrPrivateHost(finalUri.host)) {
+      finalUri = finalUri.replace(scheme: 'https');
+    }
 
     _currentUrl = finalUri.toString();
     _pageTitle = OmniboxParser.formatDisplayUrl(_currentUrl);
     _isLoading = true;
-    _progress = 0.1;
+    _progress = 0.08;
+    _lastNotifiedProgress = 0.08;
     notifyListeners();
 
     if (_androidWebViewId != null) {
@@ -841,6 +912,12 @@ class BrowserEngine extends ChangeNotifier {
         NativeShieldBridge.instance.updatePageHost(
           webViewId: _androidWebViewId!,
           pageHost: finalUri.host,
+        ),
+      );
+      unawaited(
+        NativeShieldBridge.instance.approveExternalNavigation(
+          webViewId: _androidWebViewId!,
+          host: finalUri.host,
         ),
       );
     }

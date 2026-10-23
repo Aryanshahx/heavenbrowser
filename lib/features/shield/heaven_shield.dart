@@ -243,6 +243,47 @@ class HeavenShield {
     'an.yandex.ru',
     'hm.baidu.com',
     'cpro.baidu.com',
+
+    // Additional Video, Regional/Indian News, Push-Spam & Programmatic Ad Networks
+    'clmbtech.com',
+    'izooto.com',
+    'vizury.com',
+    'vdo.ai',
+    'vidazoo.com',
+    'anyclip.com',
+    'jwpltx.com',
+    'adrecover.com',
+    'pushengage.com',
+    'pushcrew.com',
+    'webengage.com',
+    'gravitec.net',
+    'notix.io',
+    'rollerads.com',
+    'ungads.com',
+    'yektanet.com',
+    'trafmag.com',
+    'adspyglass.com',
+    'acint.net',
+    'adriver.ru',
+    'adhigh.net',
+    'rtmark.net',
+    'freestar.io',
+    'pubfuture.com',
+    'nitropay.com',
+    'snigelweb.com',
+    'ezoic.net',
+    'ezodn.com',
+    'mediavine.com',
+    'adthrive.com',
+    'cafemedia.com',
+    'playwire.com',
+    'venatusmedia.com',
+    'adpushup.com',
+    'setupad.com',
+    'optad360.io',
+    'onetag-sys.com',
+    'smilewanted.com',
+    'seedtag.com',
   };
 
   static const Set<String> trackingQueryParameters = <String>{
@@ -460,11 +501,12 @@ class HeavenShield {
     } catch (_) {}
   }, true);
 
-  // 4. Cosmetic CSS rules for Google Ads, YouTube Ads, & Pirated/Adult Banner Slots
+  // 4. Cosmetic CSS rules for Google Ads, YouTube Ads (Mobile + Desktop), & Pirated/Adult Slots
   const adCss = `
     ins.adsbygoogle,
     .adsbygoogle,
     #google_vignette,
+    ins[data-vignette-loaded],
     [id^="div-gpt-ad"],
     [id^="google_ads_iframe"],
     iframe[src*="doubleclick.net"],
@@ -481,6 +523,8 @@ class HeavenShield {
     iframe[src*="adsterra"],
     iframe[src*="propeller"],
     iframe[src*="magsrv"],
+    iframe[src*="clmbtech"],
+    iframe[src*="vdo.ai"],
     [data-ad-slot],
     [data-ad-client],
     #tads,
@@ -505,19 +549,30 @@ class HeavenShield {
     #masthead-ad,
     ytd-ad-slot-renderer,
     ytd-promoted-sparkles-web-renderer,
+    ytd-promoted-sparkles-text-search-renderer,
     ytd-promoted-video-renderer,
     ytd-compact-promoted-video-renderer,
     ytd-in-feed-ad-layout-renderer,
     ytd-banner-promo-renderer,
     ytd-statement-banner-renderer,
+    ytd-engagement-panel-section-list-renderer[target-id="engagement-panel-ads"],
     ytm-promoted-sparkles-web-renderer,
+    ytm-promoted-sparkles-text-search-renderer,
     ytm-promoted-video-renderer,
     ytm-companion-ad-renderer,
+    ytm-companion-slot,
+    ytm-statement-banner-renderer,
+    ytm-in-feed-ad-layout-renderer,
     ytm-rich-item-renderer:has(ytm-ad-slot-renderer),
     ytm-ad-slot-renderer,
+    ad-slot-renderer,
     .ytp-ad-overlay-container,
     .ytp-ad-message-container,
-    .ytp-ad-image-overlay {
+    .ytp-ad-image-overlay,
+    .ytp-ad-player-overlay-layout,
+    .ytp-featured-product,
+    ytd-enforcement-message-view-model,
+    ytm-enforcement-message-view-model {
       display: none !important;
       height: 0 !important;
       min-height: 0 !important;
@@ -531,31 +586,35 @@ class HeavenShield {
 
   function ensureStyle() {
     if (document.getElementById('heaven-shield-css')) return;
+    const root = document.head || document.documentElement;
+    if (!root) return;
     const style = document.createElement('style');
     style.id = 'heaven-shield-css';
     style.textContent = adCss;
-    (document.head || document.documentElement).appendChild(style);
+    root.appendChild(style);
   }
   ensureStyle();
 
   // 5. Remove invisible high-z-index click-jacking divs placed over video players
   function neutralizeClickjackOverlays() {
     try {
-      const candidates = document.querySelectorAll('body > div, body > a, body > iframe');
+      const candidates = document.querySelectorAll('body > div, body > a');
       const vw = window.innerWidth || 360;
       const vh = window.innerHeight || 640;
-      for (let i = 0; i < candidates.length; i++) {
+      for (let i = 0; i < candidates.length && i < 40; i++) {
         const el = candidates[i];
         if (el.id && el.id.startsWith('heaven-')) continue;
-        if (el.querySelector && el.querySelector('video, input, button, nav')) continue;
+        if (el.childElementCount > 3) continue;
+        if (el.querySelector && el.querySelector('video, input, button, nav, main, header')) continue;
         const cs = window.getComputedStyle(el);
+        if (cs.position !== 'fixed' && cs.position !== 'absolute') continue;
         const z = parseInt(cs.zIndex || '0', 10);
-        if ((cs.position === 'fixed' || cs.position === 'absolute') && z >= 9999) {
+        if (z >= 9999) {
           const r = el.getBoundingClientRect();
           const coversScreen = r.width >= vw * 0.7 && r.height >= vh * 0.55;
           const isInvisible = parseFloat(cs.opacity || '1') < 0.15 ||
             ((cs.backgroundColor === 'rgba(0, 0, 0, 0)' || cs.backgroundColor === 'transparent') &&
-             !(el.textContent || '').trim() && el.tagName !== 'IFRAME');
+             !(el.textContent || '').trim());
           if (coversScreen && isInvisible) {
             el.remove();
             notifyShield('clickjack-overlay');
@@ -565,7 +624,7 @@ class HeavenShield {
     } catch (_) {}
   }
 
-  // 6. Sweep Google tracking wrappers + YouTube pre-roll / mid-roll ads
+  // 6. Sweep Google Vignette + YouTube pre-roll / mid-roll ads (debounced for 60fps smooth scrolling!)
   function sweepAds() {
     ensureStyle();
     neutralizeClickjackOverlays();
@@ -573,9 +632,13 @@ class HeavenShield {
       if (location.hash === '#google_vignette') {
         history.replaceState(null, '', location.pathname + location.search);
       }
+      if (document.documentElement && document.documentElement.classList.contains('google-vignette-active')) {
+        document.documentElement.classList.remove('google-vignette-active');
+        if (document.body) document.body.style.removeProperty('overflow');
+      }
       const host = (location.hostname || '').toLowerCase();
       if (host.includes('google.')) {
-        const anchors = document.querySelectorAll('a[href], a[ping], a[data-ping-url]');
+        const anchors = document.querySelectorAll('a[ping], a[data-ping-url], a[href^="/url?"]');
         for (let i = 0; i < anchors.length; i++) {
           const a = anchors[i];
           if (a.hasAttribute('ping')) a.removeAttribute('ping');
@@ -605,6 +668,7 @@ class HeavenShield {
           '.ytp-skip-ad-button',
           '.ytp-ad-skip-button',
           '.ytp-ad-skip-button-modern',
+          '.ytp-ad-skip-button-slot button',
           '.ytp-ad-overlay-close-button',
           '.videoAdUiSkipButton'
         ];
@@ -617,20 +681,40 @@ class HeavenShield {
         }
         const adPlayer = document.querySelector('.html5-video-player.ad-showing video, .html5-video-player.ad-interrupting video, #movie_player.ad-showing video');
         if (adPlayer) {
-          adPlayer.muted = true;
-          adPlayer.playbackRate = 16;
-          if (isFinite(adPlayer.duration) && adPlayer.duration > 0.3) {
-            adPlayer.currentTime = Math.max(0, adPlayer.duration - 0.05);
+          if (!adPlayer.muted) {
+            adPlayer.muted = true;
+            adPlayer.__hbMutedAd = true;
           }
-          notifyShield('youtube-ad');
+          adPlayer.playbackRate = 16;
+          if (isFinite(adPlayer.duration) && adPlayer.duration > 0.15 && (adPlayer.duration - adPlayer.currentTime) > 0.15) {
+            adPlayer.currentTime = adPlayer.duration;
+            notifyShield('youtube-ad');
+          }
+        } else {
+          const normalVid = document.querySelector('video');
+          if (normalVid && normalVid.__hbMutedAd) {
+            normalVid.muted = false;
+            normalVid.__hbMutedAd = false;
+            if (normalVid.playbackRate === 16) normalVid.playbackRate = 1;
+          }
         }
       }
     } catch (_) {}
   }
 
   sweepAds();
-  const observer = new MutationObserver(() => sweepAds());
-  observer.observe(document.documentElement, { childList: true, subtree: true });
+  let sweepScheduled = false;
+  const observer = new MutationObserver(() => {
+    if (sweepScheduled) return;
+    sweepScheduled = true;
+    setTimeout(() => {
+      sweepScheduled = false;
+      sweepAds();
+    }, 180);
+  });
+  if (document.documentElement) {
+    observer.observe(document.documentElement, { childList: true, subtree: true });
+  }
 })();
 ''';
   }

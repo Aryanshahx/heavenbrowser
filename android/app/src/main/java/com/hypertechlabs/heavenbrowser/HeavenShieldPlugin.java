@@ -53,6 +53,9 @@ import android.webkit.WebSettings;
 import android.webkit.WebStorage;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
+import androidx.webkit.ScriptHandler;
+import androidx.webkit.WebViewCompat;
+import androidx.webkit.WebViewFeature;
 import io.flutter.embedding.engine.plugins.FlutterPlugin;
 import io.flutter.embedding.engine.plugins.activity.ActivityAware;
 import io.flutter.embedding.engine.plugins.activity.ActivityPluginBinding;
@@ -201,22 +204,23 @@ public class HeavenShieldPlugin
   private static final String EARLY_YOUTUBE_AND_REDIRECT_GUARD_SCRIPT =
       "(function(){"
           + "try{"
-          + "if(window.__heavenEarlyGuardV10)return;"
-          + "window.__heavenEarlyGuardV10=true;"
-          + "var deadWin=new Proxy({closed:false,close:function(){},focus:function(){},blur:function(){},postMessage:function(){}},{get:function(t,p){return p in t?t[p]:function(){};},set:function(){return true;}});"
-          + "window.open=function(u){"
-          + "  try{if(window.HeavenShieldChannel)window.HeavenShieldChannel.postMessage('popup-blocked');}catch(e){}"
-          + "  return deadWin;"
-          + "};"
+          + "if(window.__heavenShieldDocStartV12)return;"
+          + "window.__heavenShieldDocStartV12=true;"
+          + "function notify(tag){try{if(window.HeavenShieldChannel&&window.HeavenShieldChannel.postMessage)window.HeavenShieldChannel.postMessage(tag);}catch(e){}}"
+          + "var trustedList=window.__heavenTrustedHosts||[];"
+          + "var hn=(location.hostname||'').toLowerCase().replace(/^www\\./,'');"
+          + "for(var ti=0;ti<trustedList.length;ti++){"
+          + "  var th=trustedList[ti];"
+          + "  if(th&&(hn===th||hn.slice(-(th.length+1))==='.'+th))return;"
+          + "}"
+          + "var deadWin=new Proxy({closed:false,close:function(){},focus:function(){},blur:function(){},postMessage:function(){},location:{href:'about:blank'}},{get:function(t,p){return p in t?t[p]:function(){};},set:function(){return true;}});"
+          + "try{Object.defineProperty(window,'open',{configurable:true,writable:false,value:function(){notify('popup-blocked');return deadWin;}});}catch(e){window.open=function(){notify('popup-blocked');return deadWin;};}"
           + "var origClick=HTMLAnchorElement.prototype.click;"
           + "HTMLAnchorElement.prototype.click=function(){"
           + "  try{"
           + "    var href=this.href||'';"
           + "    if(!this.isConnected||(this.offsetWidth===0&&this.offsetHeight===0)){"
-          + "      if(href&&href.indexOf(location.hostname)===-1){"
-          + "        if(window.HeavenShieldChannel)window.HeavenShieldChannel.postMessage('redirect-blocked');"
-          + "        return;"
-          + "      }"
+          + "      if(href&&href.indexOf(location.hostname)===-1){notify('redirect-blocked');return;}"
           + "    }"
           + "  }catch(e){}"
           + "  return origClick.apply(this,arguments);"
@@ -232,59 +236,163 @@ public class HeavenShieldPlugin
           + "    if(fullOverlay||op<0.12||r.width<10||r.height<10){"
           + "      a.style.setProperty('pointer-events','none','important');"
           + "      a.removeAttribute('href');"
-          + "      if(window.HeavenShieldChannel)window.HeavenShieldChannel.postMessage('overlay-ad');"
+          + "      notify('overlay-ad');"
           + "      return;"
           + "    }"
           + "    var u=new URL(a.href,location.href);"
           + "    if((u.protocol==='http:'||u.protocol==='https:')&&u.hostname&&u.hostname!==location.hostname){"
-          + "      if(window.HeavenShieldChannel)window.HeavenShieldChannel.postMessage('ALLOW_NAV:'+u.hostname.toLowerCase());"
+          + "      notify('ALLOW_NAV:'+u.hostname.toLowerCase());"
           + "    }"
           + "  }catch(e){}"
           + "},true);"
-          + "var hn=(location.hostname||'').toLowerCase();"
-          + "if(hn.indexOf('youtube.com')!==-1||hn.indexOf('youtube-nocookie.com')!==-1){"
-          + "  function stripYtAds(obj){"
-          + "    if(!obj||typeof obj!=='object')return obj;"
+          + "var isYt=hn==='youtube.com'||hn.slice(-12)==='.youtube.com'||hn==='youtube-nocookie.com'||hn.slice(-21)==='.youtube-nocookie.com';"
+          + "if(isYt){"
+          + "  var AD_FEED_KEYS=['adSlotRenderer','promotedSparklesWebRenderer','promotedSparklesTextSearchRenderer','promotedVideoRenderer','compactPromotedVideoRenderer','inFeedAdLayoutRenderer','statementBannerRenderer','mastheadAdRenderer','brandInteractionRenderer','searchPyvRenderer'];"
+          + "  function hasFeedAd(item){"
+          + "    if(!item||typeof item!=='object')return false;"
+          + "    for(var k=0;k<AD_FEED_KEYS.length;k++){if(AD_FEED_KEYS[k] in item)return true;}"
+          + "    if(item.richItemRenderer&&item.richItemRenderer.content){"
+          + "      var c=item.richItemRenderer.content;"
+          + "      for(var m=0;m<AD_FEED_KEYS.length;m++){if(AD_FEED_KEYS[m] in c)return true;}"
+          + "    }"
+          + "    return false;"
+          + "  }"
+          + "  function pruneYtAds(obj,depth){"
+          + "    if(!obj||typeof obj!=='object'||depth>9)return obj;"
           + "    try{"
-          + "      delete obj.adPlacements;delete obj.playerAds;delete obj.adSlots;delete obj.adBreakHeartbeatParams;"
-          + "      if(obj.playerResponse&&typeof obj.playerResponse==='object'){"
-          + "        delete obj.playerResponse.adPlacements;delete obj.playerResponse.playerAds;delete obj.playerResponse.adSlots;"
+          + "      if(Array.isArray(obj)){"
+          + "        for(var i=obj.length-1;i>=0;i--){"
+          + "          if(hasFeedAd(obj[i])){obj.splice(i,1);}"
+          + "          else if(obj[i]&&typeof obj[i]==='object'){pruneYtAds(obj[i],depth+1);}"
+          + "        }"
+          + "        return obj;"
+          + "      }"
+          + "      if('adPlacements' in obj)delete obj.adPlacements;"
+          + "      if('playerAds' in obj)delete obj.playerAds;"
+          + "      if('adSlots' in obj)delete obj.adSlots;"
+          + "      if('adBreakHeartbeatParams' in obj)delete obj.adBreakHeartbeatParams;"
+          + "      if('enforcementMessageViewModel' in obj)delete obj.enforcementMessageViewModel;"
+          + "      if(obj.auxiliaryUi&&obj.auxiliaryUi.messageRenderers&&obj.auxiliaryUi.messageRenderers.bkaEnforcementMessageViewModel){"
+          + "        delete obj.auxiliaryUi.messageRenderers.bkaEnforcementMessageViewModel;"
+          + "      }"
+          + "      var subKeys=['playerResponse','response','contents','items','results','twoColumnBrowseResultsRenderer','twoColumnSearchResultsRenderer','twoColumnWatchNextResults','singleColumnBrowseResultsRenderer','singleColumnSearchResultsRenderer','singleColumnWatchNextResults','sectionListRenderer','itemSectionRenderer','richGridRenderer','tabs','tabRenderer','content','onResponseReceivedEndpoints','onResponseReceivedActions','appendContinuationItemsAction','continuationItems','entries'];"
+          + "      for(var s=0;s<subKeys.length;s++){"
+          + "        var sk=subKeys[s];"
+          + "        if(obj[sk]&&typeof obj[sk]==='object'){pruneYtAds(obj[sk],depth+1);}"
           + "      }"
           + "    }catch(e){}"
           + "    return obj;"
           + "  }"
+          + "  function shouldPruneText(t){"
+          + "    return t&&(t.indexOf('\"adPlacements\"')!==-1||t.indexOf('\"playerAds\"')!==-1||t.indexOf('\"adSlots\"')!==-1||t.indexOf('\"adSlotRenderer\"')!==-1||t.indexOf('\"promotedSparkles')!==-1||t.indexOf('\"promotedVideoRenderer\"')!==-1||t.indexOf('EnforcementMessageViewModel')!==-1);"
+          + "  }"
+          + "  var ytInitPlayer=window.ytInitialPlayerResponse?pruneYtAds(window.ytInitialPlayerResponse,0):undefined;"
+          + "  try{"
+          + "    Object.defineProperty(window,'ytInitialPlayerResponse',{configurable:true,get:function(){return ytInitPlayer;},set:function(v){ytInitPlayer=pruneYtAds(v,0);}});"
+          + "  }catch(e){}"
+          + "  var ytInitData=window.ytInitialData?pruneYtAds(window.ytInitialData,0):undefined;"
+          + "  try{"
+          + "    Object.defineProperty(window,'ytInitialData',{configurable:true,get:function(){return ytInitData;},set:function(v){ytInitData=pruneYtAds(v,0);}});"
+          + "  }catch(e){}"
           + "  var origParse=JSON.parse;"
-          + "  JSON.parse=function(){"
-          + "    var res=origParse.apply(this,arguments);"
-          + "    return stripYtAds(res);"
+          + "  JSON.parse=function(text,reviver){"
+          + "    var parsed=origParse.apply(this,arguments);"
+          + "    if(parsed&&typeof parsed==='object'&&typeof text==='string'&&shouldPruneText(text)){"
+          + "      return pruneYtAds(parsed,0);"
+          + "    }"
+          + "    return parsed;"
           + "  };"
-          + "  if(window.Response&&Response.prototype.json){"
-          + "    var origJson=Response.prototype.json;"
-          + "    Response.prototype.json=function(){"
-          + "      return origJson.apply(this,arguments).then(stripYtAds);"
+          + "  if(window.fetch){"
+          + "    var origFetch=window.fetch;"
+          + "    window.fetch=function(input,init){"
+          + "      var reqUrl='';"
+          + "      try{reqUrl=typeof input==='string'?input:(input&&input.url?input.url:'');}catch(e){}"
+          + "      if(reqUrl.indexOf('/pagead/')!==-1||reqUrl.indexOf('/api/stats/ads')!==-1||reqUrl.indexOf('/ptracking')!==-1||reqUrl.indexOf('doubleclick.net')!==-1||reqUrl.indexOf('googlesyndication.com')!==-1){"
+          + "        notify('youtube-ad');"
+          + "        return Promise.resolve(new Response('',{status:204}));"
+          + "      }"
+          + "      var isYtApi=reqUrl.indexOf('/youtubei/v1/player')!==-1||reqUrl.indexOf('/youtubei/v1/next')!==-1||reqUrl.indexOf('/youtubei/v1/browse')!==-1||reqUrl.indexOf('/youtubei/v1/search')!==-1||reqUrl.indexOf('/youtubei/v1/reel/')!==-1;"
+          + "      if(!isYtApi){return origFetch.apply(this,arguments);}"
+          + "      return origFetch.apply(this,arguments).then(function(resp){"
+          + "        if(!resp||!resp.ok)return resp;"
+          + "        return resp.clone().text().then(function(rawTxt){"
+          + "          if(!shouldPruneText(rawTxt))return resp;"
+          + "          try{"
+          + "            var data=origParse(rawTxt);"
+          + "            pruneYtAds(data,0);"
+          + "            notify('youtube-ad');"
+          + "            return new Response(JSON.stringify(data),{status:resp.status,statusText:resp.statusText,headers:resp.headers});"
+          + "          }catch(e){return resp;}"
+          + "        }).catch(function(){return resp;});"
+          + "      });"
           + "    };"
           + "  }"
-          + "  var ytVal=window.ytInitialPlayerResponse;"
-          + "  Object.defineProperty(window,'ytInitialPlayerResponse',{"
-          + "    configurable:true,"
-          + "    get:function(){return ytVal;},"
-          + "    set:function(v){ytVal=stripYtAds(v);}"
-          + "  });"
+          + "  var origXhrOpen=XMLHttpRequest.prototype.open;"
+          + "  var origXhrSend=XMLHttpRequest.prototype.send;"
+          + "  XMLHttpRequest.prototype.open=function(method,url){"
+          + "    this.__hbUrl=typeof url==='string'?url:String(url||'');"
+          + "    return origXhrOpen.apply(this,arguments);"
+          + "  };"
+          + "  XMLHttpRequest.prototype.send=function(){"
+          + "    var u=this.__hbUrl||'';"
+          + "    if(u.indexOf('/pagead/')!==-1||u.indexOf('/api/stats/ads')!==-1||u.indexOf('doubleclick.net')!==-1){"
+          + "      notify('youtube-ad');"
+          + "      return;"
+          + "    }"
+          + "    if(u.indexOf('/youtubei/v1/')!==-1){"
+          + "      var xhr=this;"
+          + "      xhr.addEventListener('readystatechange',function(){"
+          + "        if(xhr.readyState===4&&(xhr.responseType===''||xhr.responseType==='text')){"
+          + "          try{"
+          + "            var rt=xhr.responseText;"
+          + "            if(shouldPruneText(rt)){"
+          + "              var cleaned=JSON.stringify(pruneYtAds(origParse(rt),0));"
+          + "              Object.defineProperty(xhr,'responseText',{configurable:true,get:function(){return cleaned;}});"
+          + "              Object.defineProperty(xhr,'response',{configurable:true,get:function(){return cleaned;}});"
+          + "              notify('youtube-ad');"
+          + "            }"
+          + "          }catch(e){}"
+          + "        }"
+          + "      });"
+          + "    }"
+          + "    return origXhrSend.apply(this,arguments);"
+          + "  };"
+          + "  function injectYtStyle(){"
+          + "    if(document.getElementById('heaven-yt-docstart-css'))return;"
+          + "    var root=document.head||document.documentElement;"
+          + "    if(!root)return;"
+          + "    var st=document.createElement('style');"
+          + "    st.id='heaven-yt-docstart-css';"
+          + "    st.textContent='#masthead-ad,ytd-ad-slot-renderer,ytd-promoted-sparkles-web-renderer,ytd-promoted-sparkles-text-search-renderer,ytd-promoted-video-renderer,ytd-compact-promoted-video-renderer,ytd-in-feed-ad-layout-renderer,ytd-banner-promo-renderer,ytd-statement-banner-renderer,ytd-engagement-panel-section-list-renderer[target-id=\"engagement-panel-ads\"],ytm-ad-slot-renderer,ytm-promoted-sparkles-web-renderer,ytm-promoted-sparkles-text-search-renderer,ytm-promoted-video-renderer,ytm-companion-ad-renderer,ytm-companion-slot,ytm-statement-banner-renderer,ytm-in-feed-ad-layout-renderer,ad-slot-renderer,.ytp-ad-overlay-container,.ytp-ad-message-container,.ytp-ad-image-overlay,.ytp-ad-player-overlay-layout,.ytp-featured-product,ytd-enforcement-message-view-model,ytm-enforcement-message-view-model{display:none!important;height:0!important;max-height:0!important;visibility:hidden!important;pointer-events:none!important;}';"
+          + "    root.appendChild(st);"
+          + "  }"
+          + "  injectYtStyle();"
           + "  setInterval(function(){"
           + "    try{"
-          + "      var skip=document.querySelector('.ytp-skip-ad-button, .ytp-ad-skip-button, .ytp-ad-skip-button-modern, .ytp-ad-overlay-close-button, .videoAdUiSkipButton');"
+          + "      injectYtStyle();"
+          + "      var mp=document.getElementById('movie_player');"
+          + "      var adPlayer=document.querySelector('.html5-video-player.ad-showing, .html5-video-player.ad-interrupting, #movie_player.ad-showing');"
+          + "      var skip=document.querySelector('.ytp-skip-ad-button, .ytp-ad-skip-button, .ytp-ad-skip-button-modern, .ytp-ad-skip-button-slot button, .ytp-ad-overlay-close-button, .videoAdUiSkipButton');"
           + "      if(skip){skip.click();}"
-          + "      var player=document.querySelector('.html5-video-player.ad-showing, .html5-video-player.ad-interrupting, #movie_player.ad-showing');"
-          + "      if(player){"
-          + "        var vid=player.querySelector('video');"
+          + "      if(adPlayer){"
+          + "        if(mp&&typeof mp.skipAd==='function'){try{mp.skipAd();}catch(e){}}"
+          + "        var vid=adPlayer.querySelector('video');"
           + "        if(vid){"
-          + "          vid.muted=true;"
+          + "          if(!vid.muted){vid.muted=true;vid.__hbMutedAd=true;}"
           + "          vid.playbackRate=16;"
-          + "          if(isFinite(vid.duration)&&vid.duration>0.3){vid.currentTime=Math.max(0,vid.duration-0.05);}"
+          + "          if(isFinite(vid.duration)&&vid.duration>0.15&&(vid.duration-vid.currentTime)>0.15){"
+          + "            vid.currentTime=vid.duration;"
+          + "            notify('youtube-ad');"
+          + "          }"
           + "        }"
+          + "      }else{"
+          + "        var normalVid=document.querySelector('video');"
+          + "        if(normalVid&&normalVid.__hbMutedAd){normalVid.muted=false;normalVid.__hbMutedAd=false;if(normalVid.playbackRate===16)normalVid.playbackRate=1;}"
           + "      }"
+          + "      var dialog=document.querySelector('tp-yt-paper-dialog:has(ytd-enforcement-message-view-model)');"
+          + "      if(dialog){dialog.remove();var v=document.querySelector('video');if(v&&v.paused)v.play();}"
           + "    }catch(e){}"
-          + "  },150);"
+          + "  },200);"
           + "}"
           + "}catch(_){}"
           + "})();";
@@ -393,7 +501,44 @@ public class HeavenShieldPlugin
   private volatile String cosmeticScript = "";
   private final Map<Long, String> currentPageHosts = new ConcurrentHashMap<>();
   private final Map<String, Long> approvedExternalNavUntilMs = new ConcurrentHashMap<>();
+  private final Map<Long, Long> userInitiatedNavUntilMs = new ConcurrentHashMap<>();
+  private final Map<Long, Boolean> lastDesktopApplied = new ConcurrentHashMap<>();
+  private final Map<Long, ScriptHandler> docStartHandlers = new ConcurrentHashMap<>();
   private boolean serviceWorkerHooked = false;
+
+  private static final Set<String> BUILTIN_CRITICAL_AD_ROOTS;
+
+  static {
+    Set<String> s = new HashSet<>(32);
+    String[] critical = {
+      "doubleclick.net",
+      "googlesyndication.com",
+      "googleadservices.com",
+      "adservice.google.com",
+      "ads.youtube.com",
+      "2mdn.net",
+      "imasdk.googleapis.com",
+      "fundingchoicesmessages.google.com",
+      "exoclick.com",
+      "exosrv.com",
+      "realsrv.com",
+      "adsterra.com",
+      "propellerads.com",
+      "popads.net",
+      "popcash.net",
+      "juicyads.com",
+      "trafficjunky.net",
+      "tsyndicate.com",
+      "clickadu.com",
+      "hilltopads.net",
+      "monetag.com",
+      "onclkds.com",
+      "highperformanceformat.com",
+      "profitablecpmrate.com"
+    };
+    Collections.addAll(s, critical);
+    BUILTIN_CRITICAL_AD_ROOTS = Collections.unmodifiableSet(s);
+  }
 
   public HeavenShieldPlugin() {}
 
@@ -753,11 +898,10 @@ public class HeavenShieldPlugin
         boolean wantDesktop = enabledArg != null && enabledArg;
         this.desktopMode = wantDesktop;
         if (dvId instanceof Number && pluginBinding != null) {
-          WebView wv =
-              WebViewFlutterAndroidExternalApi.getWebView(
-                  pluginBinding, ((Number) dvId).longValue());
+          long targetWvId = ((Number) dvId).longValue();
+          WebView wv = WebViewFlutterAndroidExternalApi.getWebView(pluginBinding, targetWvId);
           if (wv != null) {
-            applyDesktopSettingsToWebView(wv, wantDesktop);
+            applyDesktopSettingsToWebView(wv, targetWvId, wantDesktop, false);
             result.success(true);
             return;
           }
@@ -787,6 +931,7 @@ public class HeavenShieldPlugin
             currentPageHosts.remove(id);
           } else {
             currentPageHosts.put(id, normalizeHost(pageHost));
+            userInitiatedNavUntilMs.put(id, System.currentTimeMillis() + 4500L);
           }
         }
         result.success(true);
@@ -880,8 +1025,9 @@ public class HeavenShieldPlugin
           String gTab = call.argument("tab");
           String gSafe = call.argument("safeMode");
           String gTime = call.argument("timeCode");
+          String gRegion = call.argument("regionCode");
           String gLang = call.argument("langHeader");
-          googleBgSearch.searchInBackground(gQuery, gTab, gSafe, gTime, gLang, result);
+          googleBgSearch.searchInBackground(gQuery, gTab, gSafe, gTime, gRegion, gLang, result);
         } else {
           result.success(Collections.singletonMap("ok", false));
         }
@@ -933,8 +1079,10 @@ public class HeavenShieldPlugin
         Object navWvObj = call.argument("webViewId");
         String navHost = call.argument("host");
         if (navWvObj instanceof Number && navHost != null && !navHost.isEmpty()) {
-          String key = ((Number) navWvObj).longValue() + "|" + normalizeHost(navHost);
-          approvedExternalNavUntilMs.put(key, System.currentTimeMillis() + 3000L);
+          long navWvId = ((Number) navWvObj).longValue();
+          String key = navWvId + "|" + normalizeHost(navHost);
+          approvedExternalNavUntilMs.put(key, System.currentTimeMillis() + 5000L);
+          userInitiatedNavUntilMs.put(navWvId, System.currentTimeMillis() + 4500L);
         }
         result.success(true);
         break;
@@ -1159,10 +1307,74 @@ public class HeavenShieldPlugin
     if (scriptArg != null) {
       this.cosmeticScript = scriptArg;
     }
+    refreshAllDocumentStartHandlers();
   }
 
-  private void applyDesktopSettingsToWebView(WebView webView, boolean enableDesktop) {
+  private String buildDocumentStartBundle() {
+    if (!this.shieldEnabled) {
+      return "(function(){window.__heavenShieldDisabled=true;})();";
+    }
+    StringBuilder trustedJs = new StringBuilder("window.__heavenTrustedHosts=[");
+    boolean first = true;
+    for (String h : this.trustedHosts) {
+      if (h == null || h.isEmpty()) continue;
+      if (!first) trustedJs.append(',');
+      first = false;
+      trustedJs
+          .append('\'')
+          .append(h.replace("\\", "\\\\").replace("'", "\\'"))
+          .append('\'');
+    }
+    trustedJs.append("];");
+    String cos = this.cosmeticScript != null ? this.cosmeticScript : "";
+    return trustedJs.toString() + EARLY_YOUTUBE_AND_REDIRECT_GUARD_SCRIPT + cos;
+  }
+
+  private void installOrRefreshDocumentStartShield(WebView webView, long webViewId) {
+    if (webView == null) {
+      return;
+    }
     try {
+      ScriptHandler old = docStartHandlers.remove(webViewId);
+      if (old != null) {
+        try {
+          old.remove();
+        } catch (Throwable ignored) {
+        }
+      }
+      if (WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) {
+        ScriptHandler next =
+            WebViewCompat.addDocumentStartJavaScript(
+                webView, buildDocumentStartBundle(), Collections.singleton("*"));
+        docStartHandlers.put(webViewId, next);
+      }
+    } catch (Throwable ignored) {
+    }
+  }
+
+  private void refreshAllDocumentStartHandlers() {
+    if (pluginBinding == null || docStartHandlers.isEmpty()) {
+      return;
+    }
+    for (Long id : new ArrayList<>(docStartHandlers.keySet())) {
+      if (id == null) continue;
+      try {
+        WebView wv = WebViewFlutterAndroidExternalApi.getWebView(pluginBinding, id);
+        if (wv != null) {
+          installOrRefreshDocumentStartShield(wv, id);
+        } else {
+          docStartHandlers.remove(id);
+        }
+      } catch (Throwable ignored) {
+      }
+    }
+  }
+
+  private void applyDesktopSettingsToWebView(
+      WebView webView, long webViewId, boolean enableDesktop, boolean forceApply) {
+    try {
+      Boolean prev = webViewId >= 0 ? lastDesktopApplied.get(webViewId) : null;
+      boolean modeUnchanged = prev != null && prev == enableDesktop;
       WebSettings settings = webView.getSettings();
       settings.setUseWideViewPort(enableDesktop);
       settings.setLoadWithOverviewMode(enableDesktop);
@@ -1171,6 +1383,12 @@ public class HeavenShieldPlugin
       settings.setDisplayZoomControls(false);
       settings.setJavaScriptCanOpenWindowsAutomatically(false);
       settings.setSupportMultipleWindows(true);
+      if (!forceApply && modeUnchanged) {
+        return;
+      }
+      if (webViewId >= 0) {
+        lastDesktopApplied.put(webViewId, enableDesktop);
+      }
       if (enableDesktop) {
         settings.setUserAgentString(DESKTOP_CHROME_WIN_UA);
         webView.setInitialScale(0);
@@ -1194,7 +1412,8 @@ public class HeavenShieldPlugin
         return false;
       }
 
-      applyDesktopSettingsToWebView(webView, this.desktopMode);
+      applyDesktopSettingsToWebView(webView, webViewId, this.desktopMode, true);
+      installOrRefreshDocumentStartShield(webView, webViewId);
       installPullToRefreshListener(webView, webViewId);
       installDownloadListener(webView, webViewId);
 
@@ -2660,14 +2879,17 @@ public class HeavenShieldPlugin
   }
 
   private boolean matchesBlockedDomain(String host) {
+    if (host == null || host.isEmpty()) {
+      return false;
+    }
     Set<String> snapshot = this.blockedDomains;
-    if (snapshot.contains(host)) {
+    if (snapshot.contains(host) || BUILTIN_CRITICAL_AD_ROOTS.contains(host)) {
       return true;
     }
     int dot = host.indexOf('.');
     while (dot != -1 && dot + 1 < host.length()) {
       String parent = host.substring(dot + 1);
-      if (snapshot.contains(parent)) {
+      if (snapshot.contains(parent) || BUILTIN_CRITICAL_AD_ROOTS.contains(parent)) {
         return true;
       }
       dot = host.indexOf('.', dot + 1);
@@ -2677,7 +2899,7 @@ public class HeavenShieldPlugin
 
   private boolean matchesAdPathSignature(
       String reqHost, String lowerPath, String lowerQuery, String pageHost) {
-    // 1. First-party YouTube ad endpoints & ad telemetry
+    // 1. First-party YouTube ad endpoints & ad telemetry (never block normal googlevideo streams!)
     if (reqHost.endsWith("youtube.com") || reqHost.endsWith("youtube-nocookie.com")) {
       if (lowerPath.contains("/pagead/")
           || lowerPath.contains("/api/stats/ads")
@@ -2689,9 +2911,7 @@ public class HeavenShieldPlugin
     }
     if (reqHost.endsWith("googlevideo.com")
         && lowerPath.contains("/videoplayback")
-        && (lowerQuery.contains("&oad=")
-            || lowerQuery.startsWith("oad=")
-            || lowerQuery.contains("&ctier=l"))) {
+        && (lowerQuery.contains("&oad=") || lowerQuery.startsWith("oad="))) {
       return true;
     }
     // 2. Google Search & Web AdSense / IMA paths
@@ -2959,7 +3179,7 @@ public class HeavenShieldPlugin
 
         // Restore normal UA when navigating away from Chrome Web Store if desktopMode is false
         if (!desktopMode && "chromewebstore.google.com".equals(prevHost) && !isChromeWebStoreUri(destUri)) {
-          applyDesktopSettingsToWebView(view, false);
+          applyDesktopSettingsToWebView(view, webViewId, false, true);
         }
 
         // 2. Native Ad / Malware / Pirated-Site & Adult-Site Redirect Firewall!
@@ -2978,8 +3198,13 @@ public class HeavenShieldPlugin
             notifyBlockedOnMainThread(webViewId, destHost.isEmpty() ? "ad-redirect" : destHost);
             return true;
           }
-          // Block unapproved cross-domain JS redirects / video-player click-hijacks!
-          if (prevHost != null
+          // Block unapproved cross-domain JS redirects / video-player click-hijacks, while
+          // allowing user-initiated navigations from Heaven Search / Omnibox & HTTP redirects!
+          Long userNavUntil = userInitiatedNavUntilMs.get(webViewId);
+          boolean inUserNavGrace =
+              userNavUntil != null && System.currentTimeMillis() <= userNavUntil;
+          if (!inUserNavGrace
+              && prevHost != null
               && !prevHost.isEmpty()
               && !destHost.isEmpty()
               && !isSameRootDomain(destHost, prevHost)
@@ -3033,7 +3258,7 @@ public class HeavenShieldPlugin
         view.getSettings().setUseWideViewPort(true);
         view.getSettings().setLoadWithOverviewMode(true);
       } else if (desktopMode) {
-        applyDesktopSettingsToWebView(view, true);
+        applyDesktopSettingsToWebView(view, webViewId, true, false);
       }
       if (delegate != null) {
         delegate.onPageStarted(view, url, favicon);

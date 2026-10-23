@@ -28,28 +28,52 @@ import org.json.JSONArray;
 import org.json.JSONObject;
 
 /**
- * High-speed background Google Search engine using an attached offscreen 1280x900 Chromium WebView.
+ * Genuine Android Chromium background Google Search engine.
  *
- * <p>Pre-warms Google's SearchGuard (SG_SS) session cookie on startup so subsequent user searches
- * return live Google organic results, Knowledge Graph cards, images, videos, news, and related
- * queries in ~300-650ms without ever opening google.com visibly or serving Google ads.
+ * <p>Uses an isolated OffscreenActiveWebView with the device's authentic Android Chrome User-Agent
+ * (without WebView "; wv" markers and with zero JS prototype tampering or gen_204 blocking) so
+ * Google's SearchGuard (SG_SS) VM validates cleanly and returns the exact live Google SERP in
+ * Google's exact visual order while stripping all Sponsored / Google Ad slots.
  */
 public final class HeavenGoogleBgSearch {
 
-  private static final String DESKTOP_CHROME_UA =
-      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-          + "(KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36";
+  private static final String FALLBACK_ANDROID_CHROME_UA =
+      "Mozilla/5.0 (Linux; Android 14; K) AppleWebKit/537.36 "
+          + "(KHTML, like Gecko) Chrome/134.0.0.0 Mobile Safari/537.36";
 
-  private static final long MAX_WAIT_MS = 4500L;
-  private static final long POLL_INTERVAL_MS = 90L;
+  private static final long COLD_MAX_WAIT_MS = 9000L;
+  private static final long WARM_MAX_WAIT_MS = 6500L;
+  private static final long POLL_INTERVAL_MS = 95L;
   private static final byte[] EMPTY_BYTES = new byte[0];
 
   private final Context appContext;
   private final Handler mainHandler = new Handler(Looper.getMainLooper());
-  private WebView bgWebView;
+  private OffscreenActiveWebView bgWebView;
   private ActiveSearchJob activeJob;
   private int jobCounter = 0;
   private boolean prewarmed = false;
+  private boolean warmCookieConfirmed = false;
+
+  /**
+   * Standalone offscreen WebView that reports View.VISIBLE to Chromium's scheduler so
+   * requestAnimationFrame and SearchGuard (SG_SS) execute at full speed without attaching to the
+   * Activity view tree.
+   */
+  private static final class OffscreenActiveWebView extends WebView {
+    OffscreenActiveWebView(Context context) {
+      super(context);
+    }
+
+    @Override
+    protected void onWindowVisibilityChanged(int visibility) {
+      super.onWindowVisibilityChanged(View.VISIBLE);
+    }
+
+    @Override
+    protected void onVisibilityChanged(View changedView, int visibility) {
+      super.onVisibilityChanged(changedView, View.VISIBLE);
+    }
+  }
 
   private static final class ActiveSearchJob {
     final int id;
@@ -71,6 +95,24 @@ public final class HeavenGoogleBgSearch {
     this.appContext = appContext.getApplicationContext();
   }
 
+  private static String buildCleanAndroidChromeUa(Context context) {
+    try {
+      String raw = WebSettings.getDefaultUserAgent(context);
+      if (raw != null && !raw.isEmpty()) {
+        String cleaned =
+            raw.replace("; wv)", ")")
+                .replace("; wv;", ";")
+                .replace(" Version/4.0 ", " ")
+                .replace("Version/4.0 ", "");
+        if (cleaned.contains("Chrome/")) {
+          return cleaned;
+        }
+      }
+    } catch (Throwable ignored) {
+    }
+    return FALLBACK_ANDROID_CHROME_UA;
+  }
+
   public void attachToActivityAndPrewarm(final Activity activity) {
     if (activity == null) {
       return;
@@ -81,48 +123,46 @@ public final class HeavenGoogleBgSearch {
             ensureWebViewOnMain();
             if (!prewarmed && bgWebView != null && activeJob == null) {
               prewarmed = true;
-              Map<String, String> headers = buildDesktopHeaders("en-US,en;q=0.9");
-              bgWebView.loadUrl("https://www.google.com/search?q=time&hl=en&num=10", headers);
+              Map<String, String> headers = buildAcceptLangHeaders(null);
+              bgWebView.loadUrl("https://www.google.com/search?q=weather&hl=en", headers);
             }
           } catch (Throwable ignored) {
           }
         },
-        750L);
+        600L);
   }
 
   public void detachFromActivity() {
-    // Standalone offscreen WebView never attaches to Activity's view tree.
+    // OffscreenActiveWebView stays completely isolated from Activity view hierarchy.
   }
 
-  private static Map<String, String> buildDesktopHeaders(String langHeader) {
-    Map<String, String> headers = new HashMap<>(6);
+  private static Map<String, String> buildAcceptLangHeaders(String langHeader) {
+    Map<String, String> headers = new HashMap<>(2);
+    String fallbackLang = Locale.getDefault().toLanguageTag() + ",en-US;q=0.9,en;q=0.8";
     headers.put(
         "Accept-Language",
-        (langHeader != null && !langHeader.isEmpty()) ? langHeader : "en-US,en;q=0.9");
-    headers.put(
-        "Sec-CH-UA",
-        "\"Chromium\";v=\"134\", \"Not:A-Brand\";v=\"24\", \"Google Chrome\";v=\"134\"");
-    headers.put("Sec-CH-UA-Mobile", "?0");
-    headers.put("Sec-CH-UA-Platform", "\"Windows\"");
+        (langHeader != null && !langHeader.isEmpty()) ? langHeader : fallbackLang);
     return headers;
   }
 
   @SuppressLint("SetJavaScriptEnabled")
   private void ensureWebViewOnMain() {
     if (bgWebView == null) {
-      bgWebView = new WebView(appContext);
+      bgWebView = new OffscreenActiveWebView(appContext);
 
       WebSettings s = bgWebView.getSettings();
       s.setJavaScriptEnabled(true);
       s.setDomStorageEnabled(true);
       s.setUseWideViewPort(true);
       s.setLoadWithOverviewMode(true);
-      s.setUserAgentString(DESKTOP_CHROME_UA);
+      s.setUserAgentString(buildCleanAndroidChromeUa(appContext));
       s.setCacheMode(WebSettings.LOAD_DEFAULT);
       s.setMediaPlaybackRequiresUserGesture(true);
       s.setJavaScriptCanOpenWindowsAutomatically(false);
-      s.setLoadsImagesAutomatically(false);
-      s.setBlockNetworkImage(true);
+      // Keep network images enabled so Google's new Image().src = '/gen_204?...' SearchGuard
+      // beacons AND result/video thumbnails load naturally just like Android Chrome!
+      s.setLoadsImagesAutomatically(true);
+      s.setBlockNetworkImage(false);
 
       CookieManager cm = CookieManager.getInstance();
       cm.setAcceptCookie(true);
@@ -137,30 +177,12 @@ public final class HeavenGoogleBgSearch {
                 if (request != null && request.getUrl() != null) {
                   Uri u = request.getUrl();
                   String host = u.getHost() != null ? u.getHost().toLowerCase(Locale.US) : "";
-                  String path =
-                      u.getEncodedPath() != null ? u.getEncodedPath().toLowerCase(Locale.US) : "";
-                  boolean isImagesTab =
-                      activeJob != null && "images".equals(activeJob.tab);
-                  // Block Google ads, trackers, beacons, and heavy web fonts so SERP loads fast
-                  if (host.contains("googlesyndication.com")
-                      || host.contains("googleadservices.com")
-                      || host.contains("doubleclick.net")
-                      || host.contains("google-analytics.com")
-                      || host.contains("play.google.com")
-                      || host.contains("youtube.com")
-                      || path.contains("/gen_204")
-                      || path.contains("/client_204")
-                      || path.contains("/ads?")
-                      || path.contains("/pagead/")
-                      || path.endsWith(".woff2")
-                      || path.endsWith(".woff")
-                      || path.endsWith(".ttf")
-                      || (!isImagesTab
-                          && (path.endsWith(".png")
-                              || path.endsWith(".jpg")
-                              || path.endsWith(".jpeg")
-                              || path.endsWith(".webp")
-                              || path.endsWith(".gif")))) {
+                  // Block ONLY third-party ad delivery hosts; NEVER touch google.*, gstatic.*, or
+                  // /gen_204 so SearchGuard (SG_SS) validates identically to Chrome!
+                  if (host.endsWith("doubleclick.net")
+                      || host.endsWith("googlesyndication.com")
+                      || host.endsWith("googleadservices.com")
+                      || host.endsWith("google-analytics.com")) {
                     return new WebResourceResponse(
                         "text/plain", "UTF-8", new ByteArrayInputStream(EMPTY_BYTES));
                   }
@@ -172,23 +194,8 @@ public final class HeavenGoogleBgSearch {
 
             @Override
             public void onPageStarted(WebView view, String url, Bitmap favicon) {
-              try {
-                if (url != null && url.contains("/sorry/")) {
-                  finishJobEmpty("captcha");
-                  return;
-                }
-                view.evaluateJavascript(
-                    "(function(){try{"
-                        + "Object.defineProperty(navigator,'webdriver',{get:()=>false,configurable:true});"
-                        + "Object.defineProperty(navigator,'platform',{get:()=>'Win32',configurable:true});"
-                        + "Object.defineProperty(window,'innerWidth',{get:()=>1280,configurable:true});"
-                        + "Object.defineProperty(window,'innerHeight',{get:()=>900,configurable:true});"
-                        + "Object.defineProperty(window,'outerWidth',{get:()=>1280,configurable:true});"
-                        + "Object.defineProperty(window,'outerHeight',{get:()=>960,configurable:true});"
-                        + "window.chrome=window.chrome||{runtime:{}};"
-                        + "}catch(e){}})();",
-                    null);
-              } catch (Throwable ignored) {
+              if (url != null && url.contains("/sorry/")) {
+                finishJobEmpty("captcha");
               }
             }
 
@@ -196,6 +203,12 @@ public final class HeavenGoogleBgSearch {
             public void onPageFinished(WebView view, String url) {
               try {
                 CookieManager.getInstance().flush();
+                if (url != null && url.contains("google.") && !url.contains("/sorry/")) {
+                  String ck = CookieManager.getInstance().getCookie("https://www.google.com");
+                  if (ck != null && ck.contains("SG_SS")) {
+                    warmCookieConfirmed = true;
+                  }
+                }
                 if (activeJob == null || activeJob.completed) {
                   return;
                 }
@@ -222,9 +235,9 @@ public final class HeavenGoogleBgSearch {
       bgWebView.onResume();
       bgWebView.resumeTimers();
       bgWebView.measure(
-          View.MeasureSpec.makeMeasureSpec(1280, View.MeasureSpec.EXACTLY),
-          View.MeasureSpec.makeMeasureSpec(900, View.MeasureSpec.EXACTLY));
-      bgWebView.layout(0, 0, 1280, 900);
+          View.MeasureSpec.makeMeasureSpec(412, View.MeasureSpec.EXACTLY),
+          View.MeasureSpec.makeMeasureSpec(915, View.MeasureSpec.EXACTLY));
+      bgWebView.layout(0, 0, 412, 915);
     } catch (Throwable ignored) {
     }
   }
@@ -234,6 +247,7 @@ public final class HeavenGoogleBgSearch {
       final String tab,
       final String safeMode,
       final String timeCode,
+      final String regionCode,
       final String langHeader,
       final MethodChannel.Result callback) {
     mainHandler.post(
@@ -264,10 +278,6 @@ public final class HeavenGoogleBgSearch {
           }
 
           final String cleanTab = tab != null ? tab.trim().toLowerCase(Locale.US) : "all";
-          final boolean wantImages = "images".equals(cleanTab);
-          bgWebView.getSettings().setBlockNetworkImage(!wantImages);
-          bgWebView.getSettings().setLoadsImagesAutomatically(wantImages);
-
           final int jobId = ++jobCounter;
           prewarmed = true;
           activeJob =
@@ -277,25 +287,35 @@ public final class HeavenGoogleBgSearch {
               "cws".equals(cleanTab)
                   ? "site:chromewebstore.google.com/detail " + query.trim()
                   : query.trim();
-          String targetUrl = buildGoogleUrl(effectiveQuery, cleanTab, safeMode, timeCode);
-          Map<String, String> headers = buildDesktopHeaders(langHeader);
+          String targetUrl =
+              buildGoogleUrl(effectiveQuery, cleanTab, safeMode, timeCode, regionCode);
+          Map<String, String> headers = buildAcceptLangHeaders(langHeader);
 
           bgWebView.stopLoading();
           bgWebView.loadUrl(targetUrl, headers);
 
-          mainHandler.postDelayed(() -> pollDomExtraction(jobId), 160L);
+          mainHandler.postDelayed(() -> pollDomExtraction(jobId), 170L);
         });
   }
 
   private static String buildGoogleUrl(
-      String query, String tab, String safeMode, String timeCode) {
+      String query, String tab, String safeMode, String timeCode, String regionCode) {
     String encoded = Uri.encode(query);
-    String safe = "strict".equalsIgnoreCase(safeMode) ? "active" : "off";
     StringBuilder sb =
-        new StringBuilder("https://www.google.com/search?q=")
-            .append(encoded)
-            .append("&hl=en&pws=0&nfpr=0&safe=")
-            .append(safe);
+        new StringBuilder("https://www.google.com/search?q=").append(encoded).append("&hl=en");
+
+    if (regionCode != null && !regionCode.trim().isEmpty()) {
+      String gl = regionCode.trim().toLowerCase(Locale.US);
+      if (gl.length() == 2 && !"wt".equals(gl)) {
+        sb.append("&gl=").append(Uri.encode(gl));
+      }
+    }
+
+    if ("strict".equalsIgnoreCase(safeMode)) {
+      sb.append("&safe=active");
+    } else if ("off".equalsIgnoreCase(safeMode)) {
+      sb.append("&safe=off");
+    }
 
     if ("images".equals(tab)) {
       sb.append("&udm=2");
@@ -303,8 +323,6 @@ public final class HeavenGoogleBgSearch {
       sb.append("&udm=7");
     } else if ("news".equals(tab)) {
       sb.append("&tbm=nws");
-    } else {
-      sb.append("&num=18");
     }
 
     if (timeCode != null && !timeCode.isEmpty() && !"any".equals(timeCode)) {
@@ -317,9 +335,10 @@ public final class HeavenGoogleBgSearch {
     if (activeJob == null || activeJob.completed || activeJob.id != jobId || bgWebView == null) {
       return;
     }
-
     final long elapsed = System.currentTimeMillis() - activeJob.startedAtMs;
-    final boolean timedOut = elapsed >= MAX_WAIT_MS;
+    final long maxBudget =
+        (activeJob.sawChallenge || !warmCookieConfirmed) ? COLD_MAX_WAIT_MS : WARM_MAX_WAIT_MS;
+    final boolean timedOut = elapsed >= maxBudget;
 
     bgWebView.evaluateJavascript(
         buildExtractorScript(activeJob.tab),
@@ -339,17 +358,24 @@ public final class HeavenGoogleBgSearch {
             if (("consent_clicked".equals(status) || "solving_challenge".equals(status))
                 && !timedOut) {
               activeJob.sawChallenge = true;
-              mainHandler.postDelayed(() -> pollDomExtraction(jobId), 140L);
+              mainHandler.postDelayed(() -> pollDomExtraction(jobId), 130L);
               return;
             }
 
             int count = countPrimaryItems(parsed, activeJob.tab);
+            String readyState =
+                parsed.get("readyState") != null ? parsed.get("readyState").toString() : "";
+            boolean domDone = "complete".equals(readyState);
+            boolean domInteractive = "interactive".equals(readyState) || domDone;
+
+            // Wait for complete Google SERP instead of truncating at the first 4 streamed cards!
             boolean ready =
-                count >= 4
-                    || (count >= 1 && elapsed >= 650L)
-                    || (count >= 1 && "complete".equals(parsed.get("readyState")));
+                (count >= 8 && domInteractive)
+                    || (count >= 1 && domDone && elapsed >= 420L)
+                    || (count >= 4 && domInteractive && elapsed >= 1750L);
 
             if (ready || (timedOut && count >= 1)) {
+              warmCookieConfirmed = true;
               parsed.put("ok", true);
               parsed.put("sourceEngine", "google");
               activeJob.completed = true;
@@ -400,45 +426,94 @@ public final class HeavenGoogleBgSearch {
         + "try{"
         + "var hrefNow=location.href||'';"
         + "if(hrefNow.indexOf('/sorry/')!==-1){return JSON.stringify({status:'captcha'});}"
-        + "var consentBtn=document.querySelector('button#L2AGLb, button#W0wltc, form[action*=\"consent.google\"] button');"
+        + "var consentBtn=document.querySelector('button#L2AGLb, button#W0wltc, form[action*=\"consent.google\"] button[type=\"submit\"], div[role=\"dialog\"] button#L2AGLb');"
         + "if(consentBtn){consentBtn.click();return JSON.stringify({status:'consent_clicked'});}"
-        + "var docTitle=(document.title||'').trim();"
-        + "var retryLink=document.querySelector('a[href*=\"/httpservice/retry/enablejs\"], meta[http-equiv=\"refresh\"]');"
-        + "if(docTitle==='Google Search'&&retryLink&&!document.querySelector('#rso, #search, #main h3')){"
+        + "var retryEl=document.querySelector('a[href*=\"/httpservice/retry/enablejs\"], meta[http-equiv=\"refresh\"]');"
+        + "var hasSerpRoot=!!document.querySelector('#rso, #search, #main div.MjjYud, #main div.xpd, #main div.Ww4FFb');"
+        + "if(!hasSerpRoot&&(retryEl||(document.title||'').trim()==='Google Search')){"
         + "  return JSON.stringify({status:'solving_challenge'});"
         + "}"
         + "var mode='"
         + escapedTab
         + "';"
-        + "function txt(el){return el?((el.textContent||'').replace(/\\s+/g,' ').trim()):'';}"
+        + "function txt(el){return el?((el.innerText||el.textContent||'').replace(/\\s+/g,' ').trim()):'';}"
+        + "function isAdNode(el){"
+        + "  if(!el)return false;"
+        + "  var adAnc=el.closest('#tads, #bottomads, #tvcap, [data-text-ad], [data-rw], [aria-label=\"Ads\"], [aria-label=\"Sponsored\"]');"
+        + "  if(adAnc)return true;"
+        + "  var blk=el.closest('div.MjjYud, div.xpd, div.g, div.uEierd');"
+        + "  if(blk){"
+        + "    var firstLine=(blk.innerText||'').trim().slice(0,28).toLowerCase();"
+        + "    if(firstLine.indexOf('sponsored')===0||firstLine.indexOf('ad\\n')===0)return true;"
+        + "  }"
+        + "  return false;"
+        + "}"
         + "function unwrap(u){"
         + "  if(!u)return '';"
         + "  try{"
         + "    var parsed=new URL(u,location.origin);"
         + "    var hn=parsed.hostname.toLowerCase();"
-        + "    if(hn.indexOf('google.')!==-1&&hn!=='chromewebstore.google.com'&&hn!=='chrome.google.com'){"
+        + "    if(hn.indexOf('googleadservices.com')!==-1||parsed.pathname==='/aclk')return '';"
+        + "    if(hn.indexOf('google.')!==-1&&hn!=='chromewebstore.google.com'&&hn!=='chrome.google.com'&&hn!=='news.google.com'){"
         + "      if(parsed.pathname==='/url'||parsed.pathname==='/imgres'){"
         + "        return parsed.searchParams.get('q')||parsed.searchParams.get('url')||parsed.searchParams.get('imgurl')||'';"
         + "      }"
         + "      return '';"
         + "    }"
-        + "    if(parsed.protocol==='http:'||parsed.protocol==='https:')return parsed.href;"
+        + "    if(parsed.protocol==='http:'||parsed.protocol==='https:'){"
+        + "      parsed.hash=(parsed.hash&&parsed.hash.indexOf(':~:text=')===0)?'':parsed.hash;"
+        + "      return parsed.href;"
+        + "    }"
         + "  }catch(e){}"
         + "  return '';"
         + "}"
         + "function hostTitle(u){"
-        + "  try{var h=new URL(u).hostname.replace(/^www\\./,'');var p=h.split('.')[0]||h;return p.charAt(0).toUpperCase()+p.slice(1);}catch(e){return 'Web';}"
+        + "  try{var h=new URL(u).hostname.replace(/^www\\./,'').replace(/^m\\./,'');var p=h.split('.')[0]||h;return p.charAt(0).toUpperCase()+p.slice(1);}catch(e){return 'Web';}"
+        + "}"
+        + "function extractHeadingFromAnchor(a){"
+        + "  var hEl=a.querySelector('h3, h2, h4, [role=\"heading\"], .MBeuO, .v7jaNc, .ynAwRc, .vvjwJb, .q8U8x, .oewGkc, .n0jPhd, .CVA68e, .F0FGWb, .cHaqb, .fc9yUc, .JjtOHd');"
+        + "  var t=txt(hEl);"
+        + "  if(t&&t.length>=2)return t;"
+        + "  var parentCard=a.closest('div.MjjYud, div.Ww4FFb, div.xpd, div.g, div.SoaBEf, g-card, article');"
+        + "  if(parentCard){"
+        + "    var siblingH=parentCard.querySelector('[role=\"heading\"], h3, .MBeuO, .v7jaNc, .vvjwJb');"
+        + "    if(siblingH&&(!siblingH.closest('a')||siblingH.closest('a')===a)){"
+        + "      var st=txt(siblingH);"
+        + "      if(st&&st.length>=3)return st;"
+        + "    }"
+        + "  }"
+        + "  var aria=(a.getAttribute('aria-label')||'').trim();"
+        + "  if(aria.length>=6&&aria.length<=180)return aria;"
+        + "  var lines=(a.innerText||'').split('\\n').map(function(s){return s.trim();}).filter(function(s){return s.length>=3&&s.indexOf('http')!==0&&s.indexOf('\\u203a')===-1;});"
+        + "  if(lines.length===1)return lines[0];"
+        + "  if(lines.length>=2)return lines[lines.length-1];"
+        + "  return '';"
+        + "}"
+        + "function extractThumbFromCard(card){"
+        + "  if(!card)return '';"
+        + "  var imgs=card.querySelectorAll('img');"
+        + "  for(var k=0;k<imgs.length;k++){"
+        + "    var im=imgs[k];"
+        + "    var w=im.naturalWidth||im.width||im.clientWidth||0;"
+        + "    var h=im.naturalHeight||im.height||im.clientHeight||0;"
+        + "    if(w>0&&w<=36&&h>0&&h<=36)continue;"
+        + "    var s=im.currentSrc||im.src||im.getAttribute('data-src')||'';"
+        + "    if(!s||s.indexOf('gstatic.com/images/branding')!==-1)continue;"
+        + "    if(s.indexOf('http')===0||(s.indexOf('data:image')===0&&s.length>1200))return s;"
+        + "  }"
+        + "  return '';"
         + "}"
         + "var webResults=[],imageResults=[],videoResults=[],newsResults=[],related=[];"
         + "var seen={};"
         + "if(mode==='images'){"
-        + "  var imgs=document.querySelectorAll('#search img, #rso img, div[data-id] img, img');"
-        + "  for(var i=0;i<imgs.length&&imageResults.length<30;i++){"
+        + "  var imgs=document.querySelectorAll('#rso img, #search img, #main img, div[data-id] img');"
+        + "  for(var i=0;i<imgs.length&&imageResults.length<36;i++){"
         + "    var im=imgs[i];"
+        + "    if(isAdNode(im))continue;"
         + "    var src=im.currentSrc||im.src||im.getAttribute('data-src')||im.getAttribute('data-iurl')||'';"
         + "    if(!src||src.indexOf('gstatic.com/images/branding')!==-1||src.indexOf('googlelogo')!==-1)continue;"
-        + "    var w=im.naturalWidth||im.width||0;var h=im.naturalHeight||im.height||0;"
-        + "    if(w>0&&w<60&&h>0&&h<60)continue;"
+        + "    var w=im.naturalWidth||im.width||im.clientWidth||0;var h=im.naturalHeight||im.height||im.clientHeight||0;"
+        + "    if(w>0&&w<52&&h>0&&h<52)continue;"
         + "    if(src.indexOf('http')!==0&&src.indexOf('data:image')!==0)continue;"
         + "    if(src.indexOf('data:image')===0&&src.length<900)continue;"
         + "    var a=im.closest('a');"
@@ -447,56 +522,57 @@ public final class HeavenGoogleBgSearch {
         + "    if(!alt&&a)alt=txt(a);"
         + "    if(!alt)alt='Image result';"
         + "    if(seen[src])continue;seen[src]=1;"
-        + "    imageResults.push({title:alt.slice(0,120),thumbUrl:src,fullUrl:src,pageUrl:pageUrl||src});"
+        + "    imageResults.push({title:alt.slice(0,130),thumbUrl:src,fullUrl:src,pageUrl:pageUrl||src});"
         + "  }"
         + "  return JSON.stringify({status:'ok',readyState:document.readyState,imageResults:imageResults});"
         + "}"
         + "var anchors=document.querySelectorAll('#rso a[href], #search a[href], #main a[href]');"
         + "for(var j=0;j<anchors.length;j++){"
         + "  var el=anchors[j];"
-        + "  if(el.closest('#tads, #bottomads, #tvcap, [data-text-ad], [aria-label=\"Ads\"]'))continue;"
+        + "  if(isAdNode(el))continue;"
+        + "  if(el.closest('#bres, [aria-label=\"Related searches\"]'))continue;"
         + "  var dest=unwrap(el.href);"
         + "  if(!dest||seen[dest])continue;"
-        + "  if(dest.indexOf('translate.google.')!==-1||dest.indexOf('webcache.googleusercontent.')!==-1)continue;"
-        + "  var hEl=el.querySelector('h3, [role=\"heading\"], div.BNeawe.vvjwJb, div.n0jPhd, div.MBeuO, span.CVA68e');"
-        + "  var title=txt(hEl);"
+        + "  if(dest.indexOf('translate.google.')!==-1||dest.indexOf('webcache.googleusercontent.')!==-1||dest.indexOf('accounts.google.')!==-1||dest.indexOf('support.google.com/websearch')!==-1)continue;"
+        + "  var title=extractHeadingFromAnchor(el);"
         + "  if(!title||title.length<3)continue;"
+        + "  var tl=title.toLowerCase();"
+        + "  if(tl==='read more'||tl==='more results'||tl==='cached'||tl==='similar'||tl==='view all')continue;"
         + "  seen[dest]=1;"
-        + "  var card=el.closest('div.MjjYud, div.g, div.SoaBEf, div.Ww4FFb, div.xpd, g-card, article, div[data-hveid]')||el.parentElement;"
+        + "  var card=el.closest('div.MjjYud, div.Ww4FFb, div.xpd, div.g, div.SoaBEf, g-card, article, div[data-hveid]')||el.parentElement;"
         + "  var snippet='';"
         + "  if(card){"
-        + "    var snNodes=card.querySelectorAll('div.VwiC3b, div[data-sncf=\"1\"], div[data-sncf=\"2\"], div.GI74Re, div.ITZIwc, div.BNeawe.s3v9rd, span.aCOpRe');"
+        + "    var snNodes=card.querySelectorAll('div.VwiC3b, div[data-sncf=\"1\"], div[data-sncf=\"2\"], div[data-sncf=\"1,2\"], div.w1C3Le, span.fYyStc, span.yDYNvb, div.GI74Re, div.ITZIwc, div.BNeawe.s3v9rd, span.aCOpRe, div.ukyZMd, div.LGOjhe, span.hgKElc');"
         + "    for(var sIdx=0;sIdx<snNodes.length;sIdx++){"
         + "      var cand=txt(snNodes[sIdx]);"
         + "      if(cand.length>snippet.length&&cand!==title){snippet=cand;}"
         + "    }"
         + "    if(!snippet){"
-        + "      var rawCard=txt(card);"
-        + "      var pos=rawCard.indexOf(title);"
-        + "      if(pos!==-1){rawCard=rawCard.slice(pos+title.length).trim();}"
-        + "      if(rawCard.length>24){snippet=rawCard;}"
+        + "      var rawLines=(card.innerText||'').split('\\n').map(function(s){return s.trim();}).filter(function(s){return s.length>22&&s!==title&&s.indexOf('http')!==0;});"
+        + "      if(rawLines.length>0){snippet=rawLines.join(' ');}"
         + "    }"
         + "  }"
-        + "  var citeEl=card?card.querySelector('span.VuuXrf, div.byrV5b, cite'):null;"
+        + "  var citeEl=card?card.querySelector('span.VuuXrf, div.q0vns span, span.OSrXXb, div.byrV5b, cite'):null;"
         + "  var srcName=txt(citeEl);"
-        + "  if(!srcName||srcName.length>36)srcName=hostTitle(dest);"
-        + "  var item={title:title,url:dest,snippet:snippet.slice(0,320),sourceLabel:srcName,thumbnailUrl:''};"
+        + "  if(!srcName||srcName.length>38||srcName.indexOf('http')===0)srcName=hostTitle(dest);"
+        + "  var thumb=extractThumbFromCard(card);"
+        + "  var item={title:title.slice(0,180),url:dest,snippet:snippet.slice(0,340),sourceLabel:srcName,thumbnailUrl:thumb};"
         + "  if(mode==='videos')videoResults.push(item);"
         + "  else if(mode==='news')newsResults.push(item);"
         + "  else webResults.push(item);"
-        + "  if(webResults.length>=22||videoResults.length>=20||newsResults.length>=20)break;"
+        + "  if(webResults.length>=25||videoResults.length>=22||newsResults.length>=22)break;"
         + "}"
         + "var kc=null;"
-        + "var kTitle=document.querySelector('[data-attrid=\"title\"], div.PZPZlf[data-attrid=\"title\"], h2[data-attrid=\"title\"]');"
-        + "var kDesc=document.querySelector('[data-attrid*=\"description\"], div.kno-rdesc, span.hgKElc');"
+        + "var kTitle=document.querySelector('[data-attrid=\"title\"], div.PZPZlf[data-attrid=\"title\"], h2[data-attrid=\"title\"], div.SPZz6b h2');"
+        + "var kDesc=document.querySelector('[data-attrid*=\"description\"], div.kno-rdesc, span.hgKElc, div.LGOjhe, div.IZ6rdc');"
         + "if(kDesc){"
         + "  var kt=txt(kTitle)||'Google Overview';"
         + "  var kd=txt(kDesc).replace(/^Description\\s*/i,'').replace(/Wikipedia\\s*$/i,'').trim();"
         + "  var ka=kDesc.querySelector('a[href]');"
         + "  var ku=(ka&&unwrap(ka.href))||(webResults[0]?webResults[0].url:'https://www.google.com');"
-        + "  if(kd.length>25){kc={heading:kt,summary:kd.slice(0,440),sourceUrl:ku,sourceName:hostTitle(ku)};}"
+        + "  if(kd.length>25){kc={heading:kt,summary:kd.slice(0,460),sourceUrl:ku,sourceName:hostTitle(ku)};}"
         + "}"
-        + "var relNodes=document.querySelectorAll('#bres a[href*=\"/search?\"], a.k8XOCe, div.s75CSd');"
+        + "var relNodes=document.querySelectorAll('#bres a[href*=\"/search?\"], a.k8XOCe, div.s75CSd, a.ngTNl, div.f3LoEf, span.dg6jd');"
         + "var relSeen={};"
         + "for(var r=0;r<relNodes.length&&related.length<8;r++){"
         + "  var rt=txt(relNodes[r]);"

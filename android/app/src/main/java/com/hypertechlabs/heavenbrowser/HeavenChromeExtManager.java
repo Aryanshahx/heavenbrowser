@@ -1,11 +1,18 @@
 package com.hypertechlabs.heavenbrowser;
 
+import android.annotation.SuppressLint;
 import android.content.Context;
 import android.net.Uri;
 import android.os.Handler;
 import android.os.Looper;
 import android.util.Base64;
+import android.webkit.JavascriptInterface;
+import android.webkit.WebResourceError;
+import android.webkit.WebResourceRequest;
 import android.webkit.WebResourceResponse;
+import android.webkit.WebSettings;
+import android.webkit.WebView;
+import android.webkit.WebViewClient;
 import io.flutter.plugin.common.MethodChannel;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
@@ -13,21 +20,20 @@ import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
-import java.io.InputStream;
-import java.net.HttpURLConnection;
-import java.net.URI;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
-import java.util.Collections;
 import java.util.HashMap;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.zip.ZipEntry;
@@ -139,13 +145,7 @@ public final class HeavenChromeExtManager {
     ioPool.execute(
         () -> {
           try {
-            String crxUrl =
-                "https://clients2.google.com/service/update2/crx"
-                    + "?response=redirect&prodversion=134.0.0.0&acceptformat=crx2,crx3"
-                    + "&x=id%3D"
-                    + extId
-                    + "%26installsource%3Dondemand%26uc";
-            byte[] crxBytes = downloadBinaryFollowingRedirects(crxUrl, 6);
+            byte[] crxBytes = downloadExtensionCrxMultiStage(extId);
             if (crxBytes == null || crxBytes.length < 32) {
               postFailure(
                   callback,
@@ -1069,51 +1069,216 @@ public final class HeavenChromeExtManager {
     return m;
   }
 
-  private static byte[] downloadBinaryFollowingRedirects(String urlStr, int maxRedirects)
-      throws Exception {
-    String current = urlStr;
-    for (int hop = 0; hop <= maxRedirects; hop++) {
-      HttpURLConnection conn = (HttpURLConnection) URI.create(current).toURL().openConnection();
-      conn.setInstanceFollowRedirects(false);
-      conn.setConnectTimeout(12000);
-      conn.setReadTimeout(20000);
-      conn.setRequestProperty(
-          "User-Agent",
-          "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
-              + "(KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36");
-      conn.setRequestProperty("Accept", "*/*");
-      int status = conn.getResponseCode();
-      if (status >= 300 && status < 400) {
-        String loc = conn.getHeaderField("Location");
-        conn.disconnect();
-        if (loc == null || loc.isEmpty()) {
-          throw new IOException("Redirect missing Location header");
+  private static final String CRX_DESKTOP_UA =
+      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+          + "(KHTML, like Gecko) Chrome/134.0.6998.89 Safari/537.36";
+  private static final int MAX_CRX_BYTES = 28 * 1024 * 1024;
+
+  private static String[] buildCrxUpdateEndpoints(String extId) {
+    String query =
+        "?response=redirect&os=win&arch=x64&os_arch=x86_64&nacl_arch=x86-64"
+            + "&prod=chromecrx&prodchannel=stable&prodversion=134.0.6998.89"
+            + "&acceptformat=crx2,crx3&x=id%3D"
+            + extId
+            + "%26installsource%3Dondemand%26uc";
+    return new String[] {
+      "https://update.googleapis.com/service/update2/crx" + query,
+      "https://clients2.google.com/service/update2/crx" + query
+    };
+  }
+
+  /**
+   * 4-stage resilient Chrome Extension CRX downloader:
+   * 1) Dual-stack IPv6-first Happy Eyeballs TLS socket on update.googleapis.com (bypasses
+   *    /192.0.0.2 464XLAT CLAT blackholes on IPv6-only mobile carriers like Jio/Airtel 5G).
+   * 2) Dual-stack IPv6-first Happy Eyeballs TLS socket on clients2.google.com.
+   * 3) Underlying physical non-VPN Wi-Fi/Cellular Network binding (bypasses dead VPN tunnels).
+   * 4) Offscreen Chromium WebView HTTP/3 QUIC + same-origin CDN blob fetcher fallback.
+   */
+  private byte[] downloadExtensionCrxMultiStage(String extId) throws Exception {
+    String[] endpoints = buildCrxUpdateEndpoints(extId);
+    Throwable lastError = null;
+
+    // Stages 1 & 2: Default route with IPv6-first Happy Eyeballs + DoH DNS recovery
+    for (String endpoint : endpoints) {
+      try {
+        byte[] bytes =
+            HeavenNetHelper.downloadBytesFollowingRedirects(
+                appContext, endpoint, CRX_DESKTOP_UA, false, 6, MAX_CRX_BYTES);
+        if (bytes != null && bytes.length >= 32) {
+          return bytes;
         }
-        current = URI.create(current).resolve(loc).toString();
-        continue;
-      }
-      if (status != 200) {
-        conn.disconnect();
-        throw new IOException("HTTP " + status + " from Chrome Web Store");
-      }
-      try (InputStream is = conn.getInputStream();
-          ByteArrayOutputStream bos = new ByteArrayOutputStream()) {
-        byte[] buf = new byte[16384];
-        int n;
-        int total = 0;
-        while ((n = is.read(buf)) > 0) {
-          total += n;
-          if (total > 28 * 1024 * 1024) {
-            throw new IOException("Extension package exceeds 28 MB safety limit");
-          }
-          bos.write(buf, 0, n);
-        }
-        return bos.toByteArray();
-      } finally {
-        conn.disconnect();
+      } catch (Throwable t) {
+        lastError = t;
       }
     }
-    throw new IOException("Too many redirects downloading CRX");
+
+    // Stage 3: Bind directly to active physical Wi-Fi / Cellular network (bypasses broken VPN/CLAT)
+    if (HeavenNetHelper.findBestPhysicalNonVpnNetwork(appContext) != null) {
+      for (String endpoint : endpoints) {
+        try {
+          byte[] bytes =
+              HeavenNetHelper.downloadBytesFollowingRedirects(
+                  appContext, endpoint, CRX_DESKTOP_UA, true, 6, MAX_CRX_BYTES);
+          if (bytes != null && bytes.length >= 32) {
+            return bytes;
+          }
+        } catch (Throwable t) {
+          lastError = t;
+        }
+      }
+    }
+
+    // Stage 4: Chromium WebView QUIC / HTTP3 same-origin clients2.googleusercontent.com fallback
+    try {
+      byte[] wvBytes = downloadCrxViaChromiumWebView(endpoints[0]);
+      if (wvBytes != null && wvBytes.length >= 32) {
+        return wvBytes;
+      }
+    } catch (Throwable t) {
+      lastError = t;
+    }
+
+    if (lastError instanceof Exception) {
+      throw (Exception) lastError;
+    }
+    throw new IOException(
+        lastError != null ? lastError.getMessage() : "Unable to reach Chrome Web Store CDN");
+  }
+
+  private static final class CrxWebViewBridge {
+    final ByteArrayOutputStream buffer = new ByteArrayOutputStream(65536);
+    final AtomicReference<String> errorRef;
+    final CountDownLatch latch;
+
+    CrxWebViewBridge(AtomicReference<String> errorRef, CountDownLatch latch) {
+      this.errorRef = errorRef;
+      this.latch = latch;
+    }
+
+    @JavascriptInterface
+    public void onChunk(String base64Chunk) {
+      if (base64Chunk == null || base64Chunk.isEmpty()) {
+        return;
+      }
+      try {
+        byte[] decoded = Base64.decode(base64Chunk, Base64.DEFAULT);
+        if (buffer.size() + decoded.length > MAX_CRX_BYTES) {
+          errorRef.set("Extension package exceeds 28 MB safety limit");
+          latch.countDown();
+          return;
+        }
+        buffer.write(decoded);
+      } catch (Throwable t) {
+        errorRef.set("Base64 decode error: " + t.getMessage());
+        latch.countDown();
+      }
+    }
+
+    @JavascriptInterface
+    public void onDone() {
+      latch.countDown();
+    }
+
+    @JavascriptInterface
+    public void onError(String message) {
+      errorRef.set(message != null ? message : "Chromium fetch failed");
+      latch.countDown();
+    }
+  }
+
+  @SuppressLint({"SetJavaScriptEnabled", "JavascriptInterface"})
+  private byte[] downloadCrxViaChromiumWebView(final String crxRedirectUrl) throws Exception {
+    final CountDownLatch latch = new CountDownLatch(1);
+    final AtomicReference<String> errorRef = new AtomicReference<>(null);
+    final CrxWebViewBridge bridge = new CrxWebViewBridge(errorRef, latch);
+    final AtomicReference<WebView> wvHolder = new AtomicReference<>(null);
+
+    mainHandler.post(
+        () -> {
+          try {
+            final WebView wv = new WebView(appContext);
+            wvHolder.set(wv);
+            WebSettings s = wv.getSettings();
+            s.setJavaScriptEnabled(true);
+            s.setDomStorageEnabled(true);
+            s.setUserAgentString(CRX_DESKTOP_UA);
+            wv.addJavascriptInterface(bridge, "HeavenCrxSink");
+            wv.setWebViewClient(
+                new WebViewClient() {
+                  @Override
+                  public void onReceivedError(
+                      WebView view, WebResourceRequest request, WebResourceError error) {
+                    if (request != null && request.isForMainFrame()) {
+                      errorRef.set("Chromium network error loading CRX");
+                      latch.countDown();
+                    }
+                  }
+                });
+            wv.setDownloadListener(
+                (blobUrl, userAgent, contentDisposition, mimetype, contentLength) -> {
+                  if (blobUrl == null || blobUrl.isEmpty()) {
+                    errorRef.set("Empty CRX redirect URL");
+                    latch.countDown();
+                    return;
+                  }
+                  Uri parsed = Uri.parse(blobUrl);
+                  String origin =
+                      (parsed.getScheme() != null && parsed.getHost() != null)
+                          ? (parsed.getScheme() + "://" + parsed.getHost() + "/")
+                          : "https://clients2.googleusercontent.com/";
+                  String escapedUrl =
+                      blobUrl.replace("\\", "\\\\").replace("'", "\\'");
+                  String html =
+                      "<!doctype html><html><body><script>"
+                          + "(async function(){"
+                          + "try{"
+                          + "var r=await fetch('"
+                          + escapedUrl
+                          + "',{credentials:'omit'});"
+                          + "if(!r.ok){HeavenCrxSink.onError('HTTP '+r.status);return;}"
+                          + "var ab=await r.arrayBuffer();"
+                          + "var u8=new Uint8Array(ab);"
+                          + "var step=24576;"
+                          + "for(var i=0;i<u8.length;i+=step){"
+                          + "  var sub=u8.subarray(i,Math.min(i+step,u8.length));"
+                          + "  var bin='';"
+                          + "  for(var j=0;j<sub.length;j++){bin+=String.fromCharCode(sub[j]);}"
+                          + "  HeavenCrxSink.onChunk(btoa(bin));"
+                          + "}"
+                          + "HeavenCrxSink.onDone();"
+                          + "}catch(e){HeavenCrxSink.onError(String(e));}"
+                          + "})();"
+                          + "</script></body></html>";
+                  wv.loadDataWithBaseURL(origin, html, "text/html", "UTF-8", null);
+                });
+            wv.loadUrl(crxRedirectUrl);
+          } catch (Throwable t) {
+            errorRef.set(t.getMessage());
+            latch.countDown();
+          }
+        });
+
+    boolean completed = latch.await(26, TimeUnit.SECONDS);
+    mainHandler.post(
+        () -> {
+          WebView wv = wvHolder.getAndSet(null);
+          if (wv != null) {
+            try {
+              wv.stopLoading();
+              wv.destroy();
+            } catch (Throwable ignored) {
+            }
+          }
+        });
+
+    if (!completed) {
+      throw new IOException("Timed out downloading extension package");
+    }
+    if (errorRef.get() != null) {
+      throw new IOException(errorRef.get());
+    }
+    return bridge.buffer.toByteArray();
   }
 
   private void postFailure(final MethodChannel.Result callback, final String message) {

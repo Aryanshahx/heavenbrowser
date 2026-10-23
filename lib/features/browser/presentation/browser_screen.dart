@@ -326,18 +326,26 @@ class _BrowserScreenState extends State<BrowserScreen>
                     // TOP DOCK BAR BY DEFAULT
                     if (!bottomBar) _buildCommandCapsuleBar(context, colors),
                     if (_showFindBar) _buildFindBar(colors),
-                    if (engine.isLoading)
-                      LinearProgressIndicator(
-                        value: engine.progress > 0 && engine.progress < 1
-                            ? engine.progress
-                            : null,
-                        minHeight: 2.5,
-                        backgroundColor: Colors.transparent,
-                      ),
                     Expanded(
                       child: Stack(
                         children: <Widget>[
                           _buildTabsViewport(colors),
+                          if (engine.isLoading)
+                            Positioned(
+                              top: 0,
+                              left: 0,
+                              right: 0,
+                              child: IgnorePointer(
+                                child: LinearProgressIndicator(
+                                  value:
+                                      engine.progress > 0 && engine.progress < 1
+                                      ? engine.progress
+                                      : null,
+                                  minHeight: 2.5,
+                                  backgroundColor: Colors.transparent,
+                                ),
+                              ),
+                            ),
                           if (widget.settings.gesturesEnabled &&
                               widget.settings.edgeSwipeNavigation &&
                               !engine.isShowingStartPage &&
@@ -492,8 +500,9 @@ class _BrowserScreenState extends State<BrowserScreen>
   Widget _buildSingleTabBody(BrowserTab tab, ColorScheme colors) {
     final BrowserEngine engine = tab.engine;
 
+    Widget? overlayChild;
     if (engine.isShowingStartPage) {
-      return StartPage(
+      overlayChild = StartPage(
         settings: widget.settings,
         isIncognito: tab.isIncognito,
         searchService: widget.searchService,
@@ -506,10 +515,8 @@ class _BrowserScreenState extends State<BrowserScreen>
             widget.tabManager.openNewTab(incognito: true, initialInput: url),
         onVoiceSearch: _triggerVoiceSearch,
       );
-    }
-
-    if (engine.isShowingHeavenSearch) {
-      return HeavenSearchView(
+    } else if (engine.isShowingHeavenSearch) {
+      overlayChild = HeavenSearchView(
         query: engine.heavenSearchQuery,
         searchService: widget.searchService,
         downloads: widget.downloads,
@@ -532,10 +539,8 @@ class _BrowserScreenState extends State<BrowserScreen>
         },
         onVoiceSearch: _triggerVoiceSearch,
       );
-    }
-
-    if (engine.errorMessage != null) {
-      return Center(
+    } else if (engine.errorMessage != null) {
+      overlayChild = Center(
         child: SingleChildScrollView(
           padding: const EdgeInsets.all(28),
           child: Column(
@@ -578,15 +583,30 @@ class _BrowserScreenState extends State<BrowserScreen>
     }
 
     if (engine.controller == null) {
-      return Center(
-        child: Text(
-          engine.currentUrl ?? '',
-          style: const TextStyle(fontSize: 15),
-        ),
-      );
+      return overlayChild ??
+          Center(
+            child: Text(
+              engine.currentUrl ?? '',
+              style: const TextStyle(fontSize: 15),
+            ),
+          );
     }
 
-    return WebViewWidget(controller: engine.controller!);
+    // Keep WebViewWidget mounted across StartPage / HeavenSearchView transitions so tapping a
+    // search result reveals the pre-mounted Android surface with zero PlatformView glitching!
+    return Stack(
+      fit: StackFit.expand,
+      children: <Widget>[
+        Offstage(
+          offstage: overlayChild != null,
+          child: WebViewWidget(
+            key: ValueKey<String>('wv_${tab.id}'),
+            controller: engine.controller!,
+          ),
+        ),
+        overlayChild ?? const SizedBox.shrink(),
+      ],
+    );
   }
 
   /// Overlay card shown when tapping the address/search bar on an active link:

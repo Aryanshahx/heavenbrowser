@@ -282,6 +282,46 @@ class _HeavenSearchViewState extends State<HeavenSearchView> {
                               ),
                             ),
                           ),
+                          if (data.googleChallengeDetected &&
+                              _selectedTab == HeavenSearchTab.all)
+                            Container(
+                              margin: const EdgeInsets.only(bottom: 10),
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 12,
+                                vertical: 10,
+                              ),
+                              decoration: BoxDecoration(
+                                color: colors.primaryContainer.withValues(
+                                  alpha: 0.35,
+                                ),
+                                borderRadius: BorderRadius.circular(14),
+                                border: Border.all(
+                                  color: colors.primary.withValues(alpha: 0.4),
+                                ),
+                              ),
+                              child: Row(
+                                children: <Widget>[
+                                  Icon(
+                                    Icons.verified_user_rounded,
+                                    size: 18,
+                                    color: colors.primary,
+                                  ),
+                                  const SizedBox(width: 8),
+                                  const Expanded(
+                                    child: Text(
+                                      'Google requested a 1-time check on this IP. Verify once to unlock live Google results.',
+                                      style: TextStyle(fontSize: 12.5),
+                                    ),
+                                  ),
+                                  TextButton(
+                                    onPressed: () => widget.onOpenUrl(
+                                      'https://www.google.com/search?q=${Uri.encodeQueryComponent(widget.query)}',
+                                    ),
+                                    child: const Text('Verify'),
+                                  ),
+                                ],
+                              ),
+                            ),
                           if (data.instantMathResult != null &&
                               _selectedTab == HeavenSearchTab.all)
                             _buildCalculatorCard(

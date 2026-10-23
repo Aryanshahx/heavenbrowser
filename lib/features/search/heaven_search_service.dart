@@ -156,6 +156,7 @@ class HeavenSearchResponse {
     this.instantMathResult,
     this.knowledgeCard,
     this.fromGoogleEngine = false,
+    this.googleChallengeDetected = false,
   });
 
   final String query;
@@ -169,6 +170,7 @@ class HeavenSearchResponse {
   final String? instantMathResult;
   final HeavenKnowledgeCard? knowledgeCard;
   final bool fromGoogleEngine;
+  final bool googleChallengeDetected;
 }
 
 class HeavenMathEvaluator {
@@ -336,6 +338,13 @@ class HeavenSearchService {
     final Stopwatch stopwatch = Stopwatch()..start();
     final String? mathAnswer = HeavenMathEvaluator.tryEvaluate(query);
 
+    final String effectiveRegion =
+        filters.region == HeavenRegionFilter.global
+        ? ''
+        : filters.region.countryCode;
+    final String effectiveLang =
+        '${filters.region.langCode},en-US;q=0.9,en;q=0.8';
+
     // Start all streams concurrently at t=0ms so fallback costs 0 extra latency if ever needed!
     final Future<Map<String, Object?>> googleFuture = NativeShieldBridge
         .instance
@@ -344,6 +353,8 @@ class HeavenSearchService {
           tab: 'all',
           safeMode: filters.safe.name,
           timeCode: filters.time.ddgCode,
+          regionCode: effectiveRegion,
+          langHeader: effectiveLang,
         );
     final Future<List<HeavenSearchResult>> fallbackWebFuture =
         _fetchOrganicWebResults(query, filters: filters);
@@ -368,6 +379,8 @@ class HeavenSearchService {
       googleBg['webResults'],
     );
     final bool gotGoogle = googleWeb.isNotEmpty;
+    final bool sawCaptcha =
+        !gotGoogle && googleBg['reason']?.toString() == 'captcha';
     final HeavenKnowledgeCard? googleCard = _parseNativeKnowledgeCard(
       googleBg['knowledgeCard'],
     );
@@ -419,6 +432,7 @@ class HeavenSearchService {
       instantMathResult: mathAnswer,
       knowledgeCard: card,
       fromGoogleEngine: gotGoogle,
+      googleChallengeDetected: sawCaptcha,
     );
   }
 
@@ -433,6 +447,10 @@ class HeavenSearchService {
           tab: 'images',
           safeMode: filters.safe.name,
           timeCode: filters.time.ddgCode,
+          regionCode: filters.region == HeavenRegionFilter.global
+              ? ''
+              : filters.region.countryCode,
+          langHeader: '${filters.region.langCode},en-US;q=0.9,en;q=0.8',
         );
     final List<HeavenImageResult> googleImgs = _parseNativeImageList(
       bg['imageResults'],
@@ -454,6 +472,10 @@ class HeavenSearchService {
           tab: 'videos',
           safeMode: filters.safe.name,
           timeCode: filters.time.ddgCode,
+          regionCode: filters.region == HeavenRegionFilter.global
+              ? ''
+              : filters.region.countryCode,
+          langHeader: '${filters.region.langCode},en-US;q=0.9,en;q=0.8',
         );
     final List<HeavenSearchResult> googleVids = _parseNativeResultList(
       bg['videoResults'],
@@ -475,6 +497,10 @@ class HeavenSearchService {
           tab: 'news',
           safeMode: filters.safe.name,
           timeCode: filters.time.ddgCode,
+          regionCode: filters.region == HeavenRegionFilter.global
+              ? ''
+              : filters.region.countryCode,
+          langHeader: '${filters.region.langCode},en-US;q=0.9,en;q=0.8',
         );
     final List<HeavenSearchResult> googleNews = _parseNativeResultList(
       bg['newsResults'],
