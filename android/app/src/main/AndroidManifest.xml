@@ -23,7 +23,7 @@
     <uses-feature android:name="android.hardware.location.gps" android:required="false" />
 
     <application
-        android:label="Heaven Browser"
+        android:label="Heaven"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher"
         android:roundIcon="@mipmap/ic_launcher_round"
@@ -33,7 +33,6 @@
             android:name=".MainActivity"
             android:exported="true"
             android:launchMode="singleTop"
-            android:supportsPictureInPicture="true"
             android:taskAffinity=""
             android:theme="@style/LaunchTheme"
             android:configChanges="orientation|keyboardHidden|keyboard|screenSize|smallestScreenSize|locale|layoutDirection|fontScale|screenLayout|density|uiMode"
@@ -82,10 +81,12 @@
         <intent>
             <action android:name="android.intent.action.VIEW" />
             <data android:scheme="https" />
+            <category android:name="android.intent.category.BROWSABLE" />
         </intent>
         <intent>
             <action android:name="android.intent.action.VIEW" />
             <data android:scheme="http" />
+            <category android:name="android.intent.category.BROWSABLE" />
         </intent>
         <intent>
             <action android:name="android.intent.action.SENDTO" />

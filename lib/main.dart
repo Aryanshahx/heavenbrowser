@@ -118,6 +118,10 @@ class _HeavenBrowserAppState extends State<HeavenBrowserApp>
         ),
       );
     };
+    NativeShieldBridge.instance.onWebStoreExtensionInstalled =
+        (Map<String, Object?> _) {
+          unawaited(_effectiveExtensions.refreshChromeExtensions());
+        };
 
     if (widget.downloads == null) {
       _ownedDownloads = DownloadsController(
@@ -192,7 +196,7 @@ class _HeavenBrowserAppState extends State<HeavenBrowserApp>
     if (_verifyingAppLock) return;
     setState(() => _verifyingAppLock = true);
     final bool ok = await NativeShieldBridge.instance.authenticateBiometric(
-      reason: 'Unlock Heaven Browser',
+      reason: 'Unlock Heaven',
     );
     if (!mounted) return;
     setState(() {
@@ -219,6 +223,7 @@ class _HeavenBrowserAppState extends State<HeavenBrowserApp>
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     NativeShieldBridge.instance.onExtensionOpenNewTab = null;
+    NativeShieldBridge.instance.onWebStoreExtensionInstalled = null;
     _tabManager.dispose();
     _ownedDownloads?.dispose();
     _ownedExtensions?.dispose();
@@ -253,7 +258,7 @@ class _HeavenBrowserAppState extends State<HeavenBrowserApp>
                   ),
                   const SizedBox(height: 18),
                   const Text(
-                    'Heaven Browser Locked',
+                    'Heaven Locked',
                     style: TextStyle(fontSize: 20, fontWeight: FontWeight.w900),
                   ),
                   const SizedBox(height: 8),

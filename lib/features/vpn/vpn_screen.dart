@@ -313,7 +313,7 @@ class HeavenVpnScreen extends StatelessWidget {
         ),
         subtitle: Text(
           vpn.browserOnly
-              ? 'Only Heaven Browser uses the foreign VPN. WhatsApp, UPI & phone apps stay on local Wi-Fi/5G.'
+              ? 'Only Heaven uses the foreign VPN. WhatsApp, UPI & phone apps stay on local Wi-Fi/5G.'
               : 'Entire device traffic is routed through Heaven VPN.',
           style: const TextStyle(fontSize: 12),
         ),

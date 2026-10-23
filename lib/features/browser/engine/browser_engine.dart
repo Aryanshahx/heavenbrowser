@@ -27,24 +27,6 @@ class ReadableArticle {
   final List<String> paragraphs;
 }
 
-class DetectedMediaStream {
-  const DetectedMediaStream({
-    required this.url,
-    required this.kind,
-    required this.format,
-    required this.label,
-  });
-
-  final String url;
-  final String kind;
-  final String format;
-  final String label;
-
-  bool get isAudio => kind.toLowerCase() == 'audio';
-  bool get isHls =>
-      format.toUpperCase() == 'HLS' || url.toLowerCase().contains('.m3u8');
-}
-
 typedef SitePermissionPromptCallback =
     Future<bool> Function(String host, List<SitePermissionType> types);
 
@@ -57,7 +39,6 @@ class BrowserEngine extends ChangeNotifier {
     this.enablePlatformWebView = true,
     String? initialPersistedUrl,
     String? initialPersistedTitle,
-    bool startHibernated = false,
   }) {
     settings.addListener(_onSettingsChanged);
     extensions?.addListener(_onExtensionsChanged);
@@ -73,10 +54,9 @@ class BrowserEngine extends ChangeNotifier {
         ..clear()
         ..add(cleanInitialUrl);
       _virtualIndex = 0;
-      _isHibernated = startHibernated;
     }
 
-    if (enablePlatformWebView && !_isHibernated) {
+    if (enablePlatformWebView) {
       _initializeController();
       if (_currentUrl != null && _currentUrl!.isNotEmpty) {
         final Uri? restoredUri = Uri.tryParse(_currentUrl!);
@@ -107,7 +87,8 @@ class BrowserEngine extends ChangeNotifier {
   double _progress = 0;
   double _pullProgress = 0;
   bool _isLoading = false;
-  bool _isHibernated = false;
+  bool _isNavBarVisible = true;
+  double _lastScrollY = 0;
   bool _webViewCanGoBack = false;
   bool _webViewCanGoForward = false;
   int _pageBlockedCount = 0;
@@ -116,10 +97,8 @@ class BrowserEngine extends ChangeNotifier {
   String? _lastCompletedWebUrl;
   int _lastDownloadInterceptMs = 0;
 
-  // Live Media & Stream Grabber state
-  final List<DetectedMediaStream> _detectedStreams = <DetectedMediaStream>[];
+  // Live Background Audio state
   bool _isMediaPlaying = false;
-  bool _isVideoPlaying = false;
   String _playingMediaTitle = '';
 
   // Cached WebView configuration state (prevents redundant setInitialScale/UA resets & glitching!)
@@ -144,12 +123,9 @@ class BrowserEngine extends ChangeNotifier {
   int? get androidWebViewId => _androidWebViewId;
   String? get pageIconUrl => _pageIconUrl;
   String? get currentUrl => _currentUrl;
-  bool get isHibernated => _isHibernated;
+  bool get isNavBarVisible => _isNavBarVisible || isShowingStartPage;
   bool get isMediaPlaying => _isMediaPlaying;
-  bool get isVideoPlaying => _isVideoPlaying;
   String get playingMediaTitle => _playingMediaTitle;
-  List<DetectedMediaStream> get detectedMediaStreams =>
-      List<DetectedMediaStream>.unmodifiable(_detectedStreams);
 
   List<DevToolsConsoleEntry> get consoleEntries =>
       List<DevToolsConsoleEntry>.unmodifiable(_consoleEntries);
@@ -225,43 +201,26 @@ class BrowserEngine extends ChangeNotifier {
     _mediaGestureConfigured = false;
   }
 
-  /// Freezes an inactive tab and releases its underlying Android WebView RAM/CPU.
-  Future<void> hibernate() async {
-    if (_isHibernated || isShowingStartPage || _isMediaPlaying) {
-      return;
+  void setNavBarVisible(bool visible) {
+    final bool next = isShowingStartPage ? true : visible;
+    if (_isNavBarVisible != next) {
+      _isNavBarVisible = next;
+      notifyListeners();
     }
-    _isHibernated = true;
-    _isLoading = false;
-    _progress = 0;
-    if (_androidWebViewId != null) {
-      NativeShieldBridge.instance.detachWebView(_androidWebViewId!);
-      _androidWebViewId = null;
-    }
-    try {
-      await _controller?.loadRequest(Uri.parse('about:blank'));
-    } catch (_) {}
-    _controller = null;
-    _resetCachedControllerFlags();
-    notifyListeners();
   }
 
-  /// Seamlessly wakes a sleeping tab when focused or interacted with.
-  Future<void> wakeFromHibernation() async {
-    if (!_isHibernated) {
+  /// Updates top navigation bar visibility from scroll position & vertical delta:
+  /// scrolling down hides the bar; scrolling up (or near top) reveals it.
+  void handleWebScrollDelta(double scrollY, double deltaY) {
+    if (isShowingStartPage) {
+      setNavBarVisible(true);
       return;
     }
-    _isHibernated = false;
-    final String? savedUrl = _currentUrl;
-    if (enablePlatformWebView && _controller == null) {
-      _initializeController();
-      if (savedUrl != null && savedUrl.isNotEmpty) {
-        final Uri? uri = Uri.tryParse(savedUrl);
-        if (uri != null) {
-          await _loadRestoredUri(uri);
-        }
-      }
+    if (scrollY <= 16 || deltaY <= -12) {
+      setNavBarVisible(true);
+    } else if (deltaY >= 16 && scrollY > 42) {
+      setNavBarVisible(false);
     }
-    notifyListeners();
   }
 
   Future<void> _loadRestoredUri(Uri uri) async {
@@ -359,6 +318,16 @@ class BrowserEngine extends ChangeNotifier {
     );
 
     unawaited(
+      webController
+          .setOnScrollPositionChange((ScrollPositionChange pos) {
+            final double dy = pos.y - _lastScrollY;
+            _lastScrollY = pos.y;
+            handleWebScrollDelta(pos.y, dy);
+          })
+          .catchError((Object _) {}),
+    );
+
+    unawaited(
       webController.setNavigationDelegate(
         NavigationDelegate(
           onNavigationRequest: _handleNavigationRequest,
@@ -366,12 +335,10 @@ class BrowserEngine extends ChangeNotifier {
             if (url == 'about:blank' && isShowingStartPage) {
               return;
             }
-            final String? prevHost = currentHost;
             final String? nextHost = Uri.tryParse(url)?.host;
-            if (prevHost != nextHost) {
-              _detectedStreams.clear();
-            }
             _currentUrl = url;
+            _isNavBarVisible = true;
+            _lastScrollY = 0;
             _pageIconUrl = null;
             _elementPickerActive = false;
             _pageDesignMode = false;
@@ -533,68 +500,19 @@ class BrowserEngine extends ChangeNotifier {
                   ),
                 );
               },
-          onMediaStreamDetected:
-              (String url, String kind, String format, String label) {
-                _addDetectedMediaStream(
-                  DetectedMediaStream(
-                    url: url,
-                    kind: kind,
-                    format: format,
-                    label: label.isEmpty ? _pageTitle : label,
-                  ),
-                );
-              },
-          onMediaPlaybackChanged: (bool playing, bool isVideo, String title) {
-            if (_isMediaPlaying != playing ||
-                _isVideoPlaying != isVideo ||
-                _playingMediaTitle != title) {
+          onMediaPlaybackChanged: (bool playing, String title) {
+            if (_isMediaPlaying != playing || _playingMediaTitle != title) {
               _isMediaPlaying = playing;
-              _isVideoPlaying = isVideo;
               _playingMediaTitle = title;
               notifyListeners();
             }
           },
+          onScrollNavBarChanged: (bool visible) {
+            setNavBarVisible(visible);
+          },
         ),
       );
     }
-  }
-
-  void _addDetectedMediaStream(DetectedMediaStream stream) {
-    if (stream.url.isEmpty ||
-        stream.url.startsWith('blob:') ||
-        stream.url.startsWith('data:')) {
-      return;
-    }
-    final bool exists = _detectedStreams.any(
-      (DetectedMediaStream s) => s.url == stream.url,
-    );
-    if (exists) return;
-    if (_detectedStreams.length >= 25) {
-      _detectedStreams.removeLast();
-    }
-    _detectedStreams.insert(0, stream);
-    notifyListeners();
-  }
-
-  Future<List<DetectedMediaStream>> refreshDetectedMediaStreams() async {
-    if (_androidWebViewId != null) {
-      final List<Map<String, String>> scanned = await NativeShieldBridge
-          .instance
-          .scanPageMediaStreams(_androidWebViewId!);
-      for (final Map<String, String> item in scanned) {
-        final String u = (item['url'] ?? '').trim();
-        if (u.isEmpty) continue;
-        _addDetectedMediaStream(
-          DetectedMediaStream(
-            url: u,
-            kind: item['kind'] ?? 'video',
-            format: item['format'] ?? 'MP4',
-            label: item['label'] ?? _pageTitle,
-          ),
-        );
-      }
-    }
-    return List<DetectedMediaStream>.unmodifiable(_detectedStreams);
   }
 
   Future<void> _handleWebPermissionRequest(
@@ -717,7 +635,7 @@ class BrowserEngine extends ChangeNotifier {
   }
 
   Future<Uint8List?> captureNativeWebViewPreview() async {
-    if (_androidWebViewId == null || isShowingStartPage || _isHibernated) {
+    if (_androidWebViewId == null || isShowingStartPage) {
       return null;
     }
     return NativeShieldBridge.instance.captureWebViewPreview(
@@ -786,6 +704,21 @@ class BrowserEngine extends ChangeNotifier {
       return NavigationDecision.navigate;
     }
 
+    // Rewrite Chrome/Firefox extension scheme URLs to virtual extension host — NEVER block them!
+    final String lowerScheme = uri.scheme.toLowerCase();
+    if (lowerScheme == 'chrome-extension' || lowerScheme == 'moz-extension') {
+      final String extPath = uri.path.isEmpty ? '/' : uri.path;
+      final Uri mapped = Uri(
+        scheme: 'https',
+        host: 'chrome-ext.heaven.local',
+        path: '/${uri.host}$extPath',
+        query: uri.hasQuery ? uri.query : null,
+        fragment: uri.hasFragment ? uri.fragment : null,
+      );
+      await _controller?.loadRequest(mapped);
+      return NavigationDecision.prevent;
+    }
+
     if (uri.scheme != 'http' && uri.scheme != 'https') {
       final bool blocksRedirect =
           (settings.antiRedirectProtection || settings.shieldEnabled) &&
@@ -801,13 +734,22 @@ class BrowserEngine extends ChangeNotifier {
       return NavigationDecision.prevent;
     }
 
+    final String destLowerHost = uri.host.toLowerCase();
+    final String prevLowerHost = (currentHost ?? '').toLowerCase();
+
+    // Always allow Chrome Extension virtual pages and any redirect initiated from an extension!
+    if (destLowerHost == 'chrome-ext.heaven.local' ||
+        prevLowerHost == 'chrome-ext.heaven.local') {
+      return NavigationDecision.navigate;
+    }
+
     // Automatic Anti-Redirect protection against unsolicited Play Store hijacks
     if (request.isMainFrame &&
         settings.antiRedirectProtection &&
         !settings.isHostTrusted(currentHost) &&
-        uri.host.toLowerCase() == 'play.google.com' &&
-        currentHost != null &&
-        !currentHost!.toLowerCase().endsWith('google.com')) {
+        destLowerHost == 'play.google.com' &&
+        prevLowerHost.isNotEmpty &&
+        !prevLowerHost.endsWith('google.com')) {
       _recordBlockedResource('play.google.com-hijack');
       unawaited(settings.incrementRedirectBlockedCount());
       return NavigationDecision.prevent;
@@ -911,14 +853,12 @@ class BrowserEngine extends ChangeNotifier {
   }
 
   void _onSettingsChanged() {
-    if (!_isHibernated) {
-      unawaited(_applyControllerSettings());
-    }
+    unawaited(_applyControllerSettings());
   }
 
   void _onExtensionsChanged() {
     final String? url = _currentUrl;
-    if (url != null && !isShowingStartPage && !_isHibernated) {
+    if (url != null && !isShowingStartPage) {
       unawaited(reinjectActiveExtensions());
     }
   }
@@ -1016,9 +956,6 @@ class BrowserEngine extends ChangeNotifier {
 
   Future<void> setDesktopModeAndReload(bool enabled) async {
     await settings.setDesktopMode(enabled);
-    if (_isHibernated) {
-      await wakeFromHibernation();
-    }
     await _applyControllerSettings(force: true);
 
     final String? activeUrl = _currentUrl;
@@ -1076,7 +1013,7 @@ class BrowserEngine extends ChangeNotifier {
             );
           }
           onWebStoreInstallMessage?.call(
-            err ?? 'Chrome Extension (.crx) installed in Heaven Browser!',
+            err ?? 'Chrome Extension (.crx) installed in Heaven!',
           );
         }());
       }
@@ -1111,6 +1048,11 @@ class BrowserEngine extends ChangeNotifier {
   Future<void> _injectProtectionAndZoom(String url) async {
     final WebViewController? webController = _controller;
     final Uri? parsed = Uri.tryParse(url);
+    final String lowerHost = (parsed?.host ?? '').toLowerCase();
+    // Never overwrite window.open or run ad-blocker scripts inside Chrome Extension tabs!
+    if (lowerHost == 'chrome-ext.heaven.local') {
+      return;
+    }
     if (webController == null ||
         !settings.isJavaScriptAllowedForHost(parsed?.host)) {
       return;
@@ -1197,32 +1139,44 @@ class BrowserEngine extends ChangeNotifier {
   }
 
   Future<void> loadUri(Uri uri) async {
-    if (_isHibernated) {
-      _isHibernated = false;
-      if (enablePlatformWebView && _controller == null) {
-        _initializeController();
-      }
-    }
-
     _errorMessage = null;
     _pageBlockedCount = 0;
     _pageBlockedDomains.clear();
     _pullProgress = 0;
+    _isNavBarVisible = true;
+    _lastScrollY = 0;
 
-    // Migrate any legacy heaven:// URL seamlessly to Google Search
+    // Rewrite chrome-extension:// or moz-extension:// to https://chrome-ext.heaven.local/...
     Uri migratedUri = uri;
-    if (OmniboxParser.isLegacyHeavenUrl(uri.toString())) {
-      final String q = OmniboxParser.extractLegacyHeavenQuery(uri.toString());
+    final String lowerScheme = migratedUri.scheme.toLowerCase();
+    if (lowerScheme == 'chrome-extension' || lowerScheme == 'moz-extension') {
+      final String extPath = migratedUri.path.isEmpty ? '/' : migratedUri.path;
+      migratedUri = Uri(
+        scheme: 'https',
+        host: 'chrome-ext.heaven.local',
+        path: '/${migratedUri.host}$extPath',
+        query: migratedUri.hasQuery ? migratedUri.query : null,
+        fragment: migratedUri.hasFragment ? migratedUri.fragment : null,
+      );
+    } else if (OmniboxParser.isLegacyHeavenUrl(migratedUri.toString())) {
+      final String q = OmniboxParser.extractLegacyHeavenQuery(
+        migratedUri.toString(),
+      );
       migratedUri = SearchEngine.google.buildSearchUri(q);
     }
 
-    Uri finalUri = OmniboxParser.unwrapGoogleRedirectUri(migratedUri) ??
-        migratedUri;
-    if (settings.desktopMode) {
+    final bool isExtTarget =
+        migratedUri.host.toLowerCase() == 'chrome-ext.heaven.local';
+    Uri finalUri = isExtTarget
+        ? migratedUri
+        : (OmniboxParser.unwrapGoogleRedirectUri(migratedUri) ?? migratedUri);
+    if (!isExtTarget && settings.desktopMode) {
       finalUri = rewriteMobileToDesktopUri(finalUri);
     }
     final bool shieldActive =
-        settings.shieldEnabled && !settings.isHostTrusted(finalUri.host);
+        !isExtTarget &&
+        settings.shieldEnabled &&
+        !settings.isHostTrusted(finalUri.host);
     if (shieldActive) {
       final ({Uri uri, int removedCount}) stripped =
           HeavenShield.stripTrackingParameters(finalUri);
@@ -1283,19 +1237,18 @@ class BrowserEngine extends ChangeNotifier {
   }
 
   Future<void> goHome() async {
-    _isHibernated = false;
     _pushVirtualLocation('');
     _currentUrl = null;
     _pageTitle = isIncognito ? 'Incognito Tab' : 'New Tab';
     _isLoading = false;
+    _isNavBarVisible = true;
+    _lastScrollY = 0;
     _progress = 0;
     _pullProgress = 0;
     _errorMessage = null;
     _pageBlockedCount = 0;
     _pageBlockedDomains.clear();
-    _detectedStreams.clear();
     _isMediaPlaying = false;
-    _isVideoPlaying = false;
     _webViewCanGoBack = false;
     _webViewCanGoForward = false;
     await _controller?.loadRequest(Uri.parse('about:blank'));
@@ -1303,9 +1256,7 @@ class BrowserEngine extends ChangeNotifier {
   }
 
   Future<void> goBack() async {
-    if (_isHibernated) {
-      await wakeFromHibernation();
-    }
+    _isNavBarVisible = true;
     if (!isShowingStartPage &&
         _controller != null &&
         await _controller!.canGoBack()) {
@@ -1321,9 +1272,7 @@ class BrowserEngine extends ChangeNotifier {
   }
 
   Future<void> goForward() async {
-    if (_isHibernated) {
-      await wakeFromHibernation();
-    }
+    _isNavBarVisible = true;
     if (!isShowingStartPage &&
         _controller != null &&
         await _controller!.canGoForward()) {
@@ -1366,22 +1315,16 @@ class BrowserEngine extends ChangeNotifier {
 
   Future<void> reloadFullPage() async {
     _errorMessage = null;
+    _isNavBarVisible = true;
     if (isShowingStartPage) {
       notifyListeners();
-      return;
-    }
-    if (_isHibernated) {
-      await wakeFromHibernation();
       return;
     }
     await _controller?.reload();
   }
 
   Future<void> reloadOrStop() async {
-    if (_isHibernated) {
-      await wakeFromHibernation();
-      return;
-    }
+    _isNavBarVisible = true;
     if (_controller == null) {
       return;
     }

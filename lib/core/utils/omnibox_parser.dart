@@ -6,6 +6,13 @@ enum SearchEngine {
     homeUrl: 'https://www.google.com',
     queryPrefix: 'https://www.google.com/search?q=',
   ),
+  perplexity(
+    label: 'Perplexity',
+    shortLabel: 'Perplexity',
+    badge: 'Px',
+    homeUrl: 'https://www.perplexity.ai',
+    queryPrefix: 'https://www.perplexity.ai/search?q=',
+  ),
   duckDuckGo(
     label: 'DuckDuckGo',
     shortLabel: 'DDG',
@@ -140,7 +147,8 @@ class OmniboxParser {
       return '';
     }
     final String host = uri.host.toLowerCase();
-    if (host.endsWith('duckduckgo.com') ||
+    if (host.endsWith('perplexity.ai') ||
+        host.endsWith('duckduckgo.com') ||
         host.endsWith('search.brave.com') ||
         (host.endsWith('bing.com') && uri.path == '/search')) {
       return (uri.queryParameters['q'] ?? '').trim();
@@ -289,6 +297,15 @@ class OmniboxParser {
       return url;
     }
     String host = uri.host;
+    if (host.toLowerCase() == 'chrome-ext.heaven.local') {
+      final List<String> segs = uri.pathSegments
+          .where((String s) => s.isNotEmpty)
+          .toList();
+      if (segs.length >= 2 && segs[1] != '__heaven_ext_home.html') {
+        return 'Extension • ${segs.sublist(1).join('/')}';
+      }
+      return 'Chrome Extension';
+    }
     if (host.startsWith('www.') && host.length > 4) {
       host = host.substring(4);
     }

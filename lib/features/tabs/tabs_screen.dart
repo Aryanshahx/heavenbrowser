@@ -120,7 +120,7 @@ class _TabsScreenState extends State<TabsScreen> {
     if (_authenticatingIncognito) return;
     setState(() => _authenticatingIncognito = true);
     final bool ok = await NativeShieldBridge.instance.authenticateBiometric(
-      reason: 'Unlock Private Incognito Tabs in Heaven Browser',
+      reason: 'Unlock Private Incognito Tabs in Heaven',
     );
     if (!mounted) return;
     setState(() => _authenticatingIncognito = false);
@@ -172,30 +172,6 @@ class _TabsScreenState extends State<TabsScreen> {
                 padding: const EdgeInsets.only(right: 8),
                 child: _buildModeToggleBar(colors, isDark),
               ),
-              actions: <Widget>[
-                if (!_viewingIncognito &&
-                    widget.tabManager.normalTabs.length > 1)
-                  IconButton(
-                    tooltip: 'Hibernate Inactive Tabs Now (Save RAM)',
-                    icon: const Icon(Icons.bedtime_outlined, size: 20),
-                    onPressed: () async {
-                      final int n = await widget.tabManager
-                          .hibernateInactiveTabsNow(threshold: Duration.zero);
-                      if (context.mounted) {
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          SnackBar(
-                            content: Text(
-                              n > 0
-                                  ? 'Put $n inactive tab(s) to sleep to free RAM!'
-                                  : 'Inactive tabs are already sleeping.',
-                            ),
-                            behavior: SnackBarBehavior.floating,
-                          ),
-                        );
-                      }
-                    },
-                  ),
-              ],
             ),
             body: SafeArea(
               child: Column(
@@ -446,7 +422,6 @@ class _TabsScreenState extends State<TabsScreen> {
     BrowserTab tab,
   ) {
     final bool isActive = widget.tabManager.activeTab.id == tab.id;
-    final bool isSleeping = tab.engine.isHibernated;
     final bool isPlayingAudio = tab.engine.isMediaPlaying;
     final Color cardBg = tab.isIncognito
         ? const Color(0xFF0D1B22)
@@ -529,15 +504,6 @@ class _TabsScreenState extends State<TabsScreen> {
                           size: 14,
                           color: AppTheme.shieldEmerald,
                         ),
-                      )
-                    else if (isSleeping)
-                      Padding(
-                        padding: const EdgeInsets.only(right: 2),
-                        child: Icon(
-                          Icons.bedtime_rounded,
-                          size: 13,
-                          color: colors.primary,
-                        ),
                       ),
                     IconButton(
                       icon: const Icon(Icons.close_rounded, size: 16),
@@ -613,25 +579,6 @@ class _TabsScreenState extends State<TabsScreen> {
                                     fontSize: 8.5,
                                     fontWeight: FontWeight.w900,
                                     color: colors.onPrimary,
-                                  ),
-                                ),
-                              )
-                            else if (isSleeping)
-                              Container(
-                                padding: const EdgeInsets.symmetric(
-                                  horizontal: 5,
-                                  vertical: 1.5,
-                                ),
-                                decoration: BoxDecoration(
-                                  color: Colors.blueGrey.shade800,
-                                  borderRadius: BorderRadius.circular(5),
-                                ),
-                                child: const Text(
-                                  'SLEEP',
-                                  style: TextStyle(
-                                    fontSize: 8.5,
-                                    fontWeight: FontWeight.w900,
-                                    color: Colors.white,
                                   ),
                                 ),
                               ),

@@ -250,24 +250,6 @@ class _NotificationsScreenState extends State<NotificationsScreen>
                     const Divider(height: 1),
                     SwitchListTile.adaptive(
                       secondary: Icon(
-                        Icons.video_collection_rounded,
-                        color: colors.primary,
-                      ),
-                      title: const Text(
-                        'Offline Video & Audio Stream Grabber',
-                        style: TextStyle(fontWeight: FontWeight.w700),
-                      ),
-                      subtitle: const Text(
-                        'Notify when MP4, MP3, or HLS (.m3u8) streams finish saving',
-                        style: TextStyle(fontSize: 12),
-                      ),
-                      value: widget.settings.mediaReadyNotificationsEnabled,
-                      onChanged:
-                          widget.settings.setMediaReadyNotificationsEnabled,
-                    ),
-                    const Divider(height: 1),
-                    SwitchListTile.adaptive(
-                      secondary: Icon(
                         Icons.headphones_rounded,
                         color: colors.primary,
                       ),

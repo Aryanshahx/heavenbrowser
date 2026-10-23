@@ -33,6 +33,7 @@ class InstalledChromeExtension {
     required this.source,
     required this.popupUrl,
     this.optionsUrl = '',
+    this.launchUrl = '',
     this.hasBackground = false,
     required this.iconBase64,
     this.iconBytes,
@@ -50,6 +51,7 @@ class InstalledChromeExtension {
   final String source;
   final String popupUrl;
   final String optionsUrl;
+  final String launchUrl;
   final bool hasBackground;
   final String iconBase64;
   final Uint8List? iconBytes;
@@ -59,6 +61,13 @@ class InstalledChromeExtension {
 
   bool get hasPopup => popupUrl.isNotEmpty;
   bool get hasOptions => optionsUrl.isNotEmpty;
+
+  String get effectiveLaunchUrl {
+    if (launchUrl.isNotEmpty) return launchUrl;
+    if (popupUrl.isNotEmpty) return popupUrl;
+    if (optionsUrl.isNotEmpty) return optionsUrl;
+    return 'https://chrome-ext.heaven.local/$id/__heaven_ext_home.html';
+  }
 
   InstalledChromeExtension copyWith({bool? enabled}) {
     return InstalledChromeExtension(
@@ -71,6 +80,7 @@ class InstalledChromeExtension {
       source: source,
       popupUrl: popupUrl,
       optionsUrl: optionsUrl,
+      launchUrl: launchUrl,
       hasBackground: hasBackground,
       iconBase64: iconBase64,
       iconBytes: iconBytes,
@@ -113,6 +123,7 @@ class InstalledChromeExtension {
       source: map['source']?.toString() ?? 'webstore',
       popupUrl: map['popupUrl']?.toString().trim() ?? '',
       optionsUrl: map['optionsUrl']?.toString().trim() ?? '',
+      launchUrl: map['launchUrl']?.toString().trim() ?? '',
       hasBackground: map['hasBackground'] == true,
       iconBase64: rawIcon,
       iconBytes: decodedIcon,

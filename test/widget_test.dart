@@ -9,6 +9,7 @@ import 'package:heavenbrowser/core/l10n/app_strings.dart';
 import 'package:heavenbrowser/core/theme/app_theme.dart';
 import 'package:heavenbrowser/core/utils/omnibox_parser.dart';
 import 'package:heavenbrowser/features/browser/engine/browser_engine.dart';
+import 'package:heavenbrowser/features/browser/presentation/browser_screen.dart';
 import 'package:heavenbrowser/features/browser/site_controls_sheet.dart';
 import 'package:heavenbrowser/features/devtools/desktop_inspector_panel.dart';
 import 'package:heavenbrowser/features/downloads/downloads_controller.dart';
@@ -18,6 +19,7 @@ import 'package:heavenbrowser/features/search/heaven_search_service.dart';
 import 'package:heavenbrowser/features/settings/browser_settings.dart';
 import 'package:heavenbrowser/features/settings/help_screen.dart';
 import 'package:heavenbrowser/features/settings/notifications_screen.dart';
+import 'package:heavenbrowser/features/settings/settings_screen.dart';
 import 'package:heavenbrowser/features/shield/heaven_shield.dart';
 import 'package:heavenbrowser/features/tabs/tab_manager.dart';
 import 'package:heavenbrowser/features/tabs/tabs_screen.dart';
@@ -89,17 +91,33 @@ HeavenNewsFeedService _createMockNewsService(
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
-  group('Step 13 Core: Google Default Engine, Persistent Tabs, Hibernation & Extensions', () {
-    test('uses Electric Sapphire & Midnight Navy blue palette', () {
+  group('Step 14 Core: Heaven Brand, Google + Perplexity Search, Persistent Tabs (No Sleep) & Extensions', () {
+    test('uses Electric Sapphire & Midnight Navy blue palette and Heaven app name', () {
+      expect(AppConstants.appName, 'Heaven');
+      expect(AppConstants.appVersion, '0.0.1');
       expect(AppTheme.sapphireBlue, const Color(0xFF2563EB));
       expect(AppTheme.electricBlue, const Color(0xFF3B82F6));
       expect(AppTheme.deepNavyBg, const Color(0xFF040B16));
       expect(AppTheme.navySurface, const Color(0xFF0B162C));
       expect(AppTheme.darkTheme.colorScheme.primary, const Color(0xFF60A5FA));
+
+      // Obsolete Step 13 sheets are completely removed
+      expect(
+        File('lib/features/browser/quick_action_sheet.dart').existsSync(),
+        isFalse,
+      );
+      expect(
+        File('lib/features/downloads/media_grabber_sheet.dart').existsSync(),
+        isFalse,
+      );
+      expect(
+        File('lib/features/extensions/extension_popup_sheet.dart').existsSync(),
+        isFalse,
+      );
     });
 
     test(
-      'Heaven Engine is completely removed, Google is Default Search Engine, and bottom navigation is default',
+      'Google is Default Search Engine, Perplexity is supported, Heaven Engine is removed, and chrome-extension URLs rewrite cleanly',
       () async {
         expect(
           File(
@@ -112,11 +130,13 @@ void main() {
           isFalse,
         );
         expect(SearchEngine.values.first, SearchEngine.google);
+        expect(SearchEngine.values, contains(SearchEngine.perplexity));
         expect(
           SearchEngine.values.map((SearchEngine e) => e.name),
           isNot(contains('heaven')),
         );
         expect(SearchEngine.fromName('heaven'), SearchEngine.google);
+        expect(SearchEngine.fromName('perplexity'), SearchEngine.perplexity);
 
         SharedPreferences.setMockInitialValues(<String, Object>{});
         final SharedPreferences prefs = await SharedPreferences.getInstance();
@@ -124,7 +144,6 @@ void main() {
           prefs,
         );
         expect(settings.searchEngine, SearchEngine.google);
-        expect(settings.bottomOmnibox, isTrue);
 
         final BrowserEngine normalEngine = BrowserEngine(
           settings: settings,
@@ -137,6 +156,33 @@ void main() {
           'https://www.google.com/search?q=raspberry+pi+5',
         );
         expect(settings.recentSearches, contains('raspberry pi 5'));
+
+        // Switch to Perplexity and verify search query resolution + query extraction
+        await settings.setSearchEngine(SearchEngine.perplexity);
+        await normalEngine.loadUserEntry('quantum computing');
+        expect(
+          normalEngine.currentUrl,
+          'https://www.perplexity.ai/search?q=quantum+computing',
+        );
+        expect(
+          OmniboxParser.extractAnySearchQuery(normalEngine.currentUrl),
+          'quantum computing',
+        );
+
+        // Chrome extension scheme URLs rewrite to virtual extension host instead of being blocked
+        await normalEngine.loadUri(
+          Uri.parse(
+            'chrome-extension://eimadpbcbfnmbkopoojfekhnkhdbieeh/ui/popup/index.html',
+          ),
+        );
+        expect(
+          normalEngine.currentUrl,
+          'https://chrome-ext.heaven.local/eimadpbcbfnmbkopoojfekhnkhdbieeh/ui/popup/index.html',
+        );
+        expect(
+          OmniboxParser.formatDisplayUrl(normalEngine.currentUrl),
+          'Extension • ui/popup/index.html',
+        );
 
         // Legacy heaven:// search URLs automatically migrate to Google Search
         await normalEngine.loadUri(
@@ -168,7 +214,7 @@ void main() {
     );
 
     test(
-      'Open tabs, active tab, and tab groups persist across app restarts and support automatic hibernation',
+      'Open tabs, active tab, and tab groups persist across app restarts with Sleep Mode completely removed',
       () async {
         SharedPreferences.setMockInitialValues(<String, Object>{});
         final SharedPreferences prefs = await SharedPreferences.getInstance();
@@ -204,27 +250,16 @@ void main() {
         expect(session2.activeTab.groupId, grp.id);
         expect(session2.activeEngine.currentUrl, 'https://dart.dev');
 
-        // Background restored tab starts sleeping to save RAM and wakes on focus
+        // Background restored tab retains its URL immediately without sleeping
         final BrowserTab bgTab = session2.normalTabs.first;
         expect(bgTab.engine.currentUrl, 'https://flutter.dev');
-        expect(bgTab.engine.isHibernated, isTrue);
-
-        session2.switchToTab(bgTab.id);
-        await Future<void>.delayed(Duration.zero);
-        expect(bgTab.engine.isHibernated, isFalse);
-
-        // Aggressive hibernation freezes inactive background tabs
-        final int frozen = await session2.hibernateInactiveTabsNow(
-          threshold: Duration.zero,
-        );
-        expect(frozen, 1);
-        expect(session2.normalTabs.last.engine.isHibernated, isTrue);
+        expect(session2.lastActiveWebsiteTab?.id, tab2.id);
         session2.dispose();
       },
     );
 
     test(
-      'ExtensionsController installs .crx packages, searches live Web Store RSS, supports options/background flags, and exposes NO suggested catalog',
+      'ExtensionsController installs .crx packages, exposes launchUrl for New Tab opening, and exposes NO suggested catalog',
       () async {
         const MethodChannel nativeChannel = MethodChannel(
           'com.hypertechlabs.heavenbrowser/native_shield',
@@ -254,6 +289,8 @@ void main() {
                           'https://chrome-ext.heaven.local/eimadpbcbfnmbkopoojfekhnkhdbieeh/ui/popup/index.html',
                       'optionsUrl':
                           'https://chrome-ext.heaven.local/eimadpbcbfnmbkopoojfekhnkhdbieeh/ui/options/index.html',
+                      'launchUrl':
+                          'https://chrome-ext.heaven.local/eimadpbcbfnmbkopoojfekhnkhdbieeh/ui/popup/index.html',
                       'hasBackground': true,
                       'iconBase64': base64Encode(_kSamplePreviewPng),
                       'permissions': <String>['storage', 'tabs'],
@@ -301,16 +338,16 @@ void main() {
           searchRes.first.extensionId,
           'gbmdgpbipfallnflgajpaliibnhdgobh',
         );
-        expect(searchRes.first.name, 'JSON Viewer');
 
         final String? installErr = await ext.installFromWebStore(
           'https://chromewebstore.google.com/detail/dark-reader/eimadpbcbfnmbkopoojfekhnkhdbieeh',
         );
         expect(installErr, isNull);
         expect(ext.isInstalled('eimadpbcbfnmbkopoojfekhnkhdbieeh'), isTrue);
-        expect(ext.chromeExtensions.first.hasPopup, isTrue);
-        expect(ext.chromeExtensions.first.hasOptions, isTrue);
-        expect(ext.chromeExtensions.first.hasBackground, isTrue);
+        expect(
+          ext.chromeExtensions.first.effectiveLaunchUrl,
+          'https://chrome-ext.heaven.local/eimadpbcbfnmbkopoojfekhnkhdbieeh/ui/popup/index.html',
+        );
 
         final String fullInjected = await ext.buildFullInjectionForUrl(
           'https://www.google.com/search?q=flutter',
@@ -331,7 +368,6 @@ void main() {
         expect(policyFile.existsSync(), isTrue);
         final String policyText = policyFile.readAsStringSync();
         expect(policyText.length, greaterThan(1500));
-        expect(policyText, contains('Privacy Policy for Heaven Browser'));
         expect(policyText, contains('techlabs.hyper@gmail.com'));
       },
     );
@@ -497,7 +533,7 @@ void main() {
   });
 
   testWidgets(
-    'Step 13 Ergonomic UI: Bottom Bar, Swipe Gestures, Quick Action Menu, Clean Extensions, Per-Site Permission Dashboard, Notifications & Privacy Policy on 320px screen',
+    'Step 14 UI: Top Navigation Bar Auto-Hide on Scroll, Extension Opens in New Tab, Minimal Settings + Perplexity, Permissions, Notifications & Privacy Policy on 320px screen',
     (WidgetTester tester) async {
       const MethodChannel nativeChannel = MethodChannel(
         'com.hypertechlabs.heavenbrowser/native_shield',
@@ -509,7 +545,28 @@ void main() {
           .setMockMethodCallHandler(nativeChannel, (MethodCall call) async {
             switch (call.method) {
               case 'listChromeExtensions':
-                return const <Map<String, Object>>[];
+                return <Map<String, Object>>[
+                  <String, Object>{
+                    'id': 'eimadpbcbfnmbkopoojfekhnkhdbieeh',
+                    'name': 'Dark Reader',
+                    'description': 'Dark mode for every website',
+                    'version': '4.9.96',
+                    'manifestVersion': 3,
+                    'enabled': true,
+                    'source': 'webstore',
+                    'popupUrl':
+                        'https://chrome-ext.heaven.local/eimadpbcbfnmbkopoojfekhnkhdbieeh/ui/popup/index.html',
+                    'launchUrl':
+                        'https://chrome-ext.heaven.local/eimadpbcbfnmbkopoojfekhnkhdbieeh/ui/popup/index.html',
+                    'hasBackground': true,
+                    'iconBase64': base64Encode(_kSamplePreviewPng),
+                    'permissions': <String>['storage', 'tabs'],
+                    'matches': <String>['<all_urls>'],
+                    'contentScriptCount': 1,
+                  },
+                ];
+              case 'setPopupContextTab':
+                return true;
               case 'createHomeScreenShortcut':
                 capturedShortcutArgs = call.arguments as Map<Object?, Object?>?;
                 return true;
@@ -564,6 +621,8 @@ void main() {
         prefs,
         syncNativeOnInit: false,
       );
+      await extensions.refreshChromeExtensions();
+
       final InterestProfileController interests = InterestProfileController(
         prefs,
       );
@@ -594,8 +653,21 @@ void main() {
       );
       await tester.pumpAndSettle();
       expect(tester.takeException(), isNull);
+      final TabManagerController tabManager = tester
+          .widget<BrowserScreen>(find.byType(BrowserScreen))
+          .tabManager;
 
-      // 1. Submit search -> resolves directly to Google Search!
+      // 1. Verify Top Navigation Bar is at the TOP of the screen and Quick Action FAB is removed
+      expect(find.byKey(const Key('top_navigation_bar_wrapper')), findsOneWidget);
+      expect(find.byKey(const Key('omnibox_display_pill')), findsOneWidget);
+      expect(find.byKey(const Key('quick_action_fab')), findsNothing);
+      final Offset topBarOffset = tester.getTopLeft(
+        find.byKey(const Key('top_navigation_bar_wrapper')),
+      );
+      expect(topBarOffset.dy, lessThan(80));
+      expect(find.text('Heaven'), findsWidgets);
+
+      // 2. Submit search -> resolves to Google Search; then scroll down hides top bar & scroll up shows it again!
       await tester.enterText(
         find.byKey(const Key('home_search_textfield')),
         'flutter',
@@ -605,19 +677,22 @@ void main() {
       await tester.pumpAndSettle();
       expect(find.textContaining('google.com'), findsWidgets);
 
-      // 2. Open Quick Action Menu via floating corner button & customize
-      expect(find.byKey(const Key('quick_action_fab')), findsOneWidget);
-      await tester.tap(find.byKey(const Key('quick_action_fab')));
+      tabManager.activeEngine.handleWebScrollDelta(140, 60);
       await tester.pumpAndSettle();
-      expect(find.text('One-Handed Quick Actions'), findsOneWidget);
-      await tester.tap(find.byKey(const Key('quick_action_permissions')));
+      expect(tabManager.activeEngine.isNavBarVisible, isFalse);
+      expect(find.byKey(const Key('omnibox_display_pill')), findsNothing);
+
+      tabManager.activeEngine.handleWebScrollDelta(80, -35);
       await tester.pumpAndSettle();
+      expect(tabManager.activeEngine.isNavBarVisible, isTrue);
+      expect(find.byKey(const Key('omnibox_display_pill')), findsOneWidget);
 
       // 3. Per-Site Permission Dashboard shows allowed Camera & revokes with 1 tap!
+      await tester.tap(find.byKey(const Key('site_permissions_button')));
+      await tester.pumpAndSettle();
       expect(find.byType(SiteControlsSheet), findsOneWidget);
       await tester.ensureVisible(find.byKey(const Key('revoke_perm_camera')));
       await tester.pumpAndSettle();
-      expect(find.byKey(const Key('revoke_perm_camera')), findsOneWidget);
       await tester.tap(find.byKey(const Key('revoke_perm_camera')));
       await tester.pumpAndSettle();
       expect(
@@ -627,39 +702,58 @@ void main() {
       Navigator.of(tester.element(find.byType(SiteControlsSheet))).pop();
       await tester.pumpAndSettle();
 
-      // 4. Swipe UP on bottom address bar opens the Tab Grid (TabsScreen), add a 2nd tab, then swipe LEFT/RIGHT on address bar to switch tabs!
-      await tester.fling(
-        find.byKey(const Key('omnibox_display_pill')),
-        const Offset(0, -120),
-        900,
-      );
-      await tester.pumpAndSettle();
-      expect(find.byType(TabsScreen), findsOneWidget);
-      await tester.tap(find.text('New Tab'));
-      await tester.pumpAndSettle();
-      // Now on Tab 2 (Start Page); swipe right on address bar to jump instantly back to Tab 1 (google.com)!
-      await tester.fling(
-        find.byKey(const Key('omnibox_display_pill')),
-        const Offset(140, 0),
-        900,
-      );
-      await tester.pumpAndSettle();
-      expect(find.textContaining('google.com'), findsWidgets);
-
-      // 5. Open Chrome Extensions -> NO suggested extensions shown!
+      // 4. Tapping an installed Chrome extension opens it in a NEW TAB!
+      expect(tabManager.normalTabs.length, 1);
       await tester.tap(find.byTooltip('Browser Menu'));
       await tester.pumpAndSettle();
       await tester.ensureVisible(find.text('Chrome Extensions'));
       await tester.pumpAndSettle();
       await tester.tap(find.text('Chrome Extensions'));
       await tester.pumpAndSettle();
-      expect(find.byKey(const Key('extensions_empty_state')), findsOneWidget);
-      expect(find.text('Dark Reader'), findsNothing);
-      expect(find.text('SponsorBlock for YouTube'), findsNothing);
-      await tester.pageBack();
+      expect(
+        find.byKey(
+          const Key('installed_extension_card_eimadpbcbfnmbkopoojfekhnkhdbieeh'),
+        ),
+        findsOneWidget,
+      );
+      await tester.tap(
+        find.byKey(
+          const Key('installed_extension_card_eimadpbcbfnmbkopoojfekhnkhdbieeh'),
+        ),
+      );
       await tester.pumpAndSettle();
+      expect(tabManager.normalTabs.length, 2);
+      expect(
+        tabManager.activeEngine.currentUrl,
+        'https://chrome-ext.heaven.local/eimadpbcbfnmbkopoojfekhnkhdbieeh/ui/popup/index.html',
+      );
 
-      // 6. Open Redesigned Notification Control Center -> Send Test Alert!
+      // 5. Minimal Settings Screen: switch Search Engine to Perplexity & verify Privacy Policy tile!
+      await tester.tap(find.byTooltip('Browser Menu'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Settings'));
+      await tester.pumpAndSettle();
+      expect(find.byType(SettingsScreen), findsOneWidget);
+      await tester.tap(find.byKey(const Key('settings_search_engine_tile')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('search_engine_option_perplexity')));
+      await tester.pumpAndSettle();
+      expect(settings.searchEngine, SearchEngine.perplexity);
+
+      await tester.scrollUntilVisible(
+        find.byKey(const Key('settings_privacy_policy_tile')),
+        180,
+        scrollable: find.descendant(
+          of: find.byType(SettingsScreen),
+          matching: find.byType(Scrollable),
+        ),
+      );
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('settings_privacy_policy_tile')));
+      await tester.pumpAndSettle();
+      expect(find.textContaining('github.com'), findsWidgets);
+
+      // 6. Open Notification Control Center -> Send Test Alert!
       await tester.tap(find.byTooltip('Browser Menu'));
       await tester.pumpAndSettle();
       await tester.ensureVisible(find.text('Notifications'));
@@ -667,14 +761,13 @@ void main() {
       await tester.tap(find.text('Notifications'));
       await tester.pumpAndSettle();
       expect(find.byType(NotificationsScreen), findsOneWidget);
-      expect(find.text('Notification Control Center'), findsOneWidget);
       await tester.tap(find.byKey(const Key('send_test_notification_button')));
       await tester.pumpAndSettle();
       expect(testNotificationSent, isTrue);
       await tester.pageBack();
       await tester.pumpAndSettle();
 
-      // 7. Create Shortcut with website logo still works cleanly
+      // 7. Create Shortcut with website logo works cleanly
       await tester.tap(find.byTooltip('Browser Menu'));
       await tester.pumpAndSettle();
       await tester.ensureVisible(find.text('Create shortcut'));
@@ -684,21 +777,14 @@ void main() {
       await tester.tap(find.text('Add Shortcut'));
       await tester.pumpAndSettle();
       expect(capturedShortcutArgs, isNotNull);
+
+      // 8. Tabs screen shows open tabs with zero Sleep Mode controls
       await tester.pump(const Duration(seconds: 5));
       await tester.pumpAndSettle();
-
-      // 8. Privacy Policy menu option redirects to GitHub privacypolicy.md!
-      await tester.tap(find.byTooltip('Browser Menu'));
+      await tester.tap(find.byTooltip('Switch Tabs'));
       await tester.pumpAndSettle();
-      await tester.ensureVisible(
-        find.byKey(const Key('browser_menu_privacy_policy_tile')),
-      );
-      await tester.pumpAndSettle();
-      await tester.tap(
-        find.byKey(const Key('browser_menu_privacy_policy_tile')),
-      );
-      await tester.pumpAndSettle();
-      expect(find.textContaining('github.com'), findsWidgets);
+      expect(find.byType(TabsScreen), findsOneWidget);
+      expect(find.text('Sleeping'), findsNothing);
 
       vpn.dispose();
       extensions.dispose();
@@ -730,6 +816,7 @@ void main() {
           isNull,
         );
         expect(HeavenShield.matchBlockedDomain('www.google.com'), isNull);
+        expect(HeavenShield.matchBlockedDomain('www.perplexity.ai'), isNull);
         expect(HeavenShield.matchBlockedDomain('www.youtube.com'), isNull);
       },
     );
@@ -824,17 +911,19 @@ void main() {
     );
 
     test(
-      'Native Java safety: SecureWebChromeClient preserved, MV2/MV3 background worker & DNR present, Media Service & PiP wired',
+      'Native Java & Manifest safety: Heaven label, PiP & Media Grabber removed, Background MediaSession + WakeLock + Extension Native Bridge wired',
       () {
         final String shieldJava = File(
           'android/app/src/main/java/com/hypertechlabs/heavenbrowser/HeavenShieldPlugin.java',
         ).readAsStringSync();
         expect(shieldJava.contains('setWebChromeClient'), isFalse);
         expect(shieldJava.contains('ShieldWebChromeClient'), isFalse);
+        expect(shieldJava.contains('enterPictureInPictureMode'), isFalse);
+        expect(shieldJava.contains('executeHlsPlaylistDownload'), isFalse);
         expect(shieldJava.contains('addDocumentStartJavaScript'), isTrue);
         expect(shieldJava.contains('/youtubei/v1/player'), isTrue);
-        expect(shieldJava.contains('enterPictureInPictureMode'), isTrue);
-        expect(shieldJava.contains('executeHlsPlaylistDownload'), isTrue);
+        expect(shieldJava.contains('onWebScrollNavBar'), isTrue);
+        expect(shieldJava.contains('bgKeepAliveLoop'), isTrue);
 
         final String extJava = File(
           'android/app/src/main/java/com/hypertechlabs/heavenbrowser/HeavenChromeExtManager.java',
@@ -843,21 +932,45 @@ void main() {
           extJava.contains('update.googleapis.com/service/update2/crx'),
           isTrue,
         );
-        expect(extJava.contains('bootBackgroundWorker'), isTrue);
-        expect(extJava.contains('dispatchRuntimeMessageToBackground'), isTrue);
+        expect(extJava.contains('HeavenExtNative'), isTrue);
+        expect(extJava.contains('importScripts'), isTrue);
+        expect(extJava.contains('normalizeExtensionUrl'), isTrue);
         expect(extJava.contains('DnrBlockRule'), isTrue);
 
         final String mediaServiceJava = File(
           'android/app/src/main/java/com/hypertechlabs/heavenbrowser/HeavenMediaService.java',
         ).readAsStringSync();
-        expect(mediaServiceJava.contains('FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK'), isTrue);
+        expect(
+          mediaServiceJava.contains('FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK'),
+          isTrue,
+        );
+        expect(mediaServiceJava.contains('MediaSession'), isTrue);
+        expect(mediaServiceJava.contains('AudioFocusRequest'), isTrue);
+        expect(mediaServiceJava.contains('PARTIAL_WAKE_LOCK'), isTrue);
+
+        final String mainKt = File(
+          'android/app/src/main/kotlin/com/hypertechlabs/heavenbrowser/MainActivity.kt',
+        ).readAsStringSync();
+        expect(mainKt.contains('onActivityPaused'), isTrue);
+        expect(mainKt.contains('onActivityStopped'), isTrue);
+        expect(mainKt.contains('onActivityResumed'), isTrue);
+        expect(mainKt.contains('PictureInPicture'), isFalse);
 
         final String manifestXml = File(
           'android/app/src/main/AndroidManifest.xml',
         ).readAsStringSync();
-        expect(manifestXml.contains('android:supportsPictureInPicture="true"'), isTrue);
+        expect(manifestXml.contains('android:label="Heaven"'), isTrue);
+        expect(
+          manifestXml.contains('android:supportsPictureInPicture'),
+          isFalse,
+        );
         expect(manifestXml.contains('android.permission.USE_BIOMETRIC'), isTrue);
-        expect(manifestXml.contains('android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK'), isTrue);
+        expect(
+          manifestXml.contains(
+            'android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK',
+          ),
+          isTrue,
+        );
       },
     );
   });

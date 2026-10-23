@@ -8,7 +8,6 @@ import android.app.Notification;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.app.PendingIntent;
-import android.app.PictureInPictureParams;
 import android.content.ActivityNotFoundException;
 import android.content.BroadcastReceiver;
 import android.content.Context;
@@ -41,7 +40,6 @@ import android.os.SystemClock;
 import android.provider.DocumentsContract;
 import android.provider.Settings;
 import android.speech.RecognizerIntent;
-import android.util.Rational;
 import android.view.KeyEvent;
 import android.view.MotionEvent;
 import android.view.View;
@@ -196,9 +194,13 @@ public class HeavenShieldPlugin
           + "      btn.addEventListener('click',function(ev){"
           + "        ev.preventDefault();ev.stopPropagation();"
           + "        var mId=(location.href||'').match(/([a-p]{32})/);"
-          + "        if(mId&&window.HeavenChromeExtChannel){"
+          + "        if(mId){"
           + "          this.textContent='Installing in Heaven...';"
-          + "          window.HeavenChromeExtChannel.postMessage(JSON.stringify({extId:mId[1],op:'install_cws',data:{url:location.href}}));"
+          + "          if(window.HeavenExtNative&&window.HeavenExtNative.installWebStore){"
+          + "            window.HeavenExtNative.installWebStore(location.href);"
+          + "          }else if(window.HeavenChromeExtChannel){"
+          + "            window.HeavenChromeExtChannel.postMessage(JSON.stringify({extId:mId[1],op:'install_cws',data:{url:location.href}}));"
+          + "          }"
           + "        }"
           + "      },true);"
           + "    }"
@@ -220,6 +222,7 @@ public class HeavenShieldPlugin
           + "function notify(tag){try{if(window.HeavenShieldChannel&&window.HeavenShieldChannel.postMessage)window.HeavenShieldChannel.postMessage(tag);}catch(e){}}"
           + "var trustedList=window.__heavenTrustedHosts||[];"
           + "var hn=(location.hostname||'').toLowerCase().replace(/^www\\./,'');"
+          + "if(hn==='chrome-ext.heaven.local'||location.protocol==='chrome-extension:')return;"
           + "for(var ti=0;ti<trustedList.length;ti++){"
           + "  var th=trustedList[ti];"
           + "  if(th&&(hn===th||hn.slice(-(th.length+1))==='.'+th))return;"
@@ -418,65 +421,92 @@ public class HeavenShieldPlugin
           + "}catch(_){}"
           + "})();";
 
-  private static final String BG_MEDIA_AND_STREAM_SNIFFER_SCRIPT =
+  private static final String BG_AUDIO_AND_SCROLL_SCRIPT =
       "(function(){"
           + "try{"
-          + "if(window.__heavenMediaHookV13)return;"
-          + "window.__heavenMediaHookV13=true;"
+          + "if(window.__heavenMediaHookV14)return;"
+          + "window.__heavenMediaHookV14=true;"
+          + "window.__hbInBg=window.__hbInBg||false;"
           + "if(window.__heavenWebNotifsBlocked&&window.Notification){"
           + "  try{"
           + "    Object.defineProperty(Notification,'permission',{configurable:true,get:function(){return 'denied';}});"
           + "    Notification.requestPermission=function(cb){if(typeof cb==='function')cb('denied');return Promise.resolve('denied');};"
           + "  }catch(e){}"
           + "}"
-          + "if(window.__heavenBgMediaEnabled){"
+          + "var isGoogleSerp=(location.hostname||'').indexOf('www.google.')===0&&location.pathname==='/search';"
+          + "if(window.__heavenBgMediaEnabled&&!isGoogleSerp){"
           + "  try{"
+          + "    Object.defineProperty(Document.prototype,'hidden',{configurable:true,get:function(){return false;}});"
+          + "    Object.defineProperty(Document.prototype,'webkitHidden',{configurable:true,get:function(){return false;}});"
+          + "    Object.defineProperty(Document.prototype,'visibilityState',{configurable:true,get:function(){return 'visible';}});"
+          + "    Object.defineProperty(Document.prototype,'webkitVisibilityState',{configurable:true,get:function(){return 'visible';}});"
           + "    Object.defineProperty(document,'hidden',{configurable:true,get:function(){return false;}});"
-          + "    Object.defineProperty(document,'webkitHidden',{configurable:true,get:function(){return false;}});"
           + "    Object.defineProperty(document,'visibilityState',{configurable:true,get:function(){return 'visible';}});"
-          + "    Object.defineProperty(document,'webkitVisibilityState',{configurable:true,get:function(){return 'visible';}});"
+          + "    var blockVis=function(ev){if(ev){ev.stopImmediatePropagation();ev.stopPropagation();}};"
+          + "    window.addEventListener('visibilitychange',blockVis,true);"
+          + "    window.addEventListener('webkitvisibilitychange',blockVis,true);"
+          + "    document.addEventListener('visibilitychange',blockVis,true);"
+          + "    document.addEventListener('webkitvisibilitychange',blockVis,true);"
+          + "    document.addEventListener('freeze',blockVis,true);"
+          + "    window.addEventListener('pagehide',blockVis,true);"
           + "    var origDocAdd=Document.prototype.addEventListener;"
           + "    Document.prototype.addEventListener=function(type,fn,opts){"
-          + "      if(type==='visibilitychange'||type==='webkitvisibilitychange')return;"
+          + "      if(type==='visibilitychange'||type==='webkitvisibilitychange'||type==='freeze')return;"
           + "      return origDocAdd.apply(this,arguments);"
           + "    };"
           + "    var origWinAdd=Window.prototype.addEventListener;"
           + "    Window.prototype.addEventListener=function(type,fn,opts){"
-          + "      if(type==='visibilitychange'||type==='webkitvisibilitychange')return;"
+          + "      if(type==='visibilitychange'||type==='webkitvisibilitychange'||type==='freeze')return;"
           + "      return origWinAdd.apply(this,arguments);"
           + "    };"
-          + "    setInterval(function(){try{window._lact=Date.now();}catch(e){}},15000);"
+          + "    var origPause=HTMLMediaElement.prototype.pause;"
+          + "    HTMLMediaElement.prototype.pause=function(){"
+          + "      if(window.__hbInBg&&this.__hbShouldPlayInBg&&!window.__hbMediaCmdPause&&!this.ended){"
+          + "        return;"
+          + "      }"
+          + "      return origPause.apply(this,arguments);"
+          + "    };"
+          + "    setInterval(function(){try{window._lact=Date.now();}catch(e){}},5000);"
           + "  }catch(e){}"
           + "}"
-          + "function reportMedia(el,playing){"
+          + "function reportMedia(el,playing,ended){"
           + "  try{"
           + "    if(!window.HeavenMediaBridge)return;"
-          + "    var isVid=el.tagName==='VIDEO';"
-          + "    var vw=isVid?(el.videoWidth||16):16;"
-          + "    var vh=isVid?(el.videoHeight||9):9;"
-          + "    window.HeavenMediaBridge.onPlaybackState(!!playing,vw,vh,document.title||location.hostname||'',location.hostname||'',isVid);"
-          + "    var src=el.currentSrc||el.src||'';"
-          + "    if(src&&src.indexOf('blob:')!==0&&src.indexOf('data:')!==0){"
-          + "      window.HeavenMediaBridge.onStreamFound(src,isVid?'video':'audio',(isVid?(vh+'p Video'):'Audio Stream'));"
-          + "    }"
+          + "    window.HeavenMediaBridge.onPlaybackState(!!playing,!!ended,document.title||location.hostname||'Heaven',location.hostname||'Heaven');"
           + "  }catch(e){}"
           + "}"
-          + "document.addEventListener('play',function(ev){if(ev&&ev.target&&(ev.target.tagName==='VIDEO'||ev.target.tagName==='AUDIO'))reportMedia(ev.target,true);},true);"
-          + "document.addEventListener('playing',function(ev){if(ev&&ev.target&&(ev.target.tagName==='VIDEO'||ev.target.tagName==='AUDIO'))reportMedia(ev.target,true);},true);"
-          + "document.addEventListener('pause',function(ev){if(ev&&ev.target&&(ev.target.tagName==='VIDEO'||ev.target.tagName==='AUDIO')&&!document.hidden)reportMedia(ev.target,false);},true);"
-          + "document.addEventListener('ended',function(ev){if(ev&&ev.target&&(ev.target.tagName==='VIDEO'||ev.target.tagName==='AUDIO'))reportMedia(ev.target,false);},true);"
-          + "document.addEventListener('loadedmetadata',function(ev){"
-          + "  try{"
-          + "    var t=ev&&ev.target;"
-          + "    if(t&&(t.tagName==='VIDEO'||t.tagName==='AUDIO')&&window.HeavenMediaBridge){"
-          + "      var s=t.currentSrc||t.src||'';"
-          + "      if(s&&s.indexOf('blob:')!==0&&s.indexOf('data:')!==0){"
-          + "        var isV=t.tagName==='VIDEO';"
-          + "        window.HeavenMediaBridge.onStreamFound(s,isV?'video':'audio',isV?((t.videoHeight||720)+'p Video'):'Audio Stream');"
-          + "      }"
-          + "    }"
-          + "  }catch(e){}"
+          + "document.addEventListener('play',function(ev){var t=ev&&ev.target;if(t&&(t.tagName==='VIDEO'||t.tagName==='AUDIO')){t.__hbShouldPlayInBg=true;window.__hbMediaCmdPause=false;reportMedia(t,true,false);}},true);"
+          + "document.addEventListener('playing',function(ev){var t=ev&&ev.target;if(t&&(t.tagName==='VIDEO'||t.tagName==='AUDIO')){t.__hbShouldPlayInBg=true;window.__hbMediaCmdPause=false;reportMedia(t,true,false);}},true);"
+          + "document.addEventListener('ended',function(ev){var t=ev&&ev.target;if(t&&(t.tagName==='VIDEO'||t.tagName==='AUDIO')){t.__hbShouldPlayInBg=false;reportMedia(t,false,true);}},true);"
+          + "document.addEventListener('pause',function(ev){"
+          + "  var t=ev&&ev.target;"
+          + "  if(!t||(t.tagName!=='VIDEO'&&t.tagName!=='AUDIO'))return;"
+          + "  if(window.__hbInBg&&t.__hbShouldPlayInBg&&!window.__hbMediaCmdPause&&!t.ended){"
+          + "    setTimeout(function(){try{t.play().catch(function(){});}catch(e){}},30);"
+          + "    return;"
+          + "  }"
+          + "  t.__hbShouldPlayInBg=false;"
+          + "  reportMedia(t,false,!!t.ended);"
           + "},true);"
+          + "var lastScTop=0;var lastScTarget=null;"
+          + "window.addEventListener('scroll',function(ev){"
+          + "  try{"
+          + "    if(!window.HeavenMediaBridge||!window.HeavenMediaBridge.onScroll)return;"
+          + "    var tgt=ev&&ev.target;"
+          + "    var st=0;"
+          + "    if(!tgt||tgt===document||tgt===document.documentElement||tgt===document.body){"
+          + "      st=window.pageYOffset||document.documentElement.scrollTop||0;"
+          + "      tgt=document;"
+          + "    }else if(typeof tgt.scrollTop==='number'&&tgt.scrollHeight>tgt.clientHeight+80){"
+          + "      st=tgt.scrollTop;"
+          + "    }else{return;}"
+          + "    if(lastScTarget!==tgt){lastScTarget=tgt;lastScTop=st;return;}"
+          + "    var dy=st-lastScTop;"
+          + "    if(Math.abs(dy)<14&&st>12)return;"
+          + "    lastScTop=st;"
+          + "    window.HeavenMediaBridge.onScroll(Math.round(st),Math.round(dy));"
+          + "  }catch(e){}"
+          + "},{passive:true,capture:true});"
           + "}catch(_){}"
           + "})();";
 
@@ -491,22 +521,6 @@ public class HeavenShieldPlugin
           + "}else if(st){st.remove();}"
           + "}catch(e){}"
           + "})();";
-
-  private static final String PIP_MAXIMIZE_VIDEO_SCRIPT =
-      "(function(){try{"
-          + "var v=document.querySelector('video');"
-          + "if(!v)return;"
-          + "v.__hbOldStyle=v.getAttribute('style')||'';"
-          + "v.setAttribute('style','position:fixed!important;inset:0!important;width:100vw!important;height:100vh!important;max-width:100vw!important;max-height:100vh!important;z-index:2147483647!important;background:#000!important;object-fit:contain!important;');"
-          + "}catch(e){}})();";
-
-  private static final String PIP_RESTORE_VIDEO_SCRIPT =
-      "(function(){try{"
-          + "var v=document.querySelector('video');"
-          + "if(!v||v.__hbOldStyle===undefined)return;"
-          + "if(v.__hbOldStyle)v.setAttribute('style',v.__hbOldStyle);else v.removeAttribute('style');"
-          + "delete v.__hbOldStyle;"
-          + "}catch(e){}})();";
 
   private static final class DownloadJob {
     final long id;
@@ -602,19 +616,28 @@ public class HeavenShieldPlugin
   private volatile boolean desktopMode = false;
   private volatile boolean ultraDataSaverMode = false;
   private volatile boolean backgroundMediaEnabled = true;
-  private volatile boolean autoPipEnabled = true;
   private volatile boolean antiRedirectEnabled = true;
   private volatile boolean webNotificationsEnabled = false;
   private volatile boolean backgroundPlayNotifEnabled = true;
 
-  private volatile boolean activeVideoPlaying = false;
+  private volatile boolean appInBackground = false;
+  private volatile boolean userPausedFromNotification = false;
   private volatile boolean activeAudioOrVideoPlaying = false;
   private volatile long activeMediaWebViewId = -1L;
-  private volatile int activeVideoWidth = 16;
-  private volatile int activeVideoHeight = 9;
-  private volatile String activeMediaTitle = "Heaven Browser";
-  private volatile String activeMediaHost = "";
-  private final Set<String> reportedStreamUrls = Collections.synchronizedSet(new HashSet<>());
+  private volatile String activeMediaTitle = "Heaven";
+  private volatile String activeMediaHost = "Heaven";
+  private final Map<Long, Boolean> lastNavBarVisibleByWv = new ConcurrentHashMap<>();
+  private final Runnable bgKeepAliveLoop =
+      new Runnable() {
+        @Override
+        public void run() {
+          if (!appInBackground || !backgroundMediaEnabled || !activeAudioOrVideoPlaying) {
+            return;
+          }
+          keepActiveMediaWebViewAwake();
+          mainHandler.postDelayed(this, 1100L);
+        }
+      };
   private volatile Set<String> blockedDomains = Collections.emptySet();
   private volatile Set<String> trustedHosts = Collections.emptySet();
   private volatile String cosmeticScript = "";
@@ -684,6 +707,7 @@ public class HeavenShieldPlugin
     this.downloadNotificationsEnabled = sp.getBoolean(PREF_DL_NOTIFS_ENABLED, true);
     this.vpnManager = new HeavenVpnManager(appCtx);
     this.chromeExtManager = new HeavenChromeExtManager(appCtx);
+    this.chromeExtManager.setOnExtensionsChangedListener(this::refreshAllDocumentStartHandlers);
     this.chromeExtManager.setActiveTabBridge(
         new HeavenChromeExtManager.ActiveTabExtensionBridge() {
           @Override
@@ -703,12 +727,89 @@ public class HeavenShieldPlugin
           }
 
           @Override
+          public void evalInAllWebViews(final String jsCode) {
+            mainHandler.post(
+                () -> {
+                  if (pluginBinding == null || jsCode == null || jsCode.isEmpty()) {
+                    return;
+                  }
+                  for (Long id : new ArrayList<>(docStartHandlers.keySet())) {
+                    if (id == null) continue;
+                    try {
+                      WebView wv = WebViewFlutterAndroidExternalApi.getWebView(pluginBinding, id);
+                      if (wv != null) {
+                        wv.evaluateJavascript(jsCode, null);
+                      }
+                    } catch (Throwable ignored) {
+                    }
+                  }
+                });
+          }
+
+          @Override
+          public void evalInWebView(final long webViewId, final String jsCode) {
+            mainHandler.post(
+                () -> {
+                  if (pluginBinding == null || webViewId < 0 || jsCode == null || jsCode.isEmpty()) {
+                    return;
+                  }
+                  try {
+                    WebView wv =
+                        WebViewFlutterAndroidExternalApi.getWebView(pluginBinding, webViewId);
+                    if (wv != null) {
+                      wv.evaluateJavascript(jsCode, null);
+                    }
+                  } catch (Throwable ignored) {
+                  }
+                });
+          }
+
+          @Override
           public void openNewTab(final String url) {
             mainHandler.post(
                 () -> {
                   MethodChannel ch = channel;
                   if (ch != null && url != null && !url.isEmpty()) {
                     ch.invokeMethod("onExtensionOpenNewTab", Collections.singletonMap("url", url));
+                  }
+                });
+          }
+
+          @Override
+          public void navigateTargetTab(final String url) {
+            mainHandler.post(
+                () -> {
+                  if (url == null || url.isEmpty()) return;
+                  if (pluginBinding != null && activeFocusedWebViewId >= 0) {
+                    WebView wv =
+                        WebViewFlutterAndroidExternalApi.getWebView(
+                            pluginBinding, activeFocusedWebViewId);
+                    if (wv != null) {
+                      wv.loadUrl(url);
+                      return;
+                    }
+                  }
+                  MethodChannel ch = channel;
+                  if (ch != null) {
+                    ch.invokeMethod("onExtensionOpenNewTab", Collections.singletonMap("url", url));
+                  }
+                });
+          }
+
+          @Override
+          public void onWebStoreInstalledFromPage(final Map<String, Object> res) {
+            mainHandler.post(
+                () -> {
+                  String doneJs =
+                      "(function(){var bs=document.querySelectorAll('button');for(var i=0;i<bs.length;i++){if(bs[i].textContent&&bs[i].textContent.indexOf('Installing in Heaven')!==-1){bs[i].textContent='Added to Heaven';}}})();";
+                  for (Long id : new ArrayList<>(docStartHandlers.keySet())) {
+                    if (id == null || pluginBinding == null) continue;
+                    WebView wv = WebViewFlutterAndroidExternalApi.getWebView(pluginBinding, id);
+                    if (wv != null) wv.evaluateJavascript(doneJs, null);
+                  }
+                  MethodChannel ch = channel;
+                  if (ch != null && res != null) {
+                    ch.invokeMethod("onWebStoreExtensionInstalled", res);
                   }
                 });
           }
@@ -756,7 +857,6 @@ public class HeavenShieldPlugin
     this.activityBinding = binding;
     binding.addActivityResultListener(this);
     binding.addRequestPermissionsResultListener(this);
-    refreshSystemAutoPipState();
   }
 
   @Override
@@ -783,46 +883,65 @@ public class HeavenShieldPlugin
     this.activity = null;
   }
 
-  public void onActivityUserLeaveHint() {
-    if (this.autoPipEnabled && this.activeVideoPlaying) {
-      enterPictureInPictureInternal();
-    }
-  }
-
-  public void onPictureInPictureChanged(final boolean inPip) {
-    mainHandler.post(
-        () -> {
-          if (pluginBinding != null && activeMediaWebViewId >= 0) {
-            WebView wv =
-                WebViewFlutterAndroidExternalApi.getWebView(pluginBinding, activeMediaWebViewId);
-            if (wv != null) {
-              wv.evaluateJavascript(
-                  inPip ? PIP_MAXIMIZE_VIDEO_SCRIPT : PIP_RESTORE_VIDEO_SCRIPT, null);
-            }
-          }
-          MethodChannel ch = this.channel;
-          if (ch != null) {
-            ch.invokeMethod("onPipModeChanged", Collections.singletonMap("inPip", inPip));
-          }
-        });
-  }
-
   public void onActivityPaused() {
+    this.appInBackground = true;
+    broadcastBgFlagToWebViews(true);
     if (!this.backgroundMediaEnabled || !this.activeAudioOrVideoPlaying) {
       return;
     }
-    // Keep Chromium WebView audio/video decoder & JS timers alive when screen locks or app backgrounds!
     startOrUpdateBackgroundMediaService();
+    mainHandler.removeCallbacks(bgKeepAliveLoop);
+    keepActiveMediaWebViewAwake();
     mainHandler.postDelayed(this::keepActiveMediaWebViewAwake, 120L);
-    mainHandler.postDelayed(this::keepActiveMediaWebViewAwake, 650L);
+    mainHandler.postDelayed(this::keepActiveMediaWebViewAwake, 420L);
+    mainHandler.postDelayed(bgKeepAliveLoop, 1000L);
+  }
+
+  public void onActivityStopped() {
+    this.appInBackground = true;
+    broadcastBgFlagToWebViews(true);
+    if (!this.backgroundMediaEnabled || !this.activeAudioOrVideoPlaying) {
+      return;
+    }
+    startOrUpdateBackgroundMediaService();
+    mainHandler.removeCallbacks(bgKeepAliveLoop);
+    keepActiveMediaWebViewAwake();
+    mainHandler.postDelayed(this::keepActiveMediaWebViewAwake, 80L);
+    mainHandler.postDelayed(this::keepActiveMediaWebViewAwake, 320L);
+    mainHandler.postDelayed(bgKeepAliveLoop, 900L);
   }
 
   public void onActivityResumed() {
-    stopBackgroundMediaService();
+    this.appInBackground = false;
+    mainHandler.removeCallbacks(bgKeepAliveLoop);
+    broadcastBgFlagToWebViews(false);
+    if (!this.activeAudioOrVideoPlaying) {
+      stopBackgroundMediaService();
+    }
+  }
+
+  private void broadcastBgFlagToWebViews(final boolean inBg) {
+    if (pluginBinding == null) {
+      return;
+    }
+    final String js = "window.__hbInBg=" + inBg + ";";
+    for (Long id : new ArrayList<>(docStartHandlers.keySet())) {
+      if (id == null) continue;
+      try {
+        WebView wv = WebViewFlutterAndroidExternalApi.getWebView(pluginBinding, id);
+        if (wv != null) {
+          wv.evaluateJavascript(js, null);
+        }
+      } catch (Throwable ignored) {
+      }
+    }
   }
 
   private void keepActiveMediaWebViewAwake() {
-    if (!this.backgroundMediaEnabled || !this.activeAudioOrVideoPlaying || pluginBinding == null) {
+    if (!this.backgroundMediaEnabled
+        || !this.activeAudioOrVideoPlaying
+        || this.userPausedFromNotification
+        || pluginBinding == null) {
       return;
     }
     long targetId = activeMediaWebViewId >= 0 ? activeMediaWebViewId : activeFocusedWebViewId;
@@ -832,11 +951,20 @@ public class HeavenShieldPlugin
     try {
       WebView wv = WebViewFlutterAndroidExternalApi.getWebView(pluginBinding, targetId);
       if (wv != null) {
+        wv.dispatchWindowVisibilityChanged(View.VISIBLE);
         wv.onResume();
         wv.resumeTimers();
-        wv.dispatchWindowVisibilityChanged(View.VISIBLE);
         wv.evaluateJavascript(
-            "(function(){try{var m=document.querySelector('video,audio');if(m&&m.paused&&!m.ended)m.play();}catch(e){}})();",
+            "(function(){try{"
+                + "window.__hbInBg=true;window._lact=Date.now();"
+                + "var list=document.querySelectorAll('video,audio');"
+                + "for(var i=0;i<list.length;i++){"
+                + "  var m=list[i];"
+                + "  if((m.__hbShouldPlayInBg||i===0)&&m.paused&&!m.ended&&!window.__hbMediaCmdPause){"
+                + "    m.play().catch(function(){});"
+                + "  }"
+                + "}"
+                + "}catch(e){}})();",
             null);
       }
     } catch (Throwable ignored) {
@@ -844,7 +972,7 @@ public class HeavenShieldPlugin
   }
 
   private void startOrUpdateBackgroundMediaService() {
-    if (!this.backgroundPlayNotifEnabled) {
+    if (!this.backgroundMediaEnabled) {
       return;
     }
     Context ctx = resolveContext();
@@ -899,19 +1027,35 @@ public class HeavenShieldPlugin
             if (wv == null) {
               return;
             }
+            if ("toggle".equals(cmd)) {
+              cmd = activeAudioOrVideoPlaying ? "pause" : "play";
+            }
             if ("pause".equals(cmd) || "stop".equals(cmd)) {
+              userPausedFromNotification = true;
               activeAudioOrVideoPlaying = false;
-              activeVideoPlaying = false;
+              mainHandler.removeCallbacks(bgKeepAliveLoop);
               wv.evaluateJavascript(
-                  "(function(){var l=document.querySelectorAll('video,audio');for(var i=0;i<l.length;i++){try{l[i].pause();}catch(e){}}})();",
+                  "(function(){window.__hbMediaCmdPause=true;var l=document.querySelectorAll('video,audio');for(var i=0;i<l.length;i++){try{l[i].__hbShouldPlayInBg=false;l[i].pause();}catch(e){}}})();",
                   null);
+              if ("stop".equals(cmd)) {
+                stopBackgroundMediaService();
+              } else {
+                startOrUpdateBackgroundMediaService();
+              }
             } else if ("play".equals(cmd)) {
+              userPausedFromNotification = false;
               activeAudioOrVideoPlaying = true;
+              wv.dispatchWindowVisibilityChanged(View.VISIBLE);
               wv.onResume();
               wv.resumeTimers();
               wv.evaluateJavascript(
-                  "(function(){var m=document.querySelector('video,audio');if(m)try{m.play();}catch(e){}})();",
+                  "(function(){window.__hbMediaCmdPause=false;var m=document.querySelector('video,audio');if(m){m.__hbShouldPlayInBg=true;try{m.play().catch(function(){});}catch(e){}}})();",
                   null);
+              startOrUpdateBackgroundMediaService();
+              if (appInBackground && backgroundMediaEnabled) {
+                mainHandler.removeCallbacks(bgKeepAliveLoop);
+                mainHandler.postDelayed(bgKeepAliveLoop, 1000L);
+              }
             }
           }
         };
@@ -930,51 +1074,6 @@ public class HeavenShieldPlugin
       } catch (IllegalArgumentException ignored) {
       }
       mediaCmdReceiver = null;
-    }
-  }
-
-  private void refreshSystemAutoPipState() {
-    Activity act = this.activity;
-    if (act == null || Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
-      return;
-    }
-    try {
-      PictureInPictureParams.Builder b = new PictureInPictureParams.Builder();
-      int w = Math.max(1, Math.min(239, activeVideoWidth));
-      int h = Math.max(1, Math.min(239, activeVideoHeight));
-      Rational ratio = new Rational(w, h);
-      if (ratio.floatValue() < 0.42f || ratio.floatValue() > 2.38f) {
-        ratio = new Rational(16, 9);
-      }
-      b.setAspectRatio(ratio);
-      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-        b.setAutoEnterEnabled(this.autoPipEnabled && this.activeVideoPlaying);
-        b.setSeamlessResizeEnabled(true);
-      }
-      act.setPictureInPictureParams(b.build());
-    } catch (Throwable ignored) {
-    }
-  }
-
-  private boolean enterPictureInPictureInternal() {
-    Activity act = this.activity;
-    if (act == null || Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
-      return false;
-    }
-    try {
-      PictureInPictureParams.Builder b = new PictureInPictureParams.Builder();
-      Rational ratio = new Rational(Math.max(1, activeVideoWidth), Math.max(1, activeVideoHeight));
-      if (ratio.floatValue() < 0.42f || ratio.floatValue() > 2.38f) {
-        ratio = new Rational(16, 9);
-      }
-      b.setAspectRatio(ratio);
-      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-        b.setAutoEnterEnabled(this.autoPipEnabled && this.activeVideoPlaying);
-        b.setSeamlessResizeEnabled(true);
-      }
-      return act.enterPictureInPictureMode(b.build());
-    } catch (Throwable ignored) {
-      return false;
     }
   }
 
@@ -1047,7 +1146,7 @@ public class HeavenShieldPlugin
             NOTIF_CHANNEL_PROGRESS,
             "Active Downloads",
             NotificationManager.IMPORTANCE_LOW);
-    progressChannel.setDescription("Live progress for files downloading in Heaven Browser");
+    progressChannel.setDescription("Live progress for files downloading in Heaven");
     progressChannel.setShowBadge(false);
     nm.createNotificationChannel(progressChannel);
 
@@ -1062,9 +1161,9 @@ public class HeavenShieldPlugin
     NotificationChannel alertsChannel =
         new NotificationChannel(
             NOTIF_CHANNEL_ALERTS,
-            "Browser Security & Media Alerts",
+            "Security & Media Alerts",
             NotificationManager.IMPORTANCE_DEFAULT);
-    alertsChannel.setDescription("Security anti-redirect alerts and Heaven Browser notifications");
+    alertsChannel.setDescription("Security anti-redirect alerts and Heaven notifications");
     nm.createNotificationChannel(alertsChannel);
     notifChannelsReady = true;
   }
@@ -1262,9 +1361,12 @@ public class HeavenShieldPlugin
         }
         if (idObj instanceof Number) {
           long wvId = ((Number) idObj).longValue();
-          this.activeFocusedWebViewId = wvId;
-          if (initHost != null && !initHost.trim().isEmpty()) {
-            currentPageHosts.put(wvId, normalizeHost(initHost));
+          String normInit = initHost != null ? normalizeHost(initHost) : "";
+          if (!HeavenChromeExtManager.EXT_VIRTUAL_HOST.equals(normInit)) {
+            this.activeFocusedWebViewId = wvId;
+          }
+          if (!normInit.isEmpty()) {
+            currentPageHosts.put(wvId, normInit);
           }
           boolean attached = attachShieldToWebView(wvId);
           result.success(attached);
@@ -1308,11 +1410,14 @@ public class HeavenShieldPlugin
         }
         if (wvIdObj instanceof Number) {
           long id = ((Number) wvIdObj).longValue();
-          this.activeFocusedWebViewId = id;
           if (pageHost == null || pageHost.trim().isEmpty()) {
             currentPageHosts.remove(id);
           } else {
-            currentPageHosts.put(id, normalizeHost(pageHost));
+            String normHost = normalizeHost(pageHost);
+            if (!HeavenChromeExtManager.EXT_VIRTUAL_HOST.equals(normHost)) {
+              this.activeFocusedWebViewId = id;
+            }
+            currentPageHosts.put(id, normHost);
             userInitiatedNavUntilMs.put(id, System.currentTimeMillis() + 4500L);
           }
         }
@@ -1403,19 +1508,6 @@ public class HeavenShieldPlugin
 
       case "sendTestNotification":
         result.success(handleSendTestNotification());
-        break;
-
-      case "enterPictureInPicture":
-        result.success(enterPictureInPictureInternal());
-        break;
-
-      case "scanPageMediaStreams":
-        Object scanWvObj = call.argument("webViewId");
-        if (scanWvObj instanceof Number) {
-          handleScanPageMediaStreams(((Number) scanWvObj).longValue(), result);
-        } else {
-          result.success(Collections.emptyList());
-        }
         break;
 
       case "isBiometricAvailable":
@@ -1722,13 +1814,9 @@ public class HeavenShieldPlugin
     if (bgMediaArg != null) {
       this.backgroundMediaEnabled = bgMediaArg;
       if (!bgMediaArg) {
+        mainHandler.removeCallbacks(bgKeepAliveLoop);
         stopBackgroundMediaService();
       }
-    }
-    Boolean autoPipArg = call.argument("autoPipEnabled");
-    if (autoPipArg != null) {
-      this.autoPipEnabled = autoPipArg;
-      refreshSystemAutoPipState();
     }
     Boolean antiRedirectArg = call.argument("antiRedirectProtection");
     if (antiRedirectArg != null) {
@@ -1789,6 +1877,8 @@ public class HeavenShieldPlugin
   }
 
   private String buildDocumentStartBundle() {
+    String extDocStart =
+        this.chromeExtManager != null ? this.chromeExtManager.getDocumentStartExtensionsJs() : "";
     String flagsJs =
         "window.__heavenBgMediaEnabled="
             + this.backgroundMediaEnabled
@@ -1796,13 +1886,16 @@ public class HeavenShieldPlugin
             + (!this.webNotificationsEnabled)
             + ";window.__heavenUltraDataSaver="
             + this.ultraDataSaverMode
+            + ";window.__hbInBg="
+            + this.appInBackground
             + ";";
     if (!this.shieldEnabled) {
       return "(function(){window.__heavenShieldDisabled=true;"
           + flagsJs
           + "})();"
-          + BG_MEDIA_AND_STREAM_SNIFFER_SCRIPT
-          + (this.ultraDataSaverMode ? ULTRA_DATA_SAVER_STYLE_SCRIPT : "");
+          + BG_AUDIO_AND_SCROLL_SCRIPT
+          + (this.ultraDataSaverMode ? ULTRA_DATA_SAVER_STYLE_SCRIPT : "")
+          + extDocStart;
     }
     StringBuilder trustedJs = new StringBuilder(flagsJs).append("window.__heavenTrustedHosts=[");
     boolean first = true;
@@ -1818,10 +1911,11 @@ public class HeavenShieldPlugin
     trustedJs.append("];");
     String cos = this.cosmeticScript != null ? this.cosmeticScript : "";
     return trustedJs.toString()
-        + BG_MEDIA_AND_STREAM_SNIFFER_SCRIPT
+        + BG_AUDIO_AND_SCROLL_SCRIPT
         + EARLY_YOUTUBE_AND_REDIRECT_GUARD_SCRIPT
         + (this.ultraDataSaverMode ? ULTRA_DATA_SAVER_STYLE_SCRIPT : "")
-        + cos;
+        + cos
+        + extDocStart;
   }
 
   private void installOrRefreshDocumentStartShield(WebView webView, long webViewId) {
@@ -1896,6 +1990,24 @@ public class HeavenShieldPlugin
     }
   }
 
+  private void emitNavBarVisibility(final long webViewId, final boolean visible) {
+    Boolean prev = lastNavBarVisibleByWv.get(webViewId);
+    if (prev != null && prev == visible) {
+      return;
+    }
+    lastNavBarVisibleByWv.put(webViewId, visible);
+    mainHandler.post(
+        () -> {
+          MethodChannel ch = channel;
+          if (ch != null) {
+            Map<String, Object> ev = new HashMap<>(4);
+            ev.put("webViewId", webViewId);
+            ev.put("visible", visible);
+            ch.invokeMethod("onWebScrollNavBar", ev);
+          }
+        });
+  }
+
   private final class WebViewMediaJsBridge {
     private final long webViewId;
 
@@ -1904,19 +2016,14 @@ public class HeavenShieldPlugin
     }
 
     @JavascriptInterface
-    public void onPlaybackState(
-        boolean playing,
-        int videoWidth,
-        int videoHeight,
-        String title,
-        String host,
-        boolean isVideo) {
+    public void onPlaybackState(boolean playing, boolean ended, String title, String host) {
+      if (!playing && appInBackground && !ended && !userPausedFromNotification) {
+        return;
+      }
       activeMediaWebViewId = webViewId;
       activeAudioOrVideoPlaying = playing;
-      activeVideoPlaying = playing && isVideo;
-      if (videoWidth > 0 && videoHeight > 0) {
-        activeVideoWidth = videoWidth;
-        activeVideoHeight = videoHeight;
+      if (playing) {
+        userPausedFromNotification = false;
       }
       if (title != null && !title.trim().isEmpty()) {
         activeMediaTitle = title.trim();
@@ -1926,13 +2033,23 @@ public class HeavenShieldPlugin
       }
       mainHandler.post(
           () -> {
-            refreshSystemAutoPipState();
+            if (playing && backgroundMediaEnabled && backgroundPlayNotifEnabled) {
+              startOrUpdateBackgroundMediaService();
+              if (appInBackground) {
+                mainHandler.removeCallbacks(bgKeepAliveLoop);
+                mainHandler.postDelayed(bgKeepAliveLoop, 1000L);
+              }
+            } else if (!playing && !appInBackground) {
+              stopBackgroundMediaService();
+            } else if (!playing && ended) {
+              mainHandler.removeCallbacks(bgKeepAliveLoop);
+              stopBackgroundMediaService();
+            }
             MethodChannel ch = channel;
             if (ch != null) {
               Map<String, Object> ev = new HashMap<>(6);
               ev.put("webViewId", webViewId);
               ev.put("playing", playing);
-              ev.put("isVideo", isVideo);
               ev.put("title", activeMediaTitle);
               ch.invokeMethod("onMediaPlaybackChanged", ev);
             }
@@ -1940,58 +2057,13 @@ public class HeavenShieldPlugin
     }
 
     @JavascriptInterface
-    public void onStreamFound(String streamUrl, String kind, String label) {
-      emitDetectedMediaStream(webViewId, streamUrl, kind, label);
+    public void onScroll(int scrollTop, int deltaY) {
+      if (scrollTop <= 16 || deltaY <= -14) {
+        emitNavBarVisibility(webViewId, true);
+      } else if (deltaY >= 18 && scrollTop > 42) {
+        emitNavBarVisibility(webViewId, false);
+      }
     }
-  }
-
-  private void emitDetectedMediaStream(
-      final long webViewId, final String rawUrl, final String kind, final String label) {
-    if (rawUrl == null
-        || rawUrl.isEmpty()
-        || (!rawUrl.startsWith("https://") && !rawUrl.startsWith("http://"))) {
-      return;
-    }
-    String key = webViewId + "|" + rawUrl;
-    if (!reportedStreamUrls.add(key)) {
-      return;
-    }
-    if (reportedStreamUrls.size() > 600) {
-      reportedStreamUrls.clear();
-    }
-    final String format = inferMediaFormatBadge(rawUrl, kind);
-    mainHandler.post(
-        () -> {
-          MethodChannel ch = this.channel;
-          if (ch != null) {
-            Map<String, Object> payload = new HashMap<>(8);
-            payload.put("webViewId", webViewId);
-            payload.put("url", rawUrl);
-            payload.put("kind", kind != null ? kind : "video");
-            payload.put("format", format);
-            payload.put("label", label != null ? label : (format + " Stream"));
-            ch.invokeMethod("onMediaStreamDetected", payload);
-          }
-        });
-  }
-
-  private static String inferMediaFormatBadge(String url, String kind) {
-    String u = url.toLowerCase(Locale.US);
-    if (u.contains(".m3u8")) return "HLS";
-    if (u.contains(".mp4") || u.contains("mime=video%2fmp4") || u.contains("mime=video/mp4")) {
-      return "MP4";
-    }
-    if (u.contains(".webm") || u.contains("mime=video%2fwebm") || u.contains("mime=video/webm")) {
-      return "WEBM";
-    }
-    if (u.contains(".mp3")) return "MP3";
-    if (u.contains(".m4a") || u.contains("mime=audio%2fmp4") || u.contains("mime=audio/mp4")) {
-      return "M4A";
-    }
-    if (u.contains(".aac")) return "AAC";
-    if (u.contains(".ogg") || u.contains(".opus")) return "OGG";
-    if (u.contains(".mkv")) return "MKV";
-    return "audio".equalsIgnoreCase(kind) ? "AUDIO" : "VIDEO";
   }
 
   @SuppressLint("JavascriptInterface")
@@ -2011,6 +2083,25 @@ public class HeavenShieldPlugin
         webView.addJavascriptInterface(
             new WebViewMediaJsBridge(webViewId), "HeavenMediaBridge");
       } catch (Throwable ignored) {
+      }
+      if (this.chromeExtManager != null) {
+        try {
+          webView.addJavascriptInterface(
+              this.chromeExtManager.createWebViewJsBridge(webViewId), "HeavenExtNative");
+        } catch (Throwable ignored) {
+        }
+      }
+
+      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+        webView.setOnScrollChangeListener(
+            (v, scrollX, scrollY, oldScrollX, oldScrollY) -> {
+              int dy = scrollY - oldScrollY;
+              if (scrollY <= 16 || dy <= -12) {
+                emitNavBarVisibility(webViewId, true);
+              } else if (dy >= 16 && scrollY > 42) {
+                emitNavBarVisibility(webViewId, false);
+              }
+            });
       }
 
       applyDesktopSettingsToWebView(webView, webViewId, this.desktopMode, true);
@@ -2636,8 +2727,8 @@ public class HeavenShieldPlugin
               ? new Notification.Builder(ctx, NOTIF_CHANNEL_ALERTS)
               : new Notification.Builder(ctx);
       b.setSmallIcon(android.R.drawable.ic_popup_reminder)
-          .setContentTitle("Heaven Browser Notifications Active")
-          .setContentText("Download progress, offline media streams & shield alerts are ready.")
+          .setContentTitle("Heaven Notifications Active")
+          .setContentText("Download progress, background audio & shield alerts are ready.")
           .setAutoCancel(true)
           .setContentIntent(pi);
       nm.notify(89130, b.build());
@@ -2645,67 +2736,6 @@ public class HeavenShieldPlugin
     } catch (Throwable ignored) {
       return false;
     }
-  }
-
-  private void handleScanPageMediaStreams(
-      final long webViewId, final MethodChannel.Result result) {
-    if (pluginBinding == null) {
-      result.success(Collections.emptyList());
-      return;
-    }
-    WebView wv = WebViewFlutterAndroidExternalApi.getWebView(pluginBinding, webViewId);
-    if (wv == null) {
-      result.success(Collections.emptyList());
-      return;
-    }
-    String scanJs =
-        "(function(){"
-            + "var out=[];var seen={};"
-            + "function add(u,k,l){if(!u||u.indexOf('blob:')===0||u.indexOf('data:')===0||seen[u])return;"
-            + "try{var abs=new URL(u,location.href).href;if(seen[abs])return;seen[abs]=true;out.push({url:abs,kind:k,label:l});}catch(e){}}"
-            + "var vids=document.querySelectorAll('video');"
-            + "for(var i=0;i<vids.length;i++){var v=vids[i];add(v.currentSrc||v.src,'video',((v.videoHeight||720)+'p Video'));"
-            + "var ss=v.querySelectorAll('source');for(var j=0;j<ss.length;j++)add(ss[j].src,'video','Video Source');}"
-            + "var auds=document.querySelectorAll('audio');"
-            + "for(var a=0;a<auds.length;a++){var au=auds[a];add(au.currentSrc||au.src,'audio','Audio Stream');"
-            + "var as=au.querySelectorAll('source');for(var b=0;b<as.length;b++)add(as[b].src,'audio','Audio Source');}"
-            + "var links=document.querySelectorAll('a[href*=\".mp4\"],a[href*=\".webm\"],a[href*=\".m3u8\"],a[href*=\".mp3\"],a[href*=\".m4a\"]');"
-            + "for(var m=0;m<links.length;m++){var h=links[m].href||'';add(h,(h.indexOf('.mp3')>0||h.indexOf('.m4a')>0)?'audio':'video',(links[m].textContent||'Direct Media').trim().slice(0,40)||'Media File');}"
-            + "return JSON.stringify(out);"
-            + "})();";
-    wv.evaluateJavascript(
-        scanJs,
-        raw -> {
-          List<Map<String, Object>> parsed = new ArrayList<>();
-          try {
-            if (raw != null && raw.length() > 4 && !"null".equals(raw)) {
-              String jsonStr = raw;
-              if (jsonStr.startsWith("\"") && jsonStr.endsWith("\"")) {
-                jsonStr = new org.json.JSONTokener(jsonStr).nextValue().toString();
-              }
-              org.json.JSONArray arr = new org.json.JSONArray(jsonStr);
-              for (int i = 0; i < arr.length(); i++) {
-                org.json.JSONObject o = arr.optJSONObject(i);
-                if (o != null) {
-                  String u = o.optString("url", "");
-                  String k = o.optString("kind", "video");
-                  String l = o.optString("label", "Media Stream");
-                  if (!u.isEmpty()) {
-                    Map<String, Object> item = new HashMap<>(6);
-                    item.put("url", u);
-                    item.put("kind", k);
-                    item.put("format", inferMediaFormatBadge(u, k));
-                    item.put("label", l);
-                    parsed.add(item);
-                    emitDetectedMediaStream(webViewId, u, k, l);
-                  }
-                }
-              }
-            }
-          } catch (Throwable ignored) {
-          }
-          result.success(parsed);
-        });
   }
 
   @SuppressWarnings("deprecation")
@@ -2754,7 +2784,7 @@ public class HeavenShieldPlugin
       try {
         BiometricPrompt.Builder builder =
             new BiometricPrompt.Builder(act)
-                .setTitle("Heaven Browser Security")
+                .setTitle("Heaven Security")
                 .setSubtitle(subtitle);
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
           builder.setAllowedAuthenticators(
@@ -2798,7 +2828,7 @@ public class HeavenShieldPlugin
       KeyguardManager km = (KeyguardManager) act.getSystemService(Context.KEYGUARD_SERVICE);
       if (km != null && km.isKeyguardSecure()) {
         Intent credIntent =
-            km.createConfirmDeviceCredentialIntent("Heaven Browser Security", subtitle);
+            km.createConfirmDeviceCredentialIntent("Heaven Security", subtitle);
         if (credIntent != null) {
           this.pendingBiometricResult = result;
           act.startActivityForResult(credIntent, LEGACY_CREDENTIAL_REQUEST_CODE);
@@ -3241,154 +3271,6 @@ public class HeavenShieldPlugin
     throw new IOException("Too many redirects");
   }
 
-  private String fetchTextFollowingRedirects(DownloadJob job, String urlStr) throws IOException {
-    String cur = urlStr;
-    for (int hop = 0; hop < 6; hop++) {
-      HttpURLConnection c = (HttpURLConnection) URI.create(cur).toURL().openConnection();
-      c.setInstanceFollowRedirects(false);
-      c.setConnectTimeout(12000);
-      c.setReadTimeout(18000);
-      c.setRequestProperty(
-          "User-Agent",
-          !job.userAgent.isEmpty() ? job.userAgent : MOBILE_CHROME_ANDROID_UA);
-      if (!job.cookies.isEmpty()) c.setRequestProperty("Cookie", job.cookies);
-      if (!job.referer.isEmpty()) c.setRequestProperty("Referer", job.referer);
-      int st = c.getResponseCode();
-      if (st == 301 || st == 302 || st == 303 || st == 307 || st == 308) {
-        String loc = c.getHeaderField("Location");
-        c.disconnect();
-        if (loc == null || loc.isEmpty()) throw new IOException("Empty HLS redirect");
-        cur = URI.create(cur).resolve(loc).toString();
-        continue;
-      }
-      if (st < 200 || st >= 300) {
-        c.disconnect();
-        throw new IOException("HLS HTTP " + st);
-      }
-      try (InputStream is = c.getInputStream();
-          ByteArrayOutputStream bos = new ByteArrayOutputStream()) {
-        byte[] b = new byte[8192];
-        int n;
-        while ((n = is.read(b)) > 0) bos.write(b, 0, n);
-        return new String(bos.toByteArray(), StandardCharsets.UTF_8);
-      } finally {
-        c.disconnect();
-      }
-    }
-    throw new IOException("Too many HLS redirects");
-  }
-
-  private void executeHlsPlaylistDownload(final DownloadJob job) throws IOException {
-    String playlistUrl = job.url;
-    String manifestText = fetchTextFollowingRedirects(job, playlistUrl);
-    if (manifestText.contains("#EXT-X-STREAM-INF")) {
-      String[] lines = manifestText.split("\\r?\\n");
-      long bestBw = -1L;
-      String bestVariant = null;
-      long nextBw = 0L;
-      for (String raw : lines) {
-        String line = raw.trim();
-        if (line.startsWith("#EXT-X-STREAM-INF:")) {
-          nextBw = 1L;
-          int idx = line.indexOf("BANDWIDTH=");
-          if (idx >= 0) {
-            int start = idx + 10;
-            int end = start;
-            while (end < line.length() && Character.isDigit(line.charAt(end))) end++;
-            try {
-              nextBw = Long.parseLong(line.substring(start, end));
-            } catch (NumberFormatException ignored) {
-            }
-          }
-        } else if (!line.isEmpty() && !line.startsWith("#") && nextBw > 0) {
-          if (nextBw >= bestBw) {
-            bestBw = nextBw;
-            bestVariant = URI.create(playlistUrl).resolve(line).toString();
-          }
-          nextBw = 0L;
-        }
-      }
-      if (bestVariant != null) {
-        playlistUrl = bestVariant;
-        manifestText = fetchTextFollowingRedirects(job, playlistUrl);
-      }
-    }
-
-    List<String> segmentUrls = new ArrayList<>();
-    for (String raw : manifestText.split("\\r?\\n")) {
-      String line = raw.trim();
-      if (!line.isEmpty() && !line.startsWith("#")) {
-        segmentUrls.add(URI.create(playlistUrl).resolve(line).toString());
-      }
-    }
-    if (segmentUrls.isEmpty()) {
-      throw new IOException("HLS playlist contained zero media segments");
-    }
-
-    job.supportsRange = false;
-    job.mimeType = "video/mp2t";
-    job.bytesDownloaded.set(0L);
-    long lastTickTime = SystemClock.elapsedRealtime();
-    long lastTickBytes = 0L;
-    long lastNotifTime = 0L;
-    byte[] buf = new byte[32 * 1024];
-
-    try (FileOutputStream out = new FileOutputStream(job.partFile, false)) {
-      for (int i = 0; i < segmentUrls.size(); i++) {
-        if (job.cancelRequested || job.pauseRequested) break;
-        HttpURLConnection segConn =
-            (HttpURLConnection) URI.create(segmentUrls.get(i)).toURL().openConnection();
-        segConn.setConnectTimeout(12000);
-        segConn.setReadTimeout(20000);
-        segConn.setRequestProperty(
-            "User-Agent",
-            !job.userAgent.isEmpty() ? job.userAgent : MOBILE_CHROME_ANDROID_UA);
-        if (!job.cookies.isEmpty()) segConn.setRequestProperty("Cookie", job.cookies);
-        if (!job.referer.isEmpty()) segConn.setRequestProperty("Referer", job.referer);
-        job.activeConn = segConn;
-        try (InputStream segIn = segConn.getInputStream()) {
-          job.activeStream = segIn;
-          int n;
-          while ((n = segIn.read(buf)) != -1) {
-            if (job.cancelRequested || job.pauseRequested) break;
-            out.write(buf, 0, n);
-            long nowBytes = job.bytesDownloaded.addAndGet(n);
-            if (i >= 0) {
-              long avgPerSeg = Math.max(1024L, nowBytes / (i + 1));
-              job.totalBytes = avgPerSeg * segmentUrls.size();
-            }
-            long nowMs = SystemClock.elapsedRealtime();
-            long elapsed = nowMs - lastTickTime;
-            if (elapsed >= 500L) {
-              job.speedBytesPerSec = ((nowBytes - lastTickBytes) * 1000L) / Math.max(1L, elapsed);
-              lastTickTime = nowMs;
-              lastTickBytes = nowBytes;
-            }
-            if (nowMs - lastNotifTime >= 900L) {
-              lastNotifTime = nowMs;
-              postDownloadNotification(job);
-            }
-          }
-        } finally {
-          segConn.disconnect();
-        }
-      }
-      out.flush();
-    }
-
-    if (job.cancelRequested) {
-      cancelNotification(job.notifId());
-      return;
-    }
-    if (job.pauseRequested) {
-      job.state = "paused";
-      job.speedBytesPerSec = 0L;
-      postDownloadNotification(job);
-      return;
-    }
-    completeDownloadFile(job);
-  }
-
   private void executeDownloadLoop(final DownloadJob job) {
     HttpURLConnection conn = null;
     InputStream in = null;
@@ -3398,12 +3280,6 @@ public class HeavenShieldPlugin
       if (parent != null && !parent.exists()) {
         //noinspection ResultOfMethodCallIgnored
         parent.mkdirs();
-      }
-      String lowerUrl = job.url.toLowerCase(Locale.US);
-      if (lowerUrl.contains(".m3u8")
-          || (job.mimeType != null && job.mimeType.toLowerCase(Locale.US).contains("mpegurl"))) {
-        executeHlsPlaylistDownload(job);
-        return;
       }
       long resumeFrom = job.partFile.exists() ? job.partFile.length() : 0L;
       job.bytesDownloaded.set(resumeFrom);
@@ -3824,28 +3700,6 @@ public class HeavenShieldPlugin
     }
   }
 
-  private static boolean looksLikePlayableMediaStream(
-      String lowerPath, String lowerQuery, String reqHost) {
-    if (lowerPath.endsWith(".m3u8")
-        || lowerPath.endsWith(".mp4")
-        || lowerPath.endsWith(".webm")
-        || lowerPath.endsWith(".mkv")
-        || lowerPath.endsWith(".mp3")
-        || lowerPath.endsWith(".m4a")
-        || lowerPath.endsWith(".aac")
-        || lowerPath.endsWith(".ogg")
-        || lowerPath.endsWith(".opus")) {
-      return !lowerPath.contains("ad") && !lowerPath.contains("banner");
-    }
-    if (reqHost.endsWith("googlevideo.com")
-        && lowerPath.contains("/videoplayback")
-        && !lowerQuery.contains("oad=")
-        && !lowerQuery.contains("range=")) {
-      return lowerQuery.contains("mime=video") || lowerQuery.contains("mime=audio");
-    }
-    return false;
-  }
-
   private boolean shouldBlockInUltraDataSaver(
       String reqHost, String activePageHost, String lowerPath, WebResourceRequest request) {
     if (!this.ultraDataSaverMode || request.isForMainFrame()) {
@@ -3924,20 +3778,13 @@ public class HeavenShieldPlugin
     }
 
     if (!shieldEnabled) {
-      if (webViewId >= 0 && looksLikePlayableMediaStream(fullPath, fullQuery, host)) {
-        String kind =
-            (fullPath.endsWith(".mp3")
-                    || fullPath.endsWith(".m4a")
-                    || fullPath.endsWith(".aac")
-                    || fullPath.endsWith(".ogg")
-                    || fullQuery.contains("mime=audio"))
-                ? "audio"
-                : "video";
-        emitDetectedMediaStream(webViewId, url.toString(), kind, inferMediaFormatBadge(url.toString(), kind) + " Stream");
-      }
       return null;
     }
 
+    if (HeavenChromeExtManager.EXT_VIRTUAL_HOST.equals(host)
+        || HeavenChromeExtManager.EXT_VIRTUAL_HOST.equals(activePageHost)) {
+      return null;
+    }
     if (activePageHost != null && isTrustedHost(activePageHost)) {
       return null;
     }
@@ -3949,23 +3796,6 @@ public class HeavenShieldPlugin
       long estSaved = fullPath.contains("video") || fullPath.contains("vast") ? 48000L : 18400L;
       notifyBlockedOnMainThread(webViewId, host, estSaved);
       return buildEmptyResponseForPath(fullPath, request);
-    }
-
-    // 3. Passive stream detection for non-ad video & audio streams
-    if (webViewId >= 0 && looksLikePlayableMediaStream(fullPath, fullQuery, host)) {
-      String kind =
-          (fullPath.endsWith(".mp3")
-                  || fullPath.endsWith(".m4a")
-                  || fullPath.endsWith(".aac")
-                  || fullPath.endsWith(".ogg")
-                  || fullQuery.contains("mime=audio"))
-              ? "audio"
-              : "video";
-      emitDetectedMediaStream(
-          webViewId,
-          url.toString(),
-          kind,
-          inferMediaFormatBadge(url.toString(), kind) + " Stream");
     }
     return null;
   }
@@ -4279,14 +4109,46 @@ public class HeavenShieldPlugin
 
     @Override
     public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
+      if (request != null && request.getUrl() != null) {
+        Uri rawUri = request.getUrl();
+        String rawScheme =
+            rawUri.getScheme() != null ? rawUri.getScheme().toLowerCase(Locale.US) : "";
+
+        // 0. Never block Chrome/Firefox Extension URLs — rewrite chrome-extension:// to virtual HTTPS host!
+        if ("chrome-extension".equals(rawScheme) || "moz-extension".equals(rawScheme)) {
+          String mapped = HeavenChromeExtManager.normalizeExtensionUrl(rawUri.toString(), "");
+          if (mapped != null && !mapped.isEmpty()) {
+            currentPageHosts.put(webViewId, HeavenChromeExtManager.EXT_VIRTUAL_HOST);
+            view.loadUrl(mapped);
+          }
+          return true;
+        }
+      }
+
       if (request != null && request.isForMainFrame() && request.getUrl() != null) {
         Uri destUri = request.getUrl();
         String scheme = destUri.getScheme() != null ? destUri.getScheme().toLowerCase(Locale.US) : "";
         String destHost = normalizeHost(destUri.getHost());
         String prevHost = currentPageHosts.get(webViewId);
         boolean pageTrusted = prevHost != null && isTrustedHost(prevHost);
+        boolean fromOrToExtension =
+            HeavenChromeExtManager.EXT_VIRTUAL_HOST.equals(destHost)
+                || HeavenChromeExtManager.EXT_VIRTUAL_HOST.equals(prevHost);
 
-        // 1. Force Desktop Windows Chrome 134 mode automatically for Chrome Web Store!
+        // 1. Always allow Chrome Extension pages and any redirect initiated from an Extension!
+        if (fromOrToExtension) {
+          if (!destHost.isEmpty()) {
+            currentPageHosts.put(webViewId, destHost);
+          }
+          if (HeavenChromeExtManager.EXT_VIRTUAL_HOST.equals(destHost)) {
+            view.getSettings().setJavaScriptCanOpenWindowsAutomatically(true);
+          }
+          return delegate != null
+              ? delegate.shouldOverrideUrlLoading(view, request)
+              : super.shouldOverrideUrlLoading(view, request);
+        }
+
+        // 2. Force Desktop Windows Chrome 134 mode automatically for Chrome Web Store!
         if (isChromeWebStoreUri(destUri)) {
           String curUa = view.getSettings().getUserAgentString();
           currentPageHosts.put(webViewId, destHost);
@@ -4313,37 +4175,34 @@ public class HeavenShieldPlugin
           applyDesktopSettingsToWebView(view, webViewId, false, true);
         }
 
-        // 2. Native Ad / Malware / Play Store / Adult-Site Automatic Anti-Redirect Firewall!
+        // 3. Targeted Ad / Malware / Adult-Trap / Play-Store Hijack Firewall (never blocks normal or extension redirects!)
         if ((shieldEnabled || antiRedirectEnabled) && !pageTrusted) {
-          if (!"http".equals(scheme) && !"https".equals(scheme) && !"about".equals(scheme)) {
+          if (!"http".equals(scheme)
+              && !"https".equals(scheme)
+              && !"about".equals(scheme)
+              && !"blob".equals(scheme)
+              && !"data".equals(scheme)) {
             if (!"mailto".equals(scheme) && !"tel".equals(scheme)) {
               notifyRedirectBlockedOnMainThread(webViewId, scheme + "://");
               return true;
             }
           }
-          if (("play.google.com".equals(destHost) || "apps.apple.com".equals(destHost))
-              && prevHost != null
-              && !prevHost.contains("google.")) {
-            notifyRedirectBlockedOnMainThread(webViewId, destHost);
-            return true;
-          }
-          if (matchesBlockedDomain(destHost) || isSuspiciousRedirectTarget(destUri, prevHost)) {
-            notifyRedirectBlockedOnMainThread(
-                webViewId, destHost.isEmpty() ? "ad-redirect" : destHost);
-            return true;
-          }
           Long userNavUntil = userInitiatedNavUntilMs.get(webViewId);
           boolean inUserNavGrace =
               userNavUntil != null && System.currentTimeMillis() <= userNavUntil;
           if (!inUserNavGrace
+              && ("play.google.com".equals(destHost) || "apps.apple.com".equals(destHost))
               && prevHost != null
-              && !prevHost.isEmpty()
-              && !destHost.isEmpty()
-              && !isSameRootDomain(destHost, prevHost)
-              && !isSearchOrAuthPortal(prevHost)
-              && !isSearchOrAuthPortal(destHost)
+              && !prevHost.contains("google.")
               && !isApprovedExternalNav(webViewId, destHost)) {
             notifyRedirectBlockedOnMainThread(webViewId, destHost);
+            return true;
+          }
+          if (matchesBlockedDomain(destHost)
+              || (!isApprovedExternalNav(webViewId, destHost)
+                  && isSuspiciousRedirectTarget(destUri, prevHost))) {
+            notifyRedirectBlockedOnMainThread(
+                webViewId, destHost.isEmpty() ? "ad-redirect" : destHost);
             return true;
           }
         }
@@ -4354,19 +4213,29 @@ public class HeavenShieldPlugin
       }
       return delegate != null
           ? delegate.shouldOverrideUrlLoading(view, request)
-          : super.shouldOverrideUrlLoading(view, request);
+              : super.shouldOverrideUrlLoading(view, request);
     }
 
     @Override
     @SuppressWarnings("deprecation")
     public boolean shouldOverrideUrlLoading(WebView view, String url) {
-      if (url != null && shieldEnabled) {
-        Uri u = Uri.parse(url);
-        String destHost = normalizeHost(u.getHost());
-        String prevHost = currentPageHosts.get(webViewId);
-        if (matchesBlockedDomain(destHost) || isSuspiciousRedirectTarget(u, prevHost)) {
-          notifyBlockedOnMainThread(webViewId, destHost);
+      if (url != null) {
+        String lower = url.toLowerCase(Locale.US);
+        if (lower.startsWith("chrome-extension://") || lower.startsWith("moz-extension://")) {
+          String mapped = HeavenChromeExtManager.normalizeExtensionUrl(url, "");
+          view.loadUrl(mapped);
           return true;
+        }
+        if (shieldEnabled) {
+          Uri u = Uri.parse(url);
+          String destHost = normalizeHost(u.getHost());
+          String prevHost = currentPageHosts.get(webViewId);
+          if (!HeavenChromeExtManager.EXT_VIRTUAL_HOST.equals(destHost)
+              && !HeavenChromeExtManager.EXT_VIRTUAL_HOST.equals(prevHost)
+              && (matchesBlockedDomain(destHost) || isSuspiciousRedirectTarget(u, prevHost))) {
+            notifyBlockedOnMainThread(webViewId, destHost);
+            return true;
+          }
         }
       }
       return delegate != null
@@ -4376,20 +4245,24 @@ public class HeavenShieldPlugin
 
     @Override
     public void onPageStarted(WebView view, String url, Bitmap favicon) {
+      emitNavBarVisibility(webViewId, true);
       boolean isCws = false;
+      boolean isExtPage = false;
       if (url != null) {
         Uri parsed = Uri.parse(url);
         isCws = isChromeWebStoreUri(parsed);
         String host = normalizeHost(parsed.getHost());
+        isExtPage = HeavenChromeExtManager.EXT_VIRTUAL_HOST.equals(host);
         if (!host.isEmpty()) {
           currentPageHosts.put(webViewId, host);
         }
       }
+      view.getSettings().setJavaScriptCanOpenWindowsAutomatically(isExtPage);
       if (isCws) {
         view.getSettings().setUserAgentString(DESKTOP_CHROME_WIN_UA);
         view.getSettings().setUseWideViewPort(true);
         view.getSettings().setLoadWithOverviewMode(true);
-      } else if (desktopMode) {
+      } else if (desktopMode && !isExtPage) {
         applyDesktopSettingsToWebView(view, webViewId, true, false);
       }
       if (delegate != null) {
@@ -4417,14 +4290,29 @@ public class HeavenShieldPlugin
       } else {
         super.onPageFinished(view, url);
       }
+      if (url != null && (url.startsWith("http://") || url.startsWith("https://"))) {
+        Uri parsedFin = Uri.parse(url);
+        String finHost = normalizeHost(parsedFin.getHost());
+        if (!finHost.isEmpty() && !HeavenChromeExtManager.EXT_VIRTUAL_HOST.equals(finHost)) {
+          activeFocusedWebViewId = webViewId;
+          activePopupTabUrl = url;
+          String wvTitle = view != null ? view.getTitle() : null;
+          activePopupTabTitle =
+              (wvTitle != null && !wvTitle.trim().isEmpty()) ? wvTitle.trim() : finHost;
+        }
+      }
       injectScripts(view, url, "all");
     }
 
     private void injectScripts(final WebView view, final String url, final String extStage) {
-      boolean isCws = url != null && isChromeWebStoreUri(Uri.parse(url));
+      Uri parsed = url != null ? Uri.parse(url) : null;
+      boolean isCws = isChromeWebStoreUri(parsed);
+      boolean isExtPage =
+          parsed != null
+              && HeavenChromeExtManager.EXT_VIRTUAL_HOST.equals(normalizeHost(parsed.getHost()));
       if (isCws) {
         view.evaluateJavascript(CHROME_WEB_STORE_DESKTOP_SCRIPT, null);
-      } else if (desktopMode) {
+      } else if (desktopMode && !isExtPage) {
         view.evaluateJavascript(DESKTOP_VIEWPORT_SCRIPT, null);
       }
       view.evaluateJavascript(
@@ -4434,13 +4322,15 @@ public class HeavenShieldPlugin
               + (!webNotificationsEnabled)
               + ";window.__heavenUltraDataSaver="
               + ultraDataSaverMode
+              + ";window.__hbInBg="
+              + appInBackground
               + ";"
-              + BG_MEDIA_AND_STREAM_SNIFFER_SCRIPT
+              + BG_AUDIO_AND_SCROLL_SCRIPT
               + ULTRA_DATA_SAVER_STYLE_SCRIPT,
           null);
 
       // Inject enabled Chrome Extensions (.crx / MV2 & MV3) on EVERY search engine & website!
-      if (chromeExtManager != null && url != null && url.startsWith("http") && !isCws) {
+      if (chromeExtManager != null && url != null && url.startsWith("http") && !isCws && !isExtPage) {
         downloadPool.execute(
             () -> {
               final String extBundle =

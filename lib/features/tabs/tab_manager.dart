@@ -80,10 +80,7 @@ class BrowserTab {
     if (engine.isShowingStartPage) {
       return isIncognito ? 'Private stealth session' : 'Heaven Home & News';
     }
-    if (engine.isHibernated) {
-      return '${engine.currentHost ?? OmniboxParser.formatDisplayUrl(engine.currentUrl)} • Sleeping';
-    }
-    return engine.currentHost ?? (engine.currentUrl ?? '');
+    return OmniboxParser.formatDisplayUrl(engine.currentUrl);
   }
 }
 
@@ -94,12 +91,6 @@ class TabManagerController extends ChangeNotifier {
     this.enablePlatformWebView = true,
   }) {
     _restoreOrInitializeSession();
-    if (enablePlatformWebView) {
-      _hibernationTimer = Timer.periodic(
-        const Duration(seconds: 30),
-        (_) => unawaited(hibernateInactiveTabsNow()),
-      );
-    }
   }
 
   static const String _keySavedTabs = 'hb.openTabs.v13';
@@ -115,7 +106,6 @@ class TabManagerController extends ChangeNotifier {
   late String _activeTabId;
   int _nextIdCounter = 1;
   int _nextGroupCounter = 1;
-  Timer? _hibernationTimer;
   bool _incognitoSessionUnlocked = false;
   int _lastPersistMs = 0;
 
@@ -135,9 +125,6 @@ class TabManagerController extends ChangeNotifier {
       notifyListeners();
     }
   }
-
-  int get hibernatedTabCount =>
-      _tabs.where((BrowserTab t) => t.engine.isHibernated).length;
 
   void _restoreOrInitializeSession() {
     if (settings.clearOnExit) {
@@ -208,9 +195,6 @@ class TabManagerController extends ChangeNotifier {
               }
               final String? title = entry['title']?.toString().trim();
               final String? groupId = entry['groupId']?.toString().trim();
-              final bool isActiveEntry = id == targetActive;
-              final bool startAsSleeping =
-                  !isActiveEntry && url != null && url.isNotEmpty;
 
               final BrowserEngine engine = BrowserEngine(
                 settings: settings,
@@ -224,7 +208,6 @@ class TabManagerController extends ChangeNotifier {
                     ? url
                     : null,
                 initialPersistedTitle: title,
-                startHibernated: startAsSleeping,
               );
               engine.addListener(_onTabEngineChanged);
 
@@ -292,33 +275,22 @@ class TabManagerController extends ChangeNotifier {
     }
   }
 
-  /// Freezes background tabs that have been inactive longer than [threshold]
-  /// (defaults to `settings.tabHibernationMinutes`), skipping active or media-playing tabs.
-  Future<int> hibernateInactiveTabsNow({Duration? threshold}) async {
-    if (!settings.tabHibernationEnabled && threshold == null) {
-      return 0;
-    }
-    final Duration maxIdle =
-        threshold ?? Duration(minutes: settings.tabHibernationMinutes);
-    final DateTime now = DateTime.now();
-    int frozenCount = 0;
-
-    for (final BrowserTab tab in _tabs) {
-      if (tab.id == _activeTabId) continue;
-      if (tab.engine.isShowingStartPage ||
-          tab.engine.isHibernated ||
-          tab.engine.isMediaPlaying) {
-        continue;
-      }
-      if (now.difference(tab.lastActiveAt) >= maxIdle) {
-        await tab.engine.hibernate();
-        frozenCount += 1;
-      }
-    }
-    if (frozenCount > 0) {
-      notifyListeners();
-    }
-    return frozenCount;
+  /// Returns the most recently active non-extension web tab so extensions
+  /// opened in a New Tab still target the website the user was browsing!
+  BrowserTab? get lastActiveWebsiteTab {
+    final List<BrowserTab> candidates = _tabs
+        .where(
+          (BrowserTab t) =>
+              !t.engine.isShowingStartPage &&
+              (t.engine.currentHost?.toLowerCase() ?? '') !=
+                  'chrome-ext.heaven.local',
+        )
+        .toList();
+    if (candidates.isEmpty) return null;
+    candidates.sort(
+      (BrowserTab a, BrowserTab b) => b.lastActiveAt.compareTo(a.lastActiveAt),
+    );
+    return candidates.first;
   }
 
   TabGroup? groupById(String? groupId) {
@@ -501,9 +473,6 @@ class TabManagerController extends ChangeNotifier {
   void switchToTab(String tabId) {
     if (_activeTabId == tabId) {
       activeTab.lastActiveAt = DateTime.now();
-      if (activeTab.engine.isHibernated) {
-        unawaited(activeTab.engine.wakeFromHibernation());
-      }
       return;
     }
     BrowserTab? target;
@@ -520,9 +489,6 @@ class TabManagerController extends ChangeNotifier {
     unawaited(captureTabPreview(activeTab));
     _activeTabId = tabId;
     target.lastActiveAt = DateTime.now();
-    if (target.engine.isHibernated) {
-      unawaited(target.engine.wakeFromHibernation());
-    }
     _persistSessionSnapshot(force: true);
     notifyListeners();
   }
@@ -555,9 +521,6 @@ class TabManagerController extends ChangeNotifier {
         final int nextIdx = (idx - 1).clamp(0, _tabs.length - 1);
         _activeTabId = _tabs[nextIdx].id;
       }
-      if (activeTab.engine.isHibernated) {
-        unawaited(activeTab.engine.wakeFromHibernation());
-      }
     }
     _persistSessionSnapshot(force: true);
     notifyListeners();
@@ -585,9 +548,6 @@ class TabManagerController extends ChangeNotifier {
       _spawnTab(incognito: false, switchTo: true);
     } else if (!_tabs.any((BrowserTab t) => t.id == _activeTabId)) {
       _activeTabId = _tabs.last.id;
-      if (activeTab.engine.isHibernated) {
-        unawaited(activeTab.engine.wakeFromHibernation());
-      }
     }
     _persistSessionSnapshot(force: true);
     notifyListeners();
@@ -625,7 +585,6 @@ class TabManagerController extends ChangeNotifier {
 
   @override
   void dispose() {
-    _hibernationTimer?.cancel();
     for (final BrowserTab tab in _tabs) {
       tab.engine.removeListener(_onTabEngineChanged);
       tab.engine.dispose();

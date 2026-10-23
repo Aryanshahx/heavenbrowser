@@ -23,7 +23,7 @@ class _HelpScreenState extends State<HelpScreen> {
     'Bug Report',
     'VPN / Banned Website Issue',
     'Chrome Extensions (.crx)',
-    'Background Media & PiP',
+    'Background Audio',
     'General Question',
   ];
 
@@ -61,7 +61,7 @@ class _HelpScreenState extends State<HelpScreen> {
   Future<void> _sendSupportEmail() async {
     final String bodyText = _messageController.text.trim();
     final String subject =
-        '[Heaven Browser v${AppConstants.appVersion}] $_topic';
+        '[Heaven v${AppConstants.appVersion}] $_topic';
     final String fullBody =
         '${bodyText.isEmpty ? 'Hi HyperTech Labs team,\n\nI need help with:' : bodyText}\n\n---\nApp: ${AppConstants.appName} ${AppConstants.appVersion}\nPackage: com.hypertechlabs.heavenbrowser';
 
@@ -244,23 +244,23 @@ class _HelpScreenState extends State<HelpScreen> {
             _buildFaqTile(
               colors,
               isDark,
-              title: 'How do Background Video & Auto-PiP work?',
+              title: 'How does Background Audio & Screen-Off Playback work?',
               answer:
-                  'Play any video on YouTube, Twitch, or the web. Press Home to pop into native Android Picture-in-Picture automatically, or lock your screen to keep audio playing in the background.',
+                  'Play any video or audio on YouTube, Twitch, or the web, then lock your screen or switch apps. Heaven keeps playback alive with lock-screen media controls.',
             ),
             _buildFaqTile(
               colors,
               isDark,
-              title: 'How do One-Handed Gestures & Quick Actions work?',
+              title: 'How does the Auto-Hiding Top Navigation Bar work?',
               answer:
-                  'Swipe left or right on the bottom address bar to switch tabs instantly, swipe up on the address bar to open the full Tab Grid, or tap the corner Quick Action button for 1-tap controls.',
+                  'Scroll down on any search result or website to hide the top navigation bar for full-screen reading, and scroll up anytime to show it immediately.',
             ),
             _buildFaqTile(
               colors,
               isDark,
               title: 'How do I install & use Desktop Chrome Extensions?',
               answer:
-                  'Open Menu -> Extensions, tap Chrome Web Store (Desktop View) or paste an extension link. Installed MV2/MV3 extensions run on Google, DuckDuckGo, and every website.',
+                  'Open Menu -> Extensions, tap Chrome Web Store (Desktop View) or paste an extension link. Tap any installed extension to open it in a new tab.',
             ),
           ],
         ),

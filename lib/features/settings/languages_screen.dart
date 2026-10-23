@@ -27,7 +27,7 @@ class LanguagesScreen extends StatelessWidget {
                 Padding(
                   padding: const EdgeInsets.only(bottom: 12, left: 4),
                   child: Text(
-                    'Select your preferred language for Heaven Browser UI and website Accept-Language headers.',
+                    'Select your preferred language for Heaven UI and website Accept-Language headers.',
                     style: TextStyle(
                       fontSize: 13,
                       color: colors.onSurfaceVariant,

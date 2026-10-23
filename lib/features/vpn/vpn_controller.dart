@@ -326,7 +326,7 @@ class VpnController extends ChangeNotifier {
     );
     try {
       await engine.initialize(
-        localizedDescription: 'Heaven Browser VPN',
+        localizedDescription: 'Heaven VPN',
         showTrafficInNotification: true,
         lastStage: (ovpn.VPNStage stage) {
           if (stage == ovpn.VPNStage.connected) {

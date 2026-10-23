@@ -3,7 +3,6 @@ import 'package:flutter/material.dart';
 import '../../core/theme/app_theme.dart';
 import '../browser/engine/browser_engine.dart';
 import '../shield/native_shield_bridge.dart';
-import 'extension_popup_sheet.dart';
 import 'extensions_controller.dart';
 
 class ExtensionsScreen extends StatefulWidget {
@@ -108,17 +107,11 @@ class _ExtensionsScreenState extends State<ExtensionsScreen> {
     }
   }
 
-  Future<void> _runOrOpenExtension(InstalledChromeExtension ext) async {
+  Future<void> _openExtensionInNewTab(
+    InstalledChromeExtension ext, {
+    String? customUrl,
+  }) async {
     final BrowserEngine? engine = widget.activeEngine;
-    if (ext.hasPopup) {
-      await ExtensionPopupSheet.show(
-        context,
-        extension: ext,
-        activeEngine: engine,
-        onOpenNewTab: widget.onOpenUrlInNewTab,
-      );
-      return;
-    }
     await NativeShieldBridge.instance.setPopupContextTab(
       url: engine?.currentUrl ?? 'https://www.google.com',
       title: engine?.pageTitle ?? 'Heaven Tab',
@@ -130,25 +123,11 @@ class _ExtensionsScreenState extends State<ExtensionsScreen> {
       title: engine?.pageTitle ?? 'Heaven Tab',
     );
     await engine?.reinjectActiveExtensions();
-    if (ext.hasOptions && mounted) {
-      await ExtensionPopupSheet.show(
-        context,
-        extension: ext,
-        activeEngine: engine,
-        onOpenNewTab: widget.onOpenUrlInNewTab,
-        pageUrlOverride: ext.optionsUrl,
-        customTitle: '${ext.name} • Options',
-      );
-      return;
-    }
+    final String targetUrl = customUrl ?? ext.effectiveLaunchUrl;
     if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('${ext.name} executed on active tab!'),
-          behavior: SnackBarBehavior.floating,
-        ),
-      );
+      Navigator.of(context).pop();
     }
+    widget.onOpenUrlInNewTab?.call(targetUrl);
   }
 
   @override
@@ -453,153 +432,152 @@ class _ExtensionsScreenState extends State<ExtensionsScreen> {
               : colors.outlineVariant.withValues(alpha: 0.35),
         ),
       ),
-      child: Padding(
-        padding: const EdgeInsets.fromLTRB(14, 12, 12, 10),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: <Widget>[
-            Row(
-              children: <Widget>[
-                Container(
-                  width: 40,
-                  height: 40,
-                  decoration: BoxDecoration(
-                    color: colors.surfaceContainerHighest.withValues(
-                      alpha: 0.5,
-                    ),
-                    borderRadius: BorderRadius.circular(10),
-                  ),
-                  clipBehavior: Clip.antiAlias,
-                  alignment: Alignment.center,
-                  child: ext.iconBytes != null
-                      ? Image.memory(
-                          ext.iconBytes!,
-                          width: 32,
-                          height: 32,
-                          fit: BoxFit.contain,
-                          errorBuilder: (_, _, _) => Icon(
-                            Icons.extension_rounded,
-                            color: colors.primary,
-                          ),
-                        )
-                      : Icon(Icons.extension_rounded, color: colors.primary),
-                ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: <Widget>[
-                      Row(
-                        children: <Widget>[
-                          Flexible(
-                            child: Text(
-                              ext.name,
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                              style: const TextStyle(
-                                fontSize: 14.5,
-                                fontWeight: FontWeight.w800,
-                              ),
-                            ),
-                          ),
-                          const SizedBox(width: 6),
-                          Container(
-                            padding: const EdgeInsets.symmetric(
-                              horizontal: 6,
-                              vertical: 2,
-                            ),
-                            decoration: BoxDecoration(
-                              color: colors.primary.withValues(alpha: 0.14),
-                              borderRadius: BorderRadius.circular(6),
-                            ),
-                            child: Text(
-                              'MV${ext.manifestVersion} • v${ext.version}',
-                              style: TextStyle(
-                                fontSize: 10,
-                                fontWeight: FontWeight.w800,
-                                color: colors.primary,
-                              ),
-                            ),
-                          ),
-                        ],
+      clipBehavior: Clip.antiAlias,
+      child: InkWell(
+        key: Key('installed_extension_card_${ext.id}'),
+        onTap: ext.enabled ? () => _openExtensionInNewTab(ext) : null,
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(14, 12, 12, 10),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: <Widget>[
+              Row(
+                children: <Widget>[
+                  Container(
+                    width: 40,
+                    height: 40,
+                    decoration: BoxDecoration(
+                      color: colors.surfaceContainerHighest.withValues(
+                        alpha: 0.5,
                       ),
-                      if (ext.description.isNotEmpty)
-                        Text(
-                          ext.description,
-                          maxLines: 2,
-                          overflow: TextOverflow.ellipsis,
-                          style: TextStyle(
-                            fontSize: 12,
-                            color: colors.onSurfaceVariant,
-                          ),
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                    clipBehavior: Clip.antiAlias,
+                    alignment: Alignment.center,
+                    child: ext.iconBytes != null
+                        ? Image.memory(
+                            ext.iconBytes!,
+                            width: 32,
+                            height: 32,
+                            fit: BoxFit.contain,
+                            errorBuilder: (_, _, _) => Icon(
+                              Icons.extension_rounded,
+                              color: colors.primary,
+                            ),
+                          )
+                        : Icon(Icons.extension_rounded, color: colors.primary),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: <Widget>[
+                        Row(
+                          children: <Widget>[
+                            Flexible(
+                              child: Text(
+                                ext.name,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: const TextStyle(
+                                  fontSize: 14.5,
+                                  fontWeight: FontWeight.w800,
+                                ),
+                              ),
+                            ),
+                            const SizedBox(width: 6),
+                            Container(
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 6,
+                                vertical: 2,
+                              ),
+                              decoration: BoxDecoration(
+                                color: colors.primary.withValues(alpha: 0.14),
+                                borderRadius: BorderRadius.circular(6),
+                              ),
+                              child: Text(
+                                'MV${ext.manifestVersion} • v${ext.version}',
+                                style: TextStyle(
+                                  fontSize: 10,
+                                  fontWeight: FontWeight.w800,
+                                  color: colors.primary,
+                                ),
+                              ),
+                            ),
+                          ],
                         ),
-                    ],
+                        if (ext.description.isNotEmpty)
+                          Text(
+                            ext.description,
+                            maxLines: 2,
+                            overflow: TextOverflow.ellipsis,
+                            style: TextStyle(
+                              fontSize: 12,
+                              color: colors.onSurfaceVariant,
+                            ),
+                          ),
+                      ],
+                    ),
                   ),
-                ),
-                Switch.adaptive(
-                  value: ext.enabled,
-                  onChanged: (bool val) async {
-                    await widget.extensions.toggleChromeExtension(ext.id, val);
-                    await widget.activeEngine?.reloadFullPage();
-                  },
-                ),
-              ],
-            ),
-            const SizedBox(height: 8),
-            Wrap(
-              spacing: 8,
-              runSpacing: 6,
-              alignment: WrapAlignment.spaceBetween,
-              crossAxisAlignment: WrapCrossAlignment.center,
-              children: <Widget>[
-                FilledButton.tonalIcon(
-                  style: FilledButton.styleFrom(
-                    visualDensity: VisualDensity.compact,
+                  Switch.adaptive(
+                    value: ext.enabled,
+                    onChanged: (bool val) async {
+                      await widget.extensions.toggleChromeExtension(
+                        ext.id,
+                        val,
+                      );
+                      await widget.activeEngine?.reloadFullPage();
+                    },
                   ),
-                  onPressed: ext.enabled
-                      ? () => _runOrOpenExtension(ext)
-                      : null,
-                  icon: Icon(
-                    ext.hasPopup
-                        ? Icons.open_in_browser_rounded
-                        : Icons.bolt_rounded,
-                    size: 16,
-                  ),
-                  label: Text(ext.hasPopup ? 'Open Popup' : 'Run on Tab'),
-                ),
-                if (ext.hasOptions)
-                  OutlinedButton.icon(
-                    style: OutlinedButton.styleFrom(
+                ],
+              ),
+              const SizedBox(height: 8),
+              Wrap(
+                spacing: 8,
+                runSpacing: 6,
+                alignment: WrapAlignment.spaceBetween,
+                crossAxisAlignment: WrapCrossAlignment.center,
+                children: <Widget>[
+                  FilledButton.tonalIcon(
+                    style: FilledButton.styleFrom(
                       visualDensity: VisualDensity.compact,
                     ),
                     onPressed: ext.enabled
-                        ? () => ExtensionPopupSheet.show(
-                            context,
-                            extension: ext,
-                            activeEngine: widget.activeEngine,
-                            onOpenNewTab: widget.onOpenUrlInNewTab,
-                            pageUrlOverride: ext.optionsUrl,
-                            customTitle: '${ext.name} • Options',
-                          )
+                        ? () => _openExtensionInNewTab(ext)
                         : null,
-                    icon: const Icon(Icons.tune_rounded, size: 15),
-                    label: const Text('Options'),
+                    icon: const Icon(Icons.open_in_new_rounded, size: 16),
+                    label: const Text('Open in New Tab'),
                   ),
-                TextButton.icon(
-                  style: TextButton.styleFrom(
-                    visualDensity: VisualDensity.compact,
-                    foregroundColor: colors.error,
+                  if (ext.hasOptions && ext.optionsUrl != ext.popupUrl)
+                    OutlinedButton.icon(
+                      style: OutlinedButton.styleFrom(
+                        visualDensity: VisualDensity.compact,
+                      ),
+                      onPressed: ext.enabled
+                          ? () => _openExtensionInNewTab(
+                              ext,
+                              customUrl: ext.optionsUrl,
+                            )
+                          : null,
+                      icon: const Icon(Icons.tune_rounded, size: 15),
+                      label: const Text('Options'),
+                    ),
+                  TextButton.icon(
+                    style: TextButton.styleFrom(
+                      visualDensity: VisualDensity.compact,
+                      foregroundColor: colors.error,
+                    ),
+                    onPressed: () async {
+                      await widget.extensions.uninstallChromeExtension(ext.id);
+                      await widget.activeEngine?.reloadFullPage();
+                    },
+                    icon: const Icon(Icons.delete_outline_rounded, size: 17),
+                    label: const Text('Remove'),
                   ),
-                  onPressed: () async {
-                    await widget.extensions.uninstallChromeExtension(ext.id);
-                    await widget.activeEngine?.reloadFullPage();
-                  },
-                  icon: const Icon(Icons.delete_outline_rounded, size: 17),
-                  label: const Text('Remove'),
-                ),
-              ],
-            ),
-          ],
+                ],
+              ),
+            ],
+          ),
         ),
       ),
     );

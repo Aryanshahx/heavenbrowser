@@ -3,8 +3,8 @@ import 'package:flutter/material.dart';
 import '../utils/omnibox_parser.dart';
 
 /// Tiny Search Engine Quick-Switcher button placed directly inside the Search Bar
-/// so users can switch between Google (Default), DuckDuckGo, Brave, Bing, and
-/// Startpage in a single tap.
+/// so users can switch between Google (Default), Perplexity, DuckDuckGo, Brave,
+/// Bing, and Startpage in a single tap.
 class SearchEngineChipButton extends StatelessWidget {
   const SearchEngineChipButton({
     super.key,
@@ -18,6 +18,7 @@ class SearchEngineChipButton extends StatelessWidget {
   static Color _engineColor(SearchEngine engine) {
     return switch (engine) {
       SearchEngine.google => const Color(0xFF4285F4),
+      SearchEngine.perplexity => const Color(0xFF20B8CD),
       SearchEngine.duckDuckGo => const Color(0xFFDE5833),
       SearchEngine.brave => const Color(0xFFFB542B),
       SearchEngine.bing => const Color(0xFF008373),
@@ -28,6 +29,7 @@ class SearchEngineChipButton extends StatelessWidget {
   static String _engineBadgeText(SearchEngine engine) {
     return switch (engine) {
       SearchEngine.google => 'G',
+      SearchEngine.perplexity => 'Px',
       SearchEngine.duckDuckGo => 'D',
       SearchEngine.brave => 'Br',
       SearchEngine.bing => 'Bi',

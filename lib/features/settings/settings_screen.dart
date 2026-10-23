@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
-import 'package:url_launcher/url_launcher.dart';
 
 import '../../core/constants/app_constants.dart';
+import '../../core/theme/app_theme.dart';
 import '../../core/utils/omnibox_parser.dart';
 import '../../core/widgets/site_logo.dart';
 import '../downloads/downloads_controller.dart';
@@ -37,6 +37,70 @@ class SettingsScreen extends StatelessWidget {
     );
   }
 
+  Future<void> _pickSearchEngine(BuildContext context) async {
+    final ColorScheme colors = Theme.of(context).colorScheme;
+    await showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      showDragHandle: true,
+      builder: (BuildContext sheetContext) {
+        return SafeArea(
+          child: SingleChildScrollView(
+            padding: const EdgeInsets.fromLTRB(12, 0, 12, 16),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: <Widget>[
+                const Padding(
+                  padding: EdgeInsets.fromLTRB(12, 4, 12, 8),
+                  child: Text(
+                    'Search Engine',
+                    style: TextStyle(fontSize: 16, fontWeight: FontWeight.w800),
+                  ),
+                ),
+                for (final SearchEngine engine in SearchEngine.values)
+                  ListTile(
+                    key: Key('search_engine_option_${engine.name}'),
+                    dense: true,
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    leading: SiteLogo(
+                      urlOrDomain: engine.homeUrl,
+                      fallbackLabel: engine.shortLabel,
+                      size: 28,
+                      borderRadius: 8,
+                    ),
+                    title: Text(
+                      engine == SearchEngine.google
+                          ? '${engine.label} (Default)'
+                          : engine.label,
+                      style: TextStyle(
+                        fontWeight: settings.searchEngine == engine
+                            ? FontWeight.w800
+                            : FontWeight.w500,
+                      ),
+                    ),
+                    subtitle: Text(
+                      engine.homeUrl.replaceFirst('https://', ''),
+                      style: const TextStyle(fontSize: 11.5),
+                    ),
+                    trailing: settings.searchEngine == engine
+                        ? Icon(Icons.check_rounded, color: colors.primary)
+                        : null,
+                    onTap: () {
+                      settings.setSearchEngine(engine);
+                      Navigator.pop(sheetContext);
+                    },
+                  ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+
   Future<void> _toggleBiometricSetting(
     BuildContext context, {
     required bool currentValue,
@@ -64,13 +128,16 @@ class SettingsScreen extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final ColorScheme colors = Theme.of(context).colorScheme;
+    final ThemeData theme = Theme.of(context);
+    final ColorScheme colors = theme.colorScheme;
+    final bool isDark = theme.brightness == Brightness.dark;
 
     return Scaffold(
       appBar: AppBar(
+        centerTitle: false,
         title: const Text(
           'Settings',
-          style: TextStyle(fontWeight: FontWeight.w800),
+          style: TextStyle(fontWeight: FontWeight.w800, fontSize: 19),
         ),
       ),
       body: SafeArea(
@@ -78,189 +145,211 @@ class SettingsScreen extends StatelessWidget {
           listenable: settings,
           builder: (BuildContext context, _) {
             return ListView(
-              padding: const EdgeInsets.fromLTRB(16, 8, 16, 32),
+              padding: const EdgeInsets.fromLTRB(16, 6, 16, 28),
               children: <Widget>[
-                Card(
-                  elevation: 0,
-                  color: colors.primaryContainer.withValues(alpha: 0.28),
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(18),
-                    side: BorderSide(
-                      color: colors.primary.withValues(alpha: 0.35),
+                _MinimalSectionLabel('General', colors),
+                _MinimalGroup(
+                  isDark: isDark,
+                  colors: colors,
+                  children: <Widget>[
+                    ListTile(
+                      key: const Key('settings_search_engine_tile'),
+                      dense: true,
+                      leading: SiteLogo(
+                        urlOrDomain: settings.searchEngine.homeUrl,
+                        fallbackLabel: settings.searchEngine.shortLabel,
+                        size: 24,
+                        borderRadius: 7,
+                      ),
+                      title: const Text('Search Engine'),
+                      trailing: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: <Widget>[
+                          Text(
+                            settings.searchEngine.shortLabel,
+                            style: TextStyle(
+                              fontSize: 13,
+                              fontWeight: FontWeight.w700,
+                              color: colors.primary,
+                            ),
+                          ),
+                          const SizedBox(width: 4),
+                          Icon(
+                            Icons.chevron_right_rounded,
+                            size: 18,
+                            color: colors.onSurfaceVariant,
+                          ),
+                        ],
+                      ),
+                      onTap: () => _pickSearchEngine(context),
                     ),
-                  ),
-                  child: ListTile(
-                    leading: ClipRRect(
-                      borderRadius: BorderRadius.circular(10),
-                      child: Image.asset(
-                        AppConstants.logoAssetPath,
-                        width: 38,
-                        height: 38,
-                        errorBuilder: (_, _, _) =>
-                            Icon(Icons.public_rounded, color: colors.primary),
+                    _thinDivider(colors),
+                    Padding(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 16,
+                        vertical: 10,
+                      ),
+                      child: Row(
+                        children: <Widget>[
+                          const Icon(Icons.contrast_rounded, size: 20),
+                          const SizedBox(width: 12),
+                          const Text('Theme'),
+                          const SizedBox(width: 10),
+                          Expanded(
+                            child: Align(
+                              alignment: Alignment.centerRight,
+                              child: FittedBox(
+                                fit: BoxFit.scaleDown,
+                                child: SegmentedButton<ThemeMode>(
+                                  showSelectedIcon: false,
+                                  style: const ButtonStyle(
+                                    visualDensity: VisualDensity.compact,
+                                  ),
+                                  segments: const <ButtonSegment<ThemeMode>>[
+                                    ButtonSegment<ThemeMode>(
+                                      value: ThemeMode.dark,
+                                      label: Text('Dark'),
+                                    ),
+                                    ButtonSegment<ThemeMode>(
+                                      value: ThemeMode.light,
+                                      label: Text('Light'),
+                                    ),
+                                    ButtonSegment<ThemeMode>(
+                                      value: ThemeMode.system,
+                                      label: Text('Auto'),
+                                    ),
+                                  ],
+                                  selected: <ThemeMode>{settings.themeMode},
+                                  onSelectionChanged: (Set<ThemeMode> modes) {
+                                    settings.setThemeMode(modes.first);
+                                  },
+                                ),
+                              ),
+                            ),
+                          ),
+                        ],
                       ),
                     ),
-                    title: const Text(
-                      'Set as Default Browser',
-                      style: TextStyle(fontWeight: FontWeight.w700),
+                    _thinDivider(colors),
+                    SwitchListTile.adaptive(
+                      dense: true,
+                      secondary: const Icon(
+                        Icons.headphones_rounded,
+                        size: 20,
+                      ),
+                      title: const Text('Background Audio'),
+                      subtitle: const Text(
+                        'Keep playback active when screen is off',
+                        style: TextStyle(fontSize: 11.5),
+                      ),
+                      value: settings.backgroundMediaEnabled,
+                      onChanged: settings.setBackgroundMediaEnabled,
                     ),
-                    subtitle: const Text(
-                      'Open web links from all Android apps in Heaven Browser',
-                    ),
-                    trailing: const Icon(Icons.open_in_new_rounded, size: 19),
-                    onTap: () async {
-                      final bool opened = await NativeShieldBridge.instance
-                          .openDefaultBrowserSettings();
-                      if (!opened && context.mounted) {
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          const SnackBar(
-                            content: Text(
-                              'Open Android Settings > Apps > Default apps > Browser app',
-                            ),
-                            behavior: SnackBarBehavior.floating,
-                          ),
-                        );
-                      }
-                    },
-                  ),
-                ),
-                const SizedBox(height: 18),
-                _SectionTitle('Search Engine', colors),
-                _SettingsCard(
-                  children: <Widget>[
-                    RadioGroup<SearchEngine>(
-                      groupValue: settings.searchEngine,
-                      onChanged: (SearchEngine? val) {
-                        if (val != null) {
-                          settings.setSearchEngine(val);
-                        }
+                    _thinDivider(colors),
+                    SwitchListTile.adaptive(
+                      dense: true,
+                      secondary: const Icon(
+                        Icons.desktop_windows_outlined,
+                        size: 20,
+                      ),
+                      title: const Text('Desktop Site'),
+                      value: settings.desktopMode,
+                      onChanged: (bool value) {
+                        tabManager.activeEngine.setDesktopModeAndReload(value);
                       },
-                      child: Column(
+                    ),
+                    _thinDivider(colors),
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(16, 8, 12, 4),
+                      child: Row(
                         children: <Widget>[
-                          for (final SearchEngine engine in SearchEngine.values)
-                            RadioListTile<SearchEngine>(
-                              value: engine,
-                              secondary: SiteLogo(
-                                urlOrDomain: engine.homeUrl,
-                                size: 28,
-                                borderRadius: 8,
-                              ),
-                              title: Text(
-                                engine == SearchEngine.google
-                                    ? '${engine.label} (Default)'
-                                    : engine.label,
-                              ),
-                              subtitle: Text(
-                                engine.homeUrl,
-                                style: const TextStyle(fontSize: 12),
+                          const Icon(Icons.format_size_rounded, size: 20),
+                          const SizedBox(width: 14),
+                          const Text('Text Size'),
+                          Expanded(
+                            child: Slider(
+                              value: settings.textScalePercent.toDouble(),
+                              min: 75,
+                              max: 175,
+                              divisions: 20,
+                              onChanged: (double v) {
+                                settings.setTextScalePercent(v.round());
+                              },
+                            ),
+                          ),
+                          SizedBox(
+                            width: 40,
+                            child: Text(
+                              '${settings.textScalePercent}%',
+                              textAlign: TextAlign.end,
+                              style: TextStyle(
+                                fontSize: 12,
+                                fontWeight: FontWeight.w700,
+                                color: colors.onSurfaceVariant,
                               ),
                             ),
+                          ),
                         ],
                       ),
                     ),
                   ],
                 ),
-                const SizedBox(height: 20),
-                _SectionTitle('Ergonomic One-Handed UI & Gestures', colors),
-                _SettingsCard(
+                const SizedBox(height: 18),
+                _MinimalSectionLabel('Privacy & Shield', colors),
+                _MinimalGroup(
+                  isDark: isDark,
+                  colors: colors,
                   children: <Widget>[
                     SwitchListTile.adaptive(
-                      title: const Text('Bottom Navigation Bar (Default)'),
-                      subtitle: const Text(
-                        'Keep address bar, tab switcher & menus in easy thumb reach at the bottom',
-                      ),
-                      value: settings.bottomOmnibox,
-                      onChanged: settings.setBottomOmnibox,
-                    ),
-                    const Divider(height: 1),
-                    SwitchListTile.adaptive(
-                      title: const Text('Floating Quick Action Button'),
-                      subtitle: const Text(
-                        '1-tap corner button for Refresh, Bookmark, Media, PiP & Desktop Mode',
-                      ),
-                      value: settings.quickActionEnabled,
-                      onChanged: settings.setQuickActionEnabled,
-                    ),
-                    const Divider(height: 1),
-                    SwitchListTile.adaptive(
-                      title: const Text('Left-Handed Quick Action Corner'),
-                      subtitle: const Text(
-                        'Place Quick Action button in bottom-left instead of bottom-right',
-                      ),
-                      value: settings.quickActionLeftHanded,
-                      onChanged: settings.quickActionEnabled
-                          ? settings.setQuickActionLeftHanded
-                          : null,
-                    ),
-                    const Divider(height: 1),
-                    SwitchListTile.adaptive(
-                      title: const Text('Swipe Address Bar to Switch Tabs'),
-                      subtitle: const Text(
-                        'Swipe left/right on address bar to switch tabs, swipe up for Tab Grid',
-                      ),
-                      value: settings.barSwipeSwitchTabs,
-                      onChanged: settings.gesturesEnabled
-                          ? settings.setBarSwipeSwitchTabs
-                          : null,
-                    ),
-                    const Divider(height: 1),
-                    SwitchListTile.adaptive(
-                      title: const Text('Edge Swipe Back & Forward'),
-                      subtitle: const Text(
-                        'Swipe inward from left/right screen edge to navigate history',
-                      ),
-                      value: settings.edgeSwipeNavigation,
-                      onChanged: settings.gesturesEnabled
-                          ? settings.setEdgeSwipeNavigation
-                          : null,
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 20),
-                _SectionTitle('Media & Background Handling', colors),
-                _SettingsCard(
-                  children: <Widget>[
-                    SwitchListTile.adaptive(
-                      title: const Text('True Background Audio & Video'),
-                      subtitle: const Text(
-                        'Keep YouTube, Twitch & video platforms playing with screen locked',
-                      ),
-                      value: settings.backgroundMediaEnabled,
-                      onChanged: settings.setBackgroundMediaEnabled,
-                    ),
-                    const Divider(height: 1),
-                    SwitchListTile.adaptive(
-                      title: const Text('Auto Picture-in-Picture (PiP)'),
-                      subtitle: const Text(
-                        'Automatically pop playing videos into Android PiP when pressing Home',
-                      ),
-                      value: settings.autoPipEnabled,
-                      onChanged: settings.setAutoPipEnabled,
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 20),
-                _SectionTitle('Data Control & Mobile Performance', colors),
-                _SettingsCard(
-                  children: <Widget>[
-                    ListTile(
-                      leading: Icon(
-                        Icons.savings_outlined,
-                        color: colors.primary,
-                      ),
-                      title: Text(
-                        'Cellular Data Saved: ${settings.formattedDataSaved}',
-                        style: const TextStyle(fontWeight: FontWeight.w800),
-                      ),
+                      dense: true,
+                      secondary: const Icon(Icons.shield_outlined, size: 20),
+                      title: const Text('Heaven Ad & Tracker Shield'),
                       subtitle: Text(
-                        '${settings.totalTrackersBlocked} ad/tracker requests & heavy assets blocked',
+                        '${settings.totalTrackersBlocked} blocked • ${settings.formattedDataSaved} saved',
+                        style: const TextStyle(fontSize: 11.5),
                       ),
+                      value: settings.shieldEnabled,
+                      onChanged: settings.setShieldEnabled,
                     ),
-                    const Divider(height: 1),
+                    _thinDivider(colors),
                     SwitchListTile.adaptive(
-                      title: const Text('Text-Only / Ultra Data Saver Mode'),
+                      dense: true,
+                      secondary: const Icon(Icons.gpp_good_outlined, size: 20),
+                      title: const Text('Anti-Redirect Protection'),
                       subtitle: const Text(
-                        'Blocks network images, video posters & heavy fonts for instant cellular loads',
+                        'Block unwanted ad & app-store redirects',
+                        style: TextStyle(fontSize: 11.5),
+                      ),
+                      value: settings.antiRedirectProtection,
+                      onChanged: settings.setAntiRedirectProtection,
+                    ),
+                    _thinDivider(colors),
+                    SwitchListTile.adaptive(
+                      dense: true,
+                      secondary: const Icon(Icons.lock_outline_rounded, size: 20),
+                      title: const Text('HTTPS Upgrade'),
+                      value: settings.httpsUpgrade,
+                      onChanged: settings.setHttpsUpgrade,
+                    ),
+                    _thinDivider(colors),
+                    SwitchListTile.adaptive(
+                      dense: true,
+                      secondary: const Icon(Icons.cookie_outlined, size: 20),
+                      title: const Text('Block Third-Party Cookies'),
+                      value: settings.blockThirdPartyCookies,
+                      onChanged: settings.setBlockThirdPartyCookies,
+                    ),
+                    _thinDivider(colors),
+                    SwitchListTile.adaptive(
+                      dense: true,
+                      secondary: const Icon(
+                        Icons.data_saver_on_rounded,
+                        size: 20,
+                      ),
+                      title: const Text('Ultra Data Saver'),
+                      subtitle: const Text(
+                        'Text-focused mode on slow connections',
+                        style: TextStyle(fontSize: 11.5),
                       ),
                       value: settings.ultraDataSaverMode,
                       onChanged: (bool val) async {
@@ -270,262 +359,135 @@ class SettingsScreen extends StatelessWidget {
                         }
                       },
                     ),
-                    const Divider(height: 1),
+                    _thinDivider(colors),
                     SwitchListTile.adaptive(
-                      title: const Text('Aggressive Tab Hibernation'),
-                      subtitle: Text(
-                        'Automatically sleep inactive tabs after ${settings.tabHibernationMinutes} min to save RAM & battery',
-                      ),
-                      value: settings.tabHibernationEnabled,
-                      onChanged: settings.setTabHibernationEnabled,
-                    ),
-                    if (settings.tabHibernationEnabled)
-                      Padding(
-                        padding: const EdgeInsets.fromLTRB(16, 4, 16, 10),
-                        child: Row(
-                          children: <Widget>[
-                            const Text(
-                              'Sleep Timeout',
-                              style: TextStyle(fontSize: 12.5),
-                            ),
-                            Expanded(
-                              child: Slider(
-                                value: settings.tabHibernationMinutes
-                                    .toDouble(),
-                                min: 1,
-                                max: 15,
-                                divisions: 14,
-                                label: '${settings.tabHibernationMinutes} min',
-                                onChanged: (double v) => settings
-                                    .setTabHibernationMinutes(v.round()),
-                              ),
-                            ),
-                            Text('${settings.tabHibernationMinutes}m'),
-                          ],
-                        ),
-                      ),
-                  ],
-                ),
-                const SizedBox(height: 20),
-                _SectionTitle('Mobile Privacy & App Security', colors),
-                _SettingsCard(
-                  children: <Widget>[
-                    SwitchListTile.adaptive(
-                      title: const Text('Biometric Lock for Incognito Tabs'),
-                      subtitle: const Text(
-                        'Require Fingerprint or Face Unlock before viewing Incognito tabs',
-                      ),
-                      value: settings.biometricLockIncognito,
-                      onChanged: (_) => _toggleBiometricSetting(
-                        context,
-                        currentValue: settings.biometricLockIncognito,
-                        onApply: settings.setBiometricLockIncognito,
-                        reason:
-                            'Verify biometrics to configure Incognito Tab Lock',
-                      ),
-                    ),
-                    const Divider(height: 1),
-                    SwitchListTile.adaptive(
-                      title: const Text('Biometric Lock for Entire App'),
-                      subtitle: const Text(
-                        'Lock Heaven Browser with Fingerprint or Face Unlock on startup',
-                      ),
+                      dense: true,
+                      secondary: const Icon(Icons.fingerprint_rounded, size: 20),
+                      title: const Text('Biometric App Lock'),
                       value: settings.biometricLockApp,
                       onChanged: (_) => _toggleBiometricSetting(
                         context,
                         currentValue: settings.biometricLockApp,
                         onApply: settings.setBiometricLockApp,
-                        reason:
-                            'Verify biometrics to configure Heaven App Lock',
+                        reason: 'Verify biometrics to configure Heaven Lock',
                       ),
                     ),
-                    const Divider(height: 1),
+                    _thinDivider(colors),
                     SwitchListTile.adaptive(
-                      title: const Text('Automatic Anti-Redirects'),
-                      subtitle: Text(
-                        'Block ads from hijacking pages to Play Store or spam sites (${settings.antiRedirectsBlockedCount} blocked)',
+                      dense: true,
+                      secondary: const Icon(
+                        Icons.shield_moon_outlined,
+                        size: 20,
                       ),
-                      value: settings.antiRedirectProtection,
-                      onChanged: settings.setAntiRedirectProtection,
+                      title: const Text('Biometric Incognito Lock'),
+                      value: settings.biometricLockIncognito,
+                      onChanged: (_) => _toggleBiometricSetting(
+                        context,
+                        currentValue: settings.biometricLockIncognito,
+                        onApply: settings.setBiometricLockIncognito,
+                        reason: 'Verify biometrics to lock Incognito tabs',
+                      ),
                     ),
-                    const Divider(height: 1),
+                    _thinDivider(colors),
                     SwitchListTile.adaptive(
-                      title: const Text('Heaven Native Ad & Tracker Shield'),
-                      subtitle: const Text(
-                        'Blocks ad scripts, banners, YouTube ads & trackers at the network layer',
-                      ),
-                      value: settings.shieldEnabled,
-                      onChanged: settings.setShieldEnabled,
+                      dense: true,
+                      secondary: const Icon(Icons.code_rounded, size: 20),
+                      title: const Text('JavaScript'),
+                      value: settings.javascriptEnabled,
+                      onChanged: settings.setJavascriptEnabled,
                     ),
-                    const Divider(height: 1),
+                    _thinDivider(colors),
                     SwitchListTile.adaptive(
-                      title: const Text('HTTPS-First Upgrade'),
-                      subtitle: const Text(
-                        'Automatically upgrade HTTP links to encrypted HTTPS',
+                      dense: true,
+                      secondary: const Icon(
+                        Icons.auto_delete_outlined,
+                        size: 20,
                       ),
-                      value: settings.httpsUpgrade,
-                      onChanged: settings.setHttpsUpgrade,
-                    ),
-                    const Divider(height: 1),
-                    SwitchListTile.adaptive(
-                      title: const Text('Block Third-Party Cookies'),
-                      subtitle: const Text(
-                        'Prevent cross-site tracking cookies across tabs',
-                      ),
-                      value: settings.blockThirdPartyCookies,
-                      onChanged: settings.setBlockThirdPartyCookies,
-                    ),
-                    const Divider(height: 1),
-                    SwitchListTile.adaptive(
-                      title: const Text('Send Do Not Track & GPC'),
-                      subtitle: const Text(
-                        'Broadcast Global Privacy Control opt-out signals',
-                      ),
-                      value: settings.sendDntAndGpc,
-                      onChanged: settings.setSendDntAndGpc,
-                    ),
-                    const Divider(height: 1),
-                    SwitchListTile.adaptive(
-                      title: const Text('Auto-Burn Tabs & Data on Exit'),
-                      subtitle: const Text(
-                        'Optional: wipe tabs, cookies & storage when leaving app (Off by default so tabs stay open)',
-                      ),
+                      title: const Text('Clear Data on Exit'),
                       value: settings.clearOnExit,
                       onChanged: settings.setClearOnExit,
                     ),
                   ],
                 ),
-                const SizedBox(height: 20),
-                _SectionTitle('Appearance & Rendering', colors),
-                _SettingsCard(
-                  children: <Widget>[
-                    Padding(
-                      padding: const EdgeInsets.fromLTRB(16, 14, 16, 10),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: <Widget>[
-                          const Text(
-                            'Theme',
-                            style: TextStyle(fontWeight: FontWeight.w600),
-                          ),
-                          const SizedBox(height: 10),
-                          SizedBox(
-                            width: double.infinity,
-                            child: SegmentedButton<ThemeMode>(
-                              showSelectedIcon: false,
-                              segments: const <ButtonSegment<ThemeMode>>[
-                                ButtonSegment<ThemeMode>(
-                                  value: ThemeMode.dark,
-                                  label: Text('Dark'),
-                                ),
-                                ButtonSegment<ThemeMode>(
-                                  value: ThemeMode.light,
-                                  label: Text('Light'),
-                                ),
-                                ButtonSegment<ThemeMode>(
-                                  value: ThemeMode.system,
-                                  label: Text('Auto'),
-                                ),
-                              ],
-                              selected: <ThemeMode>{settings.themeMode},
-                              onSelectionChanged: (Set<ThemeMode> modes) {
-                                settings.setThemeMode(modes.first);
-                              },
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                    const Divider(height: 1),
-                    SwitchListTile.adaptive(
-                      title: const Text('JavaScript Engine'),
-                      subtitle: const Text('Allow interactive web apps to run'),
-                      value: settings.javascriptEnabled,
-                      onChanged: settings.setJavascriptEnabled,
-                    ),
-                    const Divider(height: 1),
-                    SwitchListTile.adaptive(
-                      title: const Text('Desktop Site Mode'),
-                      subtitle: const Text(
-                        'Render full 1280px desktop layouts with pinch-zoom',
-                      ),
-                      value: settings.desktopMode,
-                      onChanged: (bool value) {
-                        tabManager.activeEngine.setDesktopModeAndReload(value);
-                      },
-                    ),
-                    const Divider(height: 1),
-                    Padding(
-                      padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: <Widget>[
-                          Row(
-                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                            children: <Widget>[
-                              const Text(
-                                'Page Text Zoom',
-                                style: TextStyle(fontWeight: FontWeight.w600),
-                              ),
-                              Text('${settings.textScalePercent}%'),
-                            ],
-                          ),
-                          Slider(
-                            value: settings.textScalePercent.toDouble(),
-                            min: 75,
-                            max: 175,
-                            divisions: 20,
-                            label: '${settings.textScalePercent}%',
-                            onChanged: (double v) {
-                              settings.setTextScalePercent(v.round());
-                            },
-                          ),
-                        ],
-                      ),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 20),
-                _SectionTitle('Extensions, Languages & Tools', colors),
-                _SettingsCard(
+                const SizedBox(height: 18),
+                _MinimalSectionLabel('Tools', colors),
+                _MinimalGroup(
+                  isDark: isDark,
+                  colors: colors,
                   children: <Widget>[
                     if (extensions != null) ...<Widget>[
                       ListTile(
-                        leading: const Icon(Icons.extension_rounded),
-                        title: const Text('Browser Extensions'),
-                        subtitle: Text(
-                          '${extensions!.enabledCount} active • Chrome Web Store (.crx) & .zip MV2/MV3',
-                        ),
-                        trailing: const Icon(Icons.chevron_right_rounded),
-                        onTap: () => Navigator.of(context).push(
-                          MaterialPageRoute<void>(
-                            builder: (_) => ExtensionsScreen(
-                              extensions: extensions!,
-                              activeEngine: tabManager.activeEngine,
-                              onOpenWebStoreInBrowser: () {
-                                Navigator.pop(context);
-                                tabManager.activeEngine.loadUserEntry(
-                                  ExtensionsController.chromeWebStoreHomeUrl,
-                                );
-                              },
-                              onOpenUrlInNewTab: (String url) {
-                                tabManager.openNewTab(
-                                  incognito: tabManager.isActiveIncognito,
-                                  initialInput: url,
-                                );
-                              },
+                        dense: true,
+                        leading: const Icon(Icons.extension_outlined, size: 20),
+                        title: const Text('Chrome Extensions'),
+                        trailing: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: <Widget>[
+                            if (extensions!.enabledCount > 0)
+                              Text(
+                                '${extensions!.enabledCount} active',
+                                style: TextStyle(
+                                  fontSize: 12,
+                                  color: colors.primary,
+                                  fontWeight: FontWeight.w700,
+                                ),
+                              ),
+                            const SizedBox(width: 4),
+                            Icon(
+                              Icons.chevron_right_rounded,
+                              size: 18,
+                              color: colors.onSurfaceVariant,
                             ),
-                          ),
+                          ],
                         ),
+                        onTap: () {
+                          final BrowserTab? targetTab =
+                              tabManager.lastActiveWebsiteTab;
+                          Navigator.of(context).push(
+                            MaterialPageRoute<void>(
+                              builder: (_) => ExtensionsScreen(
+                                extensions: extensions!,
+                                activeEngine:
+                                    targetTab?.engine ?? tabManager.activeEngine,
+                                onOpenWebStoreInBrowser: () {
+                                  Navigator.pop(context);
+                                  tabManager.activeEngine.loadUserEntry(
+                                    ExtensionsController.chromeWebStoreHomeUrl,
+                                  );
+                                },
+                                onOpenUrlInNewTab: (String url) {
+                                  Navigator.pop(context);
+                                  tabManager.openNewTab(
+                                    incognito: tabManager.isActiveIncognito,
+                                    initialInput: url,
+                                  );
+                                },
+                              ),
+                            ),
+                          );
+                        },
                       ),
-                      const Divider(height: 1),
+                      _thinDivider(colors),
                     ],
                     if (downloads != null) ...<Widget>[
                       ListTile(
-                        leading: const Icon(Icons.folder_open_rounded),
-                        title: const Text('Download Location'),
-                        subtitle: Text(downloads!.downloadLocationPath),
-                        trailing: const Icon(Icons.chevron_right_rounded),
+                        dense: true,
+                        leading: const Icon(
+                          Icons.folder_open_rounded,
+                          size: 20,
+                        ),
+                        title: const Text('Downloads'),
+                        subtitle: Text(
+                          downloads!.downloadLocationPath,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(fontSize: 11.5),
+                        ),
+                        trailing: Icon(
+                          Icons.chevron_right_rounded,
+                          size: 18,
+                          color: colors.onSurfaceVariant,
+                        ),
                         onTap: () => Navigator.of(context).push(
                           MaterialPageRoute<void>(
                             builder: (_) =>
@@ -533,15 +495,20 @@ class SettingsScreen extends StatelessWidget {
                           ),
                         ),
                       ),
-                      const Divider(height: 1),
+                      _thinDivider(colors),
                     ],
                     ListTile(
-                      leading: const Icon(Icons.notifications_outlined),
-                      title: const Text('Notifications'),
-                      subtitle: const Text(
-                        'Permission status, download & media playback alerts',
+                      dense: true,
+                      leading: const Icon(
+                        Icons.notifications_none_rounded,
+                        size: 20,
                       ),
-                      trailing: const Icon(Icons.chevron_right_rounded),
+                      title: const Text('Notifications'),
+                      trailing: Icon(
+                        Icons.chevron_right_rounded,
+                        size: 18,
+                        color: colors.onSurfaceVariant,
+                      ),
                       onTap: () => Navigator.of(context).push(
                         MaterialPageRoute<void>(
                           builder: (_) =>
@@ -549,70 +516,53 @@ class SettingsScreen extends StatelessWidget {
                         ),
                       ),
                     ),
-                    const Divider(height: 1),
+                    _thinDivider(colors),
                     ListTile(
-                      leading: const Icon(Icons.translate_rounded),
-                      title: const Text('Languages'),
-                      subtitle: Text(
-                        '${settings.language.nativeLabel} (${settings.language.englishLabel})',
+                      dense: true,
+                      leading: const Icon(Icons.translate_rounded, size: 20),
+                      title: const Text('Language'),
+                      trailing: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: <Widget>[
+                          Text(
+                            settings.language.nativeLabel,
+                            style: TextStyle(
+                              fontSize: 12.5,
+                              color: colors.onSurfaceVariant,
+                            ),
+                          ),
+                          const SizedBox(width: 4),
+                          Icon(
+                            Icons.chevron_right_rounded,
+                            size: 18,
+                            color: colors.onSurfaceVariant,
+                          ),
+                        ],
                       ),
-                      trailing: const Icon(Icons.chevron_right_rounded),
                       onTap: () => Navigator.of(context).push(
                         MaterialPageRoute<void>(
                           builder: (_) => LanguagesScreen(settings: settings),
                         ),
                       ),
                     ),
-                    const Divider(height: 1),
+                    _thinDivider(colors),
                     ListTile(
-                      key: const Key('settings_privacy_policy_tile'),
-                      leading: const Icon(Icons.privacy_tip_outlined),
-                      title: const Text('Privacy Policy'),
-                      subtitle: const Text(
-                        'github.com/Aryanshahx/heavenbrowser/blob/main/privacypolicy.md',
-                      ),
-                      trailing: const Icon(Icons.open_in_new_rounded, size: 18),
-                      onTap: () => _openPrivacyPolicy(context),
-                    ),
-                    const Divider(height: 1),
-                    ListTile(
-                      leading: const Icon(Icons.help_outline_rounded),
-                      title: const Text('Help & Support'),
-                      subtitle: const Text(HelpScreen.supportEmail),
-                      trailing: const Icon(Icons.chevron_right_rounded),
-                      onTap: () => Navigator.of(context).push(
-                        MaterialPageRoute<void>(
-                          builder: (_) => HelpScreen(
-                            onOpenUrlInBrowser: (String url) {
-                              Navigator.of(context).pop();
-                              tabManager.openNewTab(
-                                incognito: tabManager.isActiveIncognito,
-                                initialInput: url,
-                              );
-                            },
-                          ),
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 20),
-                _SectionTitle('Data & Privacy Cleanup', colors),
-                _SettingsCard(
-                  children: <Widget>[
-                    ListTile(
-                      leading: const Icon(Icons.history_toggle_off_rounded),
-                      title: const Text('Clear History & Visited Sites'),
-                      subtitle: Text(
-                        '${settings.history.length} history entries saved',
+                      dense: true,
+                      leading: const Icon(Icons.public_rounded, size: 20),
+                      title: const Text('Default Browser'),
+                      trailing: Icon(
+                        Icons.open_in_new_rounded,
+                        size: 16,
+                        color: colors.onSurfaceVariant,
                       ),
                       onTap: () async {
-                        await settings.clearUsageAndHistory();
-                        if (context.mounted) {
+                        final bool opened = await NativeShieldBridge.instance
+                            .openDefaultBrowserSettings();
+                        if (!opened && context.mounted) {
                           ScaffoldMessenger.of(context).showSnackBar(
                             const SnackBar(
                               content: Text(
-                                'History and visited sites cleared',
+                                'Open Android Settings > Apps > Default apps > Browser app',
                               ),
                               behavior: SnackBarBehavior.floating,
                             ),
@@ -620,21 +570,54 @@ class SettingsScreen extends StatelessWidget {
                         }
                       },
                     ),
-                    const Divider(height: 1),
+                  ],
+                ),
+                const SizedBox(height: 18),
+                _MinimalSectionLabel('Data & About', colors),
+                _MinimalGroup(
+                  isDark: isDark,
+                  colors: colors,
+                  children: <Widget>[
                     ListTile(
+                      dense: true,
+                      leading: const Icon(
+                        Icons.history_toggle_off_rounded,
+                        size: 20,
+                      ),
+                      title: const Text('Clear Browsing History'),
+                      trailing: Text(
+                        '${settings.history.length}',
+                        style: TextStyle(
+                          fontSize: 12,
+                          color: colors.onSurfaceVariant,
+                        ),
+                      ),
+                      onTap: () async {
+                        await settings.clearUsageAndHistory();
+                        if (context.mounted) {
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            const SnackBar(
+                              content: Text('History cleared'),
+                              behavior: SnackBarBehavior.floating,
+                            ),
+                          );
+                        }
+                      },
+                    ),
+                    _thinDivider(colors),
+                    ListTile(
+                      dense: true,
                       leading: Icon(
-                        Icons.local_fire_department_rounded,
+                        Icons.local_fire_department_outlined,
+                        size: 20,
                         color: colors.error,
                       ),
                       title: Text(
-                        'Burn All Tabs, Cookies & Storage',
+                        'Burn All Tabs & Site Data',
                         style: TextStyle(
                           color: colors.error,
-                          fontWeight: FontWeight.w700,
+                          fontWeight: FontWeight.w600,
                         ),
-                      ),
-                      subtitle: const Text(
-                        'Closes every tab and scrubs WebView cache & cookies',
                       ),
                       onTap: () async {
                         await tabManager.burnAllSessionsAndData();
@@ -650,32 +633,73 @@ class SettingsScreen extends StatelessWidget {
                         }
                       },
                     ),
-                  ],
-                ),
-                const SizedBox(height: 20),
-                _SectionTitle('About', colors),
-                _SettingsCard(
-                  children: <Widget>[
-                    const ListTile(
-                      leading: Icon(Icons.verified_outlined),
-                      title: Text(AppConstants.appName),
-                      subtitle: Text('Version ${AppConstants.appVersion}'),
-                    ),
-                    const Divider(height: 1),
-                    const ListTile(
-                      leading: Icon(Icons.inventory_2_outlined),
-                      title: Text('Package ID'),
-                      subtitle: Text(AppConstants.packageName),
-                    ),
-                    const Divider(height: 1),
+                    _thinDivider(colors),
                     ListTile(
-                      leading: const Icon(Icons.policy_outlined),
-                      title: const Text('Official Privacy Policy'),
-                      subtitle: const Text(AppConstants.privacyPolicyUrl),
-                      trailing: const Icon(Icons.launch_rounded, size: 17),
-                      onTap: () => launchUrl(
-                        Uri.parse(AppConstants.privacyPolicyUrl),
-                        mode: LaunchMode.externalApplication,
+                      key: const Key('settings_privacy_policy_tile'),
+                      dense: true,
+                      leading: const Icon(
+                        Icons.privacy_tip_outlined,
+                        size: 20,
+                      ),
+                      title: const Text('Privacy Policy'),
+                      trailing: Icon(
+                        Icons.open_in_new_rounded,
+                        size: 16,
+                        color: colors.onSurfaceVariant,
+                      ),
+                      onTap: () => _openPrivacyPolicy(context),
+                    ),
+                    _thinDivider(colors),
+                    ListTile(
+                      dense: true,
+                      leading: const Icon(Icons.help_outline_rounded, size: 20),
+                      title: const Text('Help & Support'),
+                      subtitle: const Text(
+                        HelpScreen.supportEmail,
+                        style: TextStyle(fontSize: 11.5),
+                      ),
+                      trailing: Icon(
+                        Icons.chevron_right_rounded,
+                        size: 18,
+                        color: colors.onSurfaceVariant,
+                      ),
+                      onTap: () => Navigator.of(context).push(
+                        MaterialPageRoute<void>(
+                          builder: (_) => HelpScreen(
+                            onOpenUrlInBrowser: (String url) {
+                              Navigator.of(context).pop();
+                              tabManager.openNewTab(
+                                incognito: tabManager.isActiveIncognito,
+                                initialInput: url,
+                              );
+                            },
+                          ),
+                        ),
+                      ),
+                    ),
+                    _thinDivider(colors),
+                    ListTile(
+                      dense: true,
+                      leading: ClipRRect(
+                        borderRadius: BorderRadius.circular(6),
+                        child: Image.asset(
+                          AppConstants.logoAssetPath,
+                          width: 22,
+                          height: 22,
+                          errorBuilder: (_, _, _) =>
+                              Icon(Icons.public_rounded, color: colors.primary),
+                        ),
+                      ),
+                      title: const Text(
+                        AppConstants.appName,
+                        style: TextStyle(fontWeight: FontWeight.w700),
+                      ),
+                      trailing: Text(
+                        'v${AppConstants.appVersion}',
+                        style: TextStyle(
+                          fontSize: 12,
+                          color: colors.onSurfaceVariant,
+                        ),
                       ),
                     ),
                   ],
@@ -687,45 +711,57 @@ class SettingsScreen extends StatelessWidget {
       ),
     );
   }
+
+  Widget _thinDivider(ColorScheme colors) => Divider(
+    height: 1,
+    indent: 50,
+    color: colors.outlineVariant.withValues(alpha: 0.28),
+  );
 }
 
-class _SectionTitle extends StatelessWidget {
-  const _SectionTitle(this.text, this.colors);
+class _MinimalSectionLabel extends StatelessWidget {
+  const _MinimalSectionLabel(this.title, this.colors);
 
-  final String text;
+  final String title;
   final ColorScheme colors;
 
   @override
   Widget build(BuildContext context) {
     return Padding(
-      padding: const EdgeInsets.only(left: 6, bottom: 8),
+      padding: const EdgeInsets.only(left: 4, bottom: 6),
       child: Text(
-        text.toUpperCase(),
+        title,
         style: TextStyle(
-          fontSize: 11.5,
-          fontWeight: FontWeight.w800,
-          letterSpacing: 0.9,
-          color: colors.primary,
+          fontSize: 12,
+          fontWeight: FontWeight.w700,
+          letterSpacing: 0.2,
+          color: colors.onSurfaceVariant,
         ),
       ),
     );
   }
 }
 
-class _SettingsCard extends StatelessWidget {
-  const _SettingsCard({required this.children});
+class _MinimalGroup extends StatelessWidget {
+  const _MinimalGroup({
+    required this.isDark,
+    required this.colors,
+    required this.children,
+  });
 
+  final bool isDark;
+  final ColorScheme colors;
   final List<Widget> children;
 
   @override
   Widget build(BuildContext context) {
-    final ColorScheme colors = Theme.of(context).colorScheme;
-    return Card(
-      elevation: 0,
-      margin: EdgeInsets.zero,
+    return Material(
+      color: isDark ? AppTheme.navySurface : Colors.white,
       shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(18),
-        side: BorderSide(color: colors.outlineVariant.withValues(alpha: 0.4)),
+        borderRadius: BorderRadius.circular(14),
+        side: BorderSide(
+          color: colors.outlineVariant.withValues(alpha: 0.30),
+        ),
       ),
       clipBehavior: Clip.antiAlias,
       child: Column(children: children),

@@ -12,10 +12,9 @@ typedef NativeWebViewDownloadInterceptedCallback =
     void Function(bool wasEmptyPage);
 typedef NativeConsoleMessageCallback =
     void Function(String level, String message, String sourceId, int line);
-typedef NativeMediaStreamDetectedCallback =
-    void Function(String url, String kind, String format, String label);
 typedef NativeMediaPlaybackChangedCallback =
-    void Function(bool playing, bool isVideo, String title);
+    void Function(bool playing, String title);
+typedef NativeWebScrollNavBarCallback = void Function(bool visible);
 
 class NativeShieldBridge {
   NativeShieldBridge._() {
@@ -39,16 +38,16 @@ class NativeShieldBridge {
       <int, NativeWebViewDownloadInterceptedCallback>{};
   final Map<int, NativeConsoleMessageCallback> _consoleListeners =
       <int, NativeConsoleMessageCallback>{};
-  final Map<int, NativeMediaStreamDetectedCallback> _streamListeners =
-      <int, NativeMediaStreamDetectedCallback>{};
   final Map<int, NativeMediaPlaybackChangedCallback> _playbackListeners =
       <int, NativeMediaPlaybackChangedCallback>{};
+  final Map<int, NativeWebScrollNavBarCallback> _scrollNavListeners =
+      <int, NativeWebScrollNavBarCallback>{};
 
   NativeDownloadStartedCallback? onDownloadStarted;
-  void Function(bool inPip)? onPipModeChanged;
   void Function(String target)? onRedirectBlocked;
   void Function(int bytesSaved)? onBytesSaved;
   void Function(String url)? onExtensionOpenNewTab;
+  void Function(Map<String, Object?> result)? onWebStoreExtensionInstalled;
 
   Future<dynamic> _handleNativeCall(MethodCall call) async {
     final Object? rawArgs = call.arguments;
@@ -74,33 +73,29 @@ class NativeShieldBridge {
       final String target = (rawArgs['target']?.toString() ?? 'redirect')
           .trim();
       onRedirectBlocked?.call(target);
-    } else if (call.method == 'onPipModeChanged' &&
-        rawArgs is Map<Object?, Object?>) {
-      onPipModeChanged?.call(rawArgs['inPip'] == true);
     } else if (call.method == 'onExtensionOpenNewTab' &&
         rawArgs is Map<Object?, Object?>) {
       final String url = (rawArgs['url']?.toString() ?? '').trim();
       if (url.isNotEmpty) {
         onExtensionOpenNewTab?.call(url);
       }
-    } else if (call.method == 'onMediaStreamDetected' &&
+    } else if (call.method == 'onWebStoreExtensionInstalled' &&
         rawArgs is Map<Object?, Object?>) {
-      final int webViewId = (rawArgs['webViewId'] as num?)?.toInt() ?? -1;
-      final String url = (rawArgs['url']?.toString() ?? '').trim();
-      final String kind = (rawArgs['kind']?.toString() ?? 'video').trim();
-      final String format = (rawArgs['format']?.toString() ?? 'MP4').trim();
-      final String label = (rawArgs['label']?.toString() ?? 'Media Stream')
-          .trim();
-      if (url.isNotEmpty) {
-        _streamListeners[webViewId]?.call(url, kind, format, label);
-      }
+      onWebStoreExtensionInstalled?.call(<String, Object?>{
+        for (final MapEntry<Object?, Object?> e in rawArgs.entries)
+          if (e.key != null) e.key.toString(): e.value,
+      });
     } else if (call.method == 'onMediaPlaybackChanged' &&
         rawArgs is Map<Object?, Object?>) {
       final int webViewId = (rawArgs['webViewId'] as num?)?.toInt() ?? -1;
       final bool playing = rawArgs['playing'] == true;
-      final bool isVideo = rawArgs['isVideo'] != false;
       final String title = (rawArgs['title']?.toString() ?? '').trim();
-      _playbackListeners[webViewId]?.call(playing, isVideo, title);
+      _playbackListeners[webViewId]?.call(playing, title);
+    } else if (call.method == 'onWebScrollNavBar' &&
+        rawArgs is Map<Object?, Object?>) {
+      final int webViewId = (rawArgs['webViewId'] as num?)?.toInt() ?? -1;
+      final bool visible = rawArgs['visible'] != false;
+      _scrollNavListeners[webViewId]?.call(visible);
     } else if (call.method == 'onPullProgress' &&
         rawArgs is Map<Object?, Object?>) {
       final Object? idVal = rawArgs['webViewId'];
@@ -148,7 +143,6 @@ class NativeShieldBridge {
     required bool sendDntAndGpc,
     bool ultraDataSaverMode = false,
     bool backgroundMediaEnabled = true,
-    bool autoPipEnabled = true,
     bool antiRedirectProtection = true,
     bool webNotificationsEnabled = false,
     bool backgroundPlayNotificationEnabled = true,
@@ -159,7 +153,6 @@ class NativeShieldBridge {
         'desktopMode': desktopMode,
         'ultraDataSaverMode': ultraDataSaverMode,
         'backgroundMediaEnabled': backgroundMediaEnabled,
-        'autoPipEnabled': autoPipEnabled,
         'antiRedirectProtection': antiRedirectProtection,
         'webNotificationsEnabled': webNotificationsEnabled,
         'backgroundPlayNotificationEnabled': backgroundPlayNotificationEnabled,
@@ -188,8 +181,8 @@ class NativeShieldBridge {
     required NativePullRefreshCallback onPullRefresh,
     NativeWebViewDownloadInterceptedCallback? onDownloadIntercepted,
     NativeConsoleMessageCallback? onConsoleMessage,
-    NativeMediaStreamDetectedCallback? onMediaStreamDetected,
     NativeMediaPlaybackChangedCallback? onMediaPlaybackChanged,
+    NativeWebScrollNavBarCallback? onScrollNavBarChanged,
   }) async {
     _blockedListeners[webViewId] = onBlocked;
     _pullProgressListeners[webViewId] = onPullProgress;
@@ -200,11 +193,11 @@ class NativeShieldBridge {
     if (onConsoleMessage != null) {
       _consoleListeners[webViewId] = onConsoleMessage;
     }
-    if (onMediaStreamDetected != null) {
-      _streamListeners[webViewId] = onMediaStreamDetected;
-    }
     if (onMediaPlaybackChanged != null) {
       _playbackListeners[webViewId] = onMediaPlaybackChanged;
+    }
+    if (onScrollNavBarChanged != null) {
+      _scrollNavListeners[webViewId] = onScrollNavBarChanged;
     }
     try {
       await _channel.invokeMethod<bool>('attachToWebView', <String, Object?>{
@@ -271,47 +264,8 @@ class NativeShieldBridge {
     _pullRefreshListeners.remove(webViewId);
     _downloadInterceptListeners.remove(webViewId);
     _consoleListeners.remove(webViewId);
-    _streamListeners.remove(webViewId);
     _playbackListeners.remove(webViewId);
-  }
-
-  Future<bool> enterPictureInPicture() async {
-    try {
-      final bool? ok = await _channel.invokeMethod<bool>(
-        'enterPictureInPicture',
-      );
-      return ok ?? false;
-    } on MissingPluginException {
-      return true;
-    } on PlatformException {
-      return false;
-    }
-  }
-
-  Future<List<Map<String, String>>> scanPageMediaStreams(int webViewId) async {
-    try {
-      final Object? raw = await _channel.invokeMethod<Object?>(
-        'scanPageMediaStreams',
-        <String, Object>{'webViewId': webViewId},
-      );
-      if (raw is List<Object?>) {
-        return raw
-            .whereType<Map<Object?, Object?>>()
-            .map(
-              (Map<Object?, Object?> m) => <String, String>{
-                for (final MapEntry<Object?, Object?> e in m.entries)
-                  if (e.key != null && e.value != null)
-                    e.key.toString(): e.value.toString(),
-              },
-            )
-            .toList(growable: false);
-      }
-      return const <Map<String, String>>[];
-    } on MissingPluginException {
-      return const <Map<String, String>>[];
-    } on PlatformException {
-      return const <Map<String, String>>[];
-    }
+    _scrollNavListeners.remove(webViewId);
   }
 
   Future<bool> isBiometricAvailable() async {

@@ -38,27 +38,6 @@ enum SitePermissionDecision {
   }
 }
 
-enum QuickActionItem {
-  refresh('Refresh'),
-  bookmark('Bookmark'),
-  media('Media Grabber'),
-  pip('Picture-in-Picture'),
-  dataSaver('Ultra Data Saver'),
-  desktop('Desktop Mode'),
-  permissions('Site Permissions'),
-  extensions('Extensions');
-
-  const QuickActionItem(this.label);
-  final String label;
-
-  static QuickActionItem? fromName(String raw) {
-    for (final QuickActionItem item in QuickActionItem.values) {
-      if (item.name == raw) return item;
-    }
-    return null;
-  }
-}
-
 class SiteUsageEntry {
   const SiteUsageEntry({
     required this.domain,
@@ -193,7 +172,6 @@ class BrowserSettingsController extends ChangeNotifier {
   static const String _keySearchEngine = 'hb.searchEngine.v13';
   static const String _legacyKeySearchEngine = 'hb.searchEngine.v3';
   static const String _keyThemeMode = 'hb.themeMode.v3';
-  static const String _keyBottomBar = 'hb.bottomOmnibox.v13';
   static const String _keyShieldEnabled = 'hb.shieldEnabled';
   static const String _keyHttpsUpgrade = 'hb.httpsUpgrade';
   static const String _keyBlockThirdPartyCookies = 'hb.blockThirdPartyCookies';
@@ -211,22 +189,12 @@ class BrowserSettingsController extends ChangeNotifier {
   static const String _keySitePermissions = 'hb.sitePermissions.v13';
   static const String _keyRecentSearches = 'hb.recentSearches.v8';
   static const String _keyLanguage = 'hb.language.v8';
-  static const String _keyGesturesEnabled = 'hb.gesturesEnabled.v8';
-  static const String _keyEdgeSwipe = 'hb.edgeSwipe.v8';
-  static const String _keyBarSwipeTabs = 'hb.barSwipeTabs.v8';
-  static const String _keyQuickActionEnabled = 'hb.quickActionEnabled.v13';
-  static const String _keyQuickActionLeft = 'hb.quickActionLeft.v13';
-  static const String _keyQuickActionItems = 'hb.quickActionItems.v13';
   static const String _keyUltraDataSaver = 'hb.ultraDataSaver.v13';
   static const String _keyBgMedia = 'hb.bgMedia.v13';
-  static const String _keyAutoPip = 'hb.autoPip.v13';
-  static const String _keyTabHibernation = 'hb.tabHibernation.v13';
-  static const String _keyTabHibernationMins = 'hb.tabHibernationMins.v13';
   static const String _keyBiometricIncognito = 'hb.biometricIncognito.v13';
   static const String _keyBiometricApp = 'hb.biometricApp.v13';
   static const String _keyAntiRedirect = 'hb.antiRedirect.v13';
   static const String _keyDownloadNotifs = 'hb.downloadNotifs.v8';
-  static const String _keyMediaReadyNotifs = 'hb.mediaReadyNotifs.v13';
   static const String _keyBgPlayNotifs = 'hb.bgPlayNotifs.v13';
   static const String _keySecurityAlertNotifs = 'hb.securityAlertNotifs.v13';
   static const String _keyWebNotifs = 'hb.webNotifs.v8';
@@ -235,11 +203,10 @@ class BrowserSettingsController extends ChangeNotifier {
   static const String _keyBookmarks = 'hb.bookmarks.v3';
   static const String _keyHistory = 'hb.history.v3';
 
-  // Google is ALWAYS the default search engine, and BOTTOM navigation is ALWAYS default!
+  // Google is the default search engine; top navigation bar is always used.
   SearchEngine _searchEngine = SearchEngine.google;
   ThemeMode _themeMode = ThemeMode.dark;
   BrowserLanguage _language = BrowserLanguage.en;
-  bool _bottomOmnibox = true;
   bool _shieldEnabled = true;
   bool _httpsUpgrade = true;
   bool _blockThirdPartyCookies = true;
@@ -247,24 +214,12 @@ class BrowserSettingsController extends ChangeNotifier {
   bool _clearOnExit = false;
   bool _javascriptEnabled = true;
   bool _desktopMode = false;
-  bool _gesturesEnabled = true;
-  bool _edgeSwipeNavigation = true;
-  bool _barSwipeSwitchTabs = true;
-  bool _quickActionEnabled = true;
-  bool _quickActionLeftHanded = false;
-  List<QuickActionItem> _quickActionItems = List<QuickActionItem>.of(
-    QuickActionItem.values,
-  );
   bool _ultraDataSaverMode = false;
   bool _backgroundMediaEnabled = true;
-  bool _autoPipEnabled = true;
-  bool _tabHibernationEnabled = true;
-  int _tabHibernationMinutes = 3;
   bool _biometricLockIncognito = false;
   bool _biometricLockApp = false;
   bool _antiRedirectProtection = true;
   bool _downloadNotificationsEnabled = true;
-  bool _mediaReadyNotificationsEnabled = true;
   bool _backgroundPlayNotificationEnabled = true;
   bool _securityRedirectAlertsEnabled = true;
   bool _webNotificationsEnabled = false;
@@ -290,7 +245,6 @@ class BrowserSettingsController extends ChangeNotifier {
   SearchEngine get searchEngine => _searchEngine;
   ThemeMode get themeMode => _themeMode;
   BrowserLanguage get language => _language;
-  bool get bottomOmnibox => _bottomOmnibox;
   bool get shieldEnabled => _shieldEnabled;
   bool get httpsUpgrade => _httpsUpgrade;
   bool get blockThirdPartyCookies => _blockThirdPartyCookies;
@@ -298,23 +252,12 @@ class BrowserSettingsController extends ChangeNotifier {
   bool get clearOnExit => _clearOnExit;
   bool get javascriptEnabled => _javascriptEnabled;
   bool get desktopMode => _desktopMode;
-  bool get gesturesEnabled => _gesturesEnabled;
-  bool get edgeSwipeNavigation => _edgeSwipeNavigation;
-  bool get barSwipeSwitchTabs => _barSwipeSwitchTabs;
-  bool get quickActionEnabled => _quickActionEnabled;
-  bool get quickActionLeftHanded => _quickActionLeftHanded;
-  List<QuickActionItem> get quickActionItems =>
-      List<QuickActionItem>.unmodifiable(_quickActionItems);
   bool get ultraDataSaverMode => _ultraDataSaverMode;
   bool get backgroundMediaEnabled => _backgroundMediaEnabled;
-  bool get autoPipEnabled => _autoPipEnabled;
-  bool get tabHibernationEnabled => _tabHibernationEnabled;
-  int get tabHibernationMinutes => _tabHibernationMinutes;
   bool get biometricLockIncognito => _biometricLockIncognito;
   bool get biometricLockApp => _biometricLockApp;
   bool get antiRedirectProtection => _antiRedirectProtection;
   bool get downloadNotificationsEnabled => _downloadNotificationsEnabled;
-  bool get mediaReadyNotificationsEnabled => _mediaReadyNotificationsEnabled;
   bool get backgroundPlayNotificationEnabled =>
       _backgroundPlayNotificationEnabled;
   bool get securityRedirectAlertsEnabled => _securityRedirectAlertsEnabled;
@@ -383,8 +326,6 @@ class BrowserSettingsController extends ChangeNotifier {
       'system' => ThemeMode.system,
       _ => ThemeMode.dark,
     };
-    // Ergonomic Bottom Bar is ALWAYS true by default!
-    _bottomOmnibox = _prefs.getBool(_keyBottomBar) ?? true;
     _shieldEnabled = _prefs.getBool(_keyShieldEnabled) ?? true;
     _httpsUpgrade = _prefs.getBool(_keyHttpsUpgrade) ?? true;
     _blockThirdPartyCookies =
@@ -401,39 +342,14 @@ class BrowserSettingsController extends ChangeNotifier {
     _estimatedBytesSaved = _prefs.getInt(_keyBytesSaved) ?? 0;
     _antiRedirectsBlockedCount = _prefs.getInt(_keyRedirectsBlocked) ?? 0;
     _language = BrowserLanguage.fromCode(_prefs.getString(_keyLanguage));
-    _gesturesEnabled = _prefs.getBool(_keyGesturesEnabled) ?? true;
-    _edgeSwipeNavigation = _prefs.getBool(_keyEdgeSwipe) ?? true;
-    _barSwipeSwitchTabs = _prefs.getBool(_keyBarSwipeTabs) ?? true;
-    _quickActionEnabled = _prefs.getBool(_keyQuickActionEnabled) ?? true;
-    _quickActionLeftHanded = _prefs.getBool(_keyQuickActionLeft) ?? false;
-    final List<String>? savedQuickItems = _prefs.getStringList(
-      _keyQuickActionItems,
-    );
-    if (savedQuickItems != null && savedQuickItems.isNotEmpty) {
-      final List<QuickActionItem> parsed = savedQuickItems
-          .map(QuickActionItem.fromName)
-          .whereType<QuickActionItem>()
-          .toList();
-      if (parsed.isNotEmpty) {
-        _quickActionItems = parsed;
-      }
-    }
     _ultraDataSaverMode = _prefs.getBool(_keyUltraDataSaver) ?? false;
     _backgroundMediaEnabled = _prefs.getBool(_keyBgMedia) ?? true;
-    _autoPipEnabled = _prefs.getBool(_keyAutoPip) ?? true;
-    _tabHibernationEnabled = _prefs.getBool(_keyTabHibernation) ?? true;
-    _tabHibernationMinutes = (_prefs.getInt(_keyTabHibernationMins) ?? 3).clamp(
-      1,
-      30,
-    );
     _biometricLockIncognito =
         _prefs.getBool(_keyBiometricIncognito) ?? false;
     _biometricLockApp = _prefs.getBool(_keyBiometricApp) ?? false;
     _antiRedirectProtection = _prefs.getBool(_keyAntiRedirect) ?? true;
     _downloadNotificationsEnabled =
         _prefs.getBool(_keyDownloadNotifs) ?? true;
-    _mediaReadyNotificationsEnabled =
-        _prefs.getBool(_keyMediaReadyNotifs) ?? true;
     _backgroundPlayNotificationEnabled =
         _prefs.getBool(_keyBgPlayNotifs) ?? true;
     _securityRedirectAlertsEnabled =
@@ -570,7 +486,6 @@ class BrowserSettingsController extends ChangeNotifier {
       sendDntAndGpc: _sendDntAndGpc,
       ultraDataSaverMode: _ultraDataSaverMode,
       backgroundMediaEnabled: _backgroundMediaEnabled,
-      autoPipEnabled: _autoPipEnabled,
       antiRedirectProtection: _antiRedirectProtection,
       webNotificationsEnabled: _webNotificationsEnabled,
       backgroundPlayNotificationEnabled: _backgroundPlayNotificationEnabled,
@@ -983,42 +898,6 @@ class BrowserSettingsController extends ChangeNotifier {
     notifyListeners();
   }
 
-  Future<void> setBottomOmnibox(bool value) async {
-    _bottomOmnibox = value;
-    await _prefs.setBool(_keyBottomBar, value);
-    notifyListeners();
-  }
-
-  Future<void> setQuickActionEnabled(bool value) async {
-    _quickActionEnabled = value;
-    await _prefs.setBool(_keyQuickActionEnabled, value);
-    notifyListeners();
-  }
-
-  Future<void> setQuickActionLeftHanded(bool value) async {
-    _quickActionLeftHanded = value;
-    await _prefs.setBool(_keyQuickActionLeft, value);
-    notifyListeners();
-  }
-
-  Future<void> toggleQuickActionItem(QuickActionItem item) async {
-    final List<QuickActionItem> next = List<QuickActionItem>.of(
-      _quickActionItems,
-    );
-    if (next.contains(item)) {
-      if (next.length <= 2) return;
-      next.remove(item);
-    } else {
-      next.add(item);
-    }
-    _quickActionItems = next;
-    await _prefs.setStringList(
-      _keyQuickActionItems,
-      _quickActionItems.map((QuickActionItem e) => e.name).toList(),
-    );
-    notifyListeners();
-  }
-
   Future<void> setUltraDataSaverMode(bool value) async {
     _ultraDataSaverMode = value;
     await _prefs.setBool(_keyUltraDataSaver, value);
@@ -1030,25 +909,6 @@ class BrowserSettingsController extends ChangeNotifier {
     _backgroundMediaEnabled = value;
     await _prefs.setBool(_keyBgMedia, value);
     _pushNativeShieldConfig();
-    notifyListeners();
-  }
-
-  Future<void> setAutoPipEnabled(bool value) async {
-    _autoPipEnabled = value;
-    await _prefs.setBool(_keyAutoPip, value);
-    _pushNativeShieldConfig();
-    notifyListeners();
-  }
-
-  Future<void> setTabHibernationEnabled(bool value) async {
-    _tabHibernationEnabled = value;
-    await _prefs.setBool(_keyTabHibernation, value);
-    notifyListeners();
-  }
-
-  Future<void> setTabHibernationMinutes(int minutes) async {
-    _tabHibernationMinutes = minutes.clamp(1, 30);
-    await _prefs.setInt(_keyTabHibernationMins, _tabHibernationMinutes);
     notifyListeners();
   }
 
@@ -1129,34 +989,10 @@ class BrowserSettingsController extends ChangeNotifier {
     notifyListeners();
   }
 
-  Future<void> setGesturesEnabled(bool value) async {
-    _gesturesEnabled = value;
-    await _prefs.setBool(_keyGesturesEnabled, value);
-    notifyListeners();
-  }
-
-  Future<void> setEdgeSwipeNavigation(bool value) async {
-    _edgeSwipeNavigation = value;
-    await _prefs.setBool(_keyEdgeSwipe, value);
-    notifyListeners();
-  }
-
-  Future<void> setBarSwipeSwitchTabs(bool value) async {
-    _barSwipeSwitchTabs = value;
-    await _prefs.setBool(_keyBarSwipeTabs, value);
-    notifyListeners();
-  }
-
   Future<void> setDownloadNotificationsEnabled(bool value) async {
     _downloadNotificationsEnabled = value;
     await _prefs.setBool(_keyDownloadNotifs, value);
     unawaited(NativeShieldBridge.instance.setDownloadNotificationsEnabled(value));
-    notifyListeners();
-  }
-
-  Future<void> setMediaReadyNotificationsEnabled(bool value) async {
-    _mediaReadyNotificationsEnabled = value;
-    await _prefs.setBool(_keyMediaReadyNotifs, value);
     notifyListeners();
   }
 
