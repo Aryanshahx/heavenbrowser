@@ -8,8 +8,6 @@ import android.net.Uri;
 import android.os.Handler;
 import android.os.Looper;
 import android.view.View;
-import android.view.ViewGroup;
-import android.view.ViewParent;
 import android.webkit.CookieManager;
 import android.webkit.WebResourceError;
 import android.webkit.WebResourceRequest;
@@ -17,7 +15,6 @@ import android.webkit.WebResourceResponse;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
-import android.widget.FrameLayout;
 import io.flutter.plugin.common.MethodChannel;
 import java.io.ByteArrayInputStream;
 import java.nio.charset.StandardCharsets;
@@ -49,8 +46,6 @@ public final class HeavenGoogleBgSearch {
 
   private final Context appContext;
   private final Handler mainHandler = new Handler(Looper.getMainLooper());
-  private Activity hostActivity;
-  private FrameLayout offscreenHolder;
   private WebView bgWebView;
   private ActiveSearchJob activeJob;
   private int jobCounter = 0;
@@ -77,7 +72,6 @@ public final class HeavenGoogleBgSearch {
   }
 
   public void attachToActivityAndPrewarm(final Activity activity) {
-    this.hostActivity = activity;
     if (activity == null) {
       return;
     }
@@ -93,20 +87,11 @@ public final class HeavenGoogleBgSearch {
           } catch (Throwable ignored) {
           }
         },
-        350L);
+        750L);
   }
 
   public void detachFromActivity() {
-    this.hostActivity = null;
-    mainHandler.post(
-        () -> {
-          if (offscreenHolder != null) {
-            ViewParent parent = offscreenHolder.getParent();
-            if (parent instanceof ViewGroup) {
-              ((ViewGroup) parent).removeView(offscreenHolder);
-            }
-          }
-        });
+    // Standalone offscreen WebView never attaches to Activity's view tree.
   }
 
   private static Map<String, String> buildDesktopHeaders(String langHeader) {
@@ -125,8 +110,7 @@ public final class HeavenGoogleBgSearch {
   @SuppressLint("SetJavaScriptEnabled")
   private void ensureWebViewOnMain() {
     if (bgWebView == null) {
-      Context ctx = hostActivity != null ? hostActivity : appContext;
-      bgWebView = new WebView(ctx);
+      bgWebView = new WebView(appContext);
 
       WebSettings s = bgWebView.getSettings();
       s.setJavaScriptEnabled(true);
@@ -149,69 +133,79 @@ public final class HeavenGoogleBgSearch {
             @Override
             public WebResourceResponse shouldInterceptRequest(
                 WebView view, WebResourceRequest request) {
-              if (request != null && request.getUrl() != null) {
-                Uri u = request.getUrl();
-                String host = u.getHost() != null ? u.getHost().toLowerCase(Locale.US) : "";
-                String path = u.getEncodedPath() != null ? u.getEncodedPath().toLowerCase(Locale.US) : "";
-                boolean isImagesTab =
-                    activeJob != null && "images".equals(activeJob.tab);
-                // Block Google ads, trackers, beacons, and heavy web fonts so SERP loads in ~300ms
-                if (host.contains("googlesyndication.com")
-                    || host.contains("googleadservices.com")
-                    || host.contains("doubleclick.net")
-                    || host.contains("google-analytics.com")
-                    || host.contains("play.google.com")
-                    || host.contains("youtube.com")
-                    || path.contains("/gen_204")
-                    || path.contains("/client_204")
-                    || path.contains("/ads?")
-                    || path.contains("/pagead/")
-                    || path.endsWith(".woff2")
-                    || path.endsWith(".woff")
-                    || path.endsWith(".ttf")
-                    || (!isImagesTab
-                        && (path.endsWith(".png")
-                            || path.endsWith(".jpg")
-                            || path.endsWith(".jpeg")
-                            || path.endsWith(".webp")
-                            || path.endsWith(".gif")))) {
-                  return new WebResourceResponse(
-                      "text/plain",
-                      "UTF-8",
-                      204,
-                      "No Content",
-                      null,
-                      new ByteArrayInputStream(EMPTY_BYTES));
+              try {
+                if (request != null && request.getUrl() != null) {
+                  Uri u = request.getUrl();
+                  String host = u.getHost() != null ? u.getHost().toLowerCase(Locale.US) : "";
+                  String path =
+                      u.getEncodedPath() != null ? u.getEncodedPath().toLowerCase(Locale.US) : "";
+                  boolean isImagesTab =
+                      activeJob != null && "images".equals(activeJob.tab);
+                  // Block Google ads, trackers, beacons, and heavy web fonts so SERP loads fast
+                  if (host.contains("googlesyndication.com")
+                      || host.contains("googleadservices.com")
+                      || host.contains("doubleclick.net")
+                      || host.contains("google-analytics.com")
+                      || host.contains("play.google.com")
+                      || host.contains("youtube.com")
+                      || path.contains("/gen_204")
+                      || path.contains("/client_204")
+                      || path.contains("/ads?")
+                      || path.contains("/pagead/")
+                      || path.endsWith(".woff2")
+                      || path.endsWith(".woff")
+                      || path.endsWith(".ttf")
+                      || (!isImagesTab
+                          && (path.endsWith(".png")
+                              || path.endsWith(".jpg")
+                              || path.endsWith(".jpeg")
+                              || path.endsWith(".webp")
+                              || path.endsWith(".gif")))) {
+                    return new WebResourceResponse(
+                        "text/plain", "UTF-8", new ByteArrayInputStream(EMPTY_BYTES));
+                  }
                 }
+              } catch (Throwable ignored) {
               }
               return super.shouldInterceptRequest(view, request);
             }
 
             @Override
             public void onPageStarted(WebView view, String url, Bitmap favicon) {
-              if (url != null && url.contains("/sorry/")) {
-                finishJobEmpty("captcha");
-                return;
+              try {
+                if (url != null && url.contains("/sorry/")) {
+                  finishJobEmpty("captcha");
+                  return;
+                }
+                view.evaluateJavascript(
+                    "(function(){try{"
+                        + "Object.defineProperty(navigator,'webdriver',{get:()=>false,configurable:true});"
+                        + "Object.defineProperty(navigator,'platform',{get:()=>'Win32',configurable:true});"
+                        + "Object.defineProperty(window,'innerWidth',{get:()=>1280,configurable:true});"
+                        + "Object.defineProperty(window,'innerHeight',{get:()=>900,configurable:true});"
+                        + "Object.defineProperty(window,'outerWidth',{get:()=>1280,configurable:true});"
+                        + "Object.defineProperty(window,'outerHeight',{get:()=>960,configurable:true});"
+                        + "window.chrome=window.chrome||{runtime:{}};"
+                        + "}catch(e){}})();",
+                    null);
+              } catch (Throwable ignored) {
               }
-              // Remove headless indicators early on every navigation
-              view.evaluateJavascript(
-                  "(function(){try{Object.defineProperty(navigator,'webdriver',{get:()=>false,configurable:true});"
-                      + "Object.defineProperty(navigator,'platform',{get:()=>'Win32',configurable:true});"
-                      + "window.chrome=window.chrome||{runtime:{}};}catch(e){}})();",
-                  null);
             }
 
             @Override
             public void onPageFinished(WebView view, String url) {
-              CookieManager.getInstance().flush();
-              if (activeJob == null || activeJob.completed) {
-                return;
+              try {
+                CookieManager.getInstance().flush();
+                if (activeJob == null || activeJob.completed) {
+                  return;
+                }
+                if (url != null && url.contains("/sorry/")) {
+                  finishJobEmpty("captcha");
+                  return;
+                }
+                pollDomExtraction(activeJob.id);
+              } catch (Throwable ignored) {
               }
-              if (url != null && url.contains("/sorry/")) {
-                finishJobEmpty("captcha");
-                return;
-              }
-              pollDomExtraction(activeJob.id);
             }
 
             @Override
@@ -224,35 +218,14 @@ public final class HeavenGoogleBgSearch {
           });
     }
 
-    // Attach inside a 1x1 off-screen holder on Activity so Chromium gives full foreground priority
-    // and window.innerWidth / innerHeight equal 1280x900 (preventing 0x0 headless detection).
-    if (hostActivity != null) {
-      View root = hostActivity.findViewById(android.R.id.content);
-      if (root instanceof ViewGroup) {
-        ViewGroup rootGroup = (ViewGroup) root;
-        if (offscreenHolder == null) {
-          offscreenHolder = new FrameLayout(hostActivity);
-          offscreenHolder.setAlpha(0.0f);
-          offscreenHolder.setTranslationX(-12000f);
-          offscreenHolder.setClickable(false);
-          offscreenHolder.setFocusable(false);
-          offscreenHolder.setImportantForAccessibility(
-              View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS);
-        }
-        if (bgWebView.getParent() != offscreenHolder) {
-          if (bgWebView.getParent() instanceof ViewGroup) {
-            ((ViewGroup) bgWebView.getParent()).removeView(bgWebView);
-          }
-          offscreenHolder.addView(bgWebView, new FrameLayout.LayoutParams(1280, 900));
-        }
-        if (offscreenHolder.getParent() != rootGroup) {
-          if (offscreenHolder.getParent() instanceof ViewGroup) {
-            ((ViewGroup) offscreenHolder.getParent()).removeView(offscreenHolder);
-          }
-          rootGroup.addView(offscreenHolder, new FrameLayout.LayoutParams(1, 1));
-        }
-        bgWebView.layout(0, 0, 1280, 900);
-      }
+    try {
+      bgWebView.onResume();
+      bgWebView.resumeTimers();
+      bgWebView.measure(
+          View.MeasureSpec.makeMeasureSpec(1280, View.MeasureSpec.EXACTLY),
+          View.MeasureSpec.makeMeasureSpec(900, View.MeasureSpec.EXACTLY));
+      bgWebView.layout(0, 0, 1280, 900);
+    } catch (Throwable ignored) {
     }
   }
 
@@ -596,14 +569,6 @@ public final class HeavenGoogleBgSearch {
         () -> {
           if (activeJob != null && !activeJob.completed) {
             finishJobEmpty("destroyed");
-          }
-          if (offscreenHolder != null) {
-            ViewParent parent = offscreenHolder.getParent();
-            if (parent instanceof ViewGroup) {
-              ((ViewGroup) parent).removeView(offscreenHolder);
-            }
-            offscreenHolder.removeAllViews();
-            offscreenHolder = null;
           }
           if (bgWebView != null) {
             try {

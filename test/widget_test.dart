@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -1094,6 +1095,22 @@ void main() {
         extensions.dispose();
         newsService.dispose();
         downloads.dispose();
+      },
+    );
+
+    test(
+      'Android startup safety: HeavenShieldPlugin never replaces SecureWebChromeClient and HeavenGoogleBgSearch stays offscreen',
+      () {
+        final String shieldJava = File(
+          'android/app/src/main/java/com/hypertechlabs/heavenbrowser/HeavenShieldPlugin.java',
+        ).readAsStringSync();
+        expect(shieldJava.contains('setWebChromeClient'), isFalse);
+        expect(shieldJava.contains('ShieldWebChromeClient'), isFalse);
+
+        final String bgSearchJava = File(
+          'android/app/src/main/java/com/hypertechlabs/heavenbrowser/HeavenGoogleBgSearch.java',
+        ).readAsStringSync();
+        expect(bgSearchJava.contains('android.R.id.content'), isFalse);
       },
     );
   });

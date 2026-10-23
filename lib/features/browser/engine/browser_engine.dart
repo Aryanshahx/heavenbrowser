@@ -198,6 +198,21 @@ class BrowserEngine extends ChangeNotifier {
     );
 
     unawaited(
+      webController
+          .setOnConsoleMessage((JavaScriptConsoleMessage msg) {
+            if (msg.message.startsWith('__hb_')) return;
+            _appendConsoleEntry(
+              DevToolsConsoleEntry(
+                timestamp: DateTime.now(),
+                level: msg.level.name.toLowerCase(),
+                message: msg.message,
+              ),
+            );
+          })
+          .catchError((Object _) {}),
+    );
+
+    unawaited(
       webController.setNavigationDelegate(
         NavigationDelegate(
           onNavigationRequest: _handleNavigationRequest,
@@ -1118,6 +1133,16 @@ class BrowserEngine extends ChangeNotifier {
           );
           notifyListeners();
         }
+      } else if (kind == 'error') {
+        _appendConsoleEntry(
+          DevToolsConsoleEntry(
+            timestamp: DateTime.now(),
+            level: 'error',
+            message: decoded['message']?.toString() ?? 'Uncaught Error',
+            source: decoded['source']?.toString() ?? '',
+            line: (decoded['line'] as num?)?.toInt() ?? 0,
+          ),
+        );
       }
     } catch (_) {
       // Ignore malformed DevTools event payloads.
@@ -1264,6 +1289,16 @@ class BrowserEngine extends ChangeNotifier {
     dt.highlight(t);
     dt.send({ kind: 'picked_element', element: dt.serializeElement(t) });
   }, true);
+
+  window.addEventListener('error', function(ev) {
+    if (!ev || !ev.message) return;
+    window.__heavenDevToolsV10.send({
+      kind: 'error',
+      message: String(ev.message),
+      source: String(ev.filename || ''),
+      line: Number(ev.lineno || 0)
+    });
+  });
 })();
 ''';
   }

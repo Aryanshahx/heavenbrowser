@@ -39,20 +39,13 @@ import android.view.KeyEvent;
 import android.view.MotionEvent;
 import android.view.View;
 import android.webkit.ClientCertRequest;
-import android.webkit.ConsoleMessage;
 import android.webkit.CookieManager;
-import android.webkit.GeolocationPermissions;
 import android.webkit.HttpAuthHandler;
-import android.webkit.JsPromptResult;
-import android.webkit.JsResult;
 import android.webkit.MimeTypeMap;
-import android.webkit.PermissionRequest;
 import android.webkit.ServiceWorkerClient;
 import android.webkit.ServiceWorkerController;
 import android.webkit.SslErrorHandler;
 import android.webkit.URLUtil;
-import android.webkit.ValueCallback;
-import android.webkit.WebChromeClient;
 import android.webkit.WebResourceError;
 import android.webkit.WebResourceRequest;
 import android.webkit.WebResourceResponse;
@@ -1169,22 +1162,25 @@ public class HeavenShieldPlugin
   }
 
   private void applyDesktopSettingsToWebView(WebView webView, boolean enableDesktop) {
-    WebSettings settings = webView.getSettings();
-    settings.setUseWideViewPort(enableDesktop);
-    settings.setLoadWithOverviewMode(enableDesktop);
-    settings.setSupportZoom(true);
-    settings.setBuiltInZoomControls(true);
-    settings.setDisplayZoomControls(false);
-    settings.setJavaScriptCanOpenWindowsAutomatically(false);
-    settings.setSupportMultipleWindows(true);
-    if (enableDesktop) {
-      settings.setUserAgentString(DESKTOP_CHROME_WIN_UA);
-      webView.setInitialScale(0);
-      webView.evaluateJavascript(DESKTOP_VIEWPORT_SCRIPT, null);
-    } else {
-      settings.setUserAgentString(MOBILE_CHROME_ANDROID_UA);
-      webView.setInitialScale(0);
-      webView.evaluateJavascript(MOBILE_VIEWPORT_RESET_SCRIPT, null);
+    try {
+      WebSettings settings = webView.getSettings();
+      settings.setUseWideViewPort(enableDesktop);
+      settings.setLoadWithOverviewMode(enableDesktop);
+      settings.setSupportZoom(true);
+      settings.setBuiltInZoomControls(true);
+      settings.setDisplayZoomControls(false);
+      settings.setJavaScriptCanOpenWindowsAutomatically(false);
+      settings.setSupportMultipleWindows(true);
+      if (enableDesktop) {
+        settings.setUserAgentString(DESKTOP_CHROME_WIN_UA);
+        webView.setInitialScale(0);
+        webView.evaluateJavascript(DESKTOP_VIEWPORT_SCRIPT, null);
+      } else {
+        settings.setUserAgentString(MOBILE_CHROME_ANDROID_UA);
+        webView.setInitialScale(0);
+        webView.evaluateJavascript(MOBILE_VIEWPORT_RESET_SCRIPT, null);
+      }
+    } catch (Throwable ignored) {
     }
   }
 
@@ -1192,25 +1188,24 @@ public class HeavenShieldPlugin
     if (pluginBinding == null) {
       return false;
     }
-    WebView webView = WebViewFlutterAndroidExternalApi.getWebView(pluginBinding, webViewId);
-    if (webView == null) {
-      return false;
-    }
-
-    applyDesktopSettingsToWebView(webView, this.desktopMode);
-    installPullToRefreshListener(webView, webViewId);
-    installDownloadListener(webView, webViewId);
-
-    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-      WebViewClient existing = webView.getWebViewClient();
-      if (!(existing instanceof ShieldWebViewClient)) {
-        webView.setWebViewClient(new ShieldWebViewClient(webViewId, existing));
+    try {
+      WebView webView = WebViewFlutterAndroidExternalApi.getWebView(pluginBinding, webViewId);
+      if (webView == null) {
+        return false;
       }
-      WebChromeClient existingChrome = webView.getWebChromeClient();
-      if (!(existingChrome instanceof ShieldWebChromeClient)) {
-        webView.setWebChromeClient(new ShieldWebChromeClient(webViewId, existingChrome));
+
+      applyDesktopSettingsToWebView(webView, this.desktopMode);
+      installPullToRefreshListener(webView, webViewId);
+      installDownloadListener(webView, webViewId);
+
+      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+        WebViewClient existing = webView.getWebViewClient();
+        if (!(existing instanceof ShieldWebViewClient)) {
+          webView.setWebViewClient(new ShieldWebViewClient(webViewId, existing));
+        }
+        return true;
       }
-      return true;
+    } catch (Throwable ignored) {
     }
     return false;
   }
@@ -2834,27 +2829,6 @@ public class HeavenShieldPlugin
     return false;
   }
 
-  private void emitConsoleMessageOnMain(
-      final long webViewId,
-      final String level,
-      final String msg,
-      final String sourceId,
-      final int line) {
-    mainHandler.post(
-        () -> {
-          MethodChannel ch = this.channel;
-          if (ch != null) {
-            Map<String, Object> payload = new HashMap<>(8);
-            payload.put("webViewId", webViewId);
-            payload.put("level", level);
-            payload.put("message", msg != null ? msg : "");
-            payload.put("sourceId", sourceId != null ? sourceId : "");
-            payload.put("lineNumber", line);
-            ch.invokeMethod("onConsoleMessage", payload);
-          }
-        });
-  }
-
   private WebResourceResponse buildEmptyResponseForPath(
       String lowerPath, WebResourceRequest request) {
     Map<String, String> headers = new HashMap<>(4);
@@ -3198,217 +3172,4 @@ public class HeavenShieldPlugin
     }
   }
 
-  /**
-   * Intercepts popup/popunder windows (including from cross-origin pirated/adult video iframes)
-   * and streams native Chromium console messages to Heaven's Desktop Inspect DevTools.
-   */
-  private final class ShieldWebChromeClient extends WebChromeClient {
-    private final long webViewId;
-    private final WebChromeClient delegate;
-
-    ShieldWebChromeClient(long webViewId, WebChromeClient delegate) {
-      this.webViewId = webViewId;
-      this.delegate = delegate;
-    }
-
-    @Override
-    public boolean onCreateWindow(
-        WebView view, boolean isDialog, boolean isUserGesture, Message resultMsg) {
-      String pageHost = currentPageHosts.get(webViewId);
-      boolean trusted = pageHost != null && isTrustedHost(pageHost);
-
-      if (shieldEnabled && !trusted) {
-        if (!isUserGesture) {
-          notifyBlockedOnMainThread(webViewId, "popunder-blocked");
-          return false;
-        }
-        WebView.HitTestResult hit = view != null ? view.getHitTestResult() : null;
-        int type = hit != null ? hit.getType() : WebView.HitTestResult.UNKNOWN_TYPE;
-        String extra = hit != null ? hit.getExtra() : null;
-
-        // If the user tapped a <video>, <div>, or <button> (NOT a real <a href>) -> block popup!
-        if ((type != WebView.HitTestResult.SRC_ANCHOR_TYPE
-                && type != WebView.HitTestResult.SRC_IMAGE_ANCHOR_TYPE)
-            || extra == null
-            || extra.trim().isEmpty()
-            || extra.startsWith("javascript:")
-            || extra.endsWith("#")) {
-          notifyBlockedOnMainThread(webViewId, "popup-hijack");
-          return false;
-        }
-
-        Uri targetUri = Uri.parse(extra.trim());
-        String scheme =
-            targetUri.getScheme() != null ? targetUri.getScheme().toLowerCase(Locale.US) : "";
-        String destHost = normalizeHost(targetUri.getHost());
-        if ((!"http".equals(scheme) && !"https".equals(scheme))
-            || matchesBlockedDomain(destHost)
-            || isSuspiciousRedirectTarget(targetUri, pageHost)) {
-          notifyBlockedOnMainThread(webViewId, destHost.isEmpty() ? "popup-ad" : destHost);
-          return false;
-        }
-
-        if (pageHost != null
-            && !pageHost.isEmpty()
-            && !isSameRootDomain(destHost, pageHost)
-            && !isSearchOrAuthPortal(pageHost)
-            && !isApprovedExternalNav(webViewId, destHost)) {
-          notifyBlockedOnMainThread(webViewId, destHost);
-          return false;
-        }
-
-        view.loadUrl(targetUri.toString());
-        return false;
-      }
-
-      if (isUserGesture && view != null) {
-        WebView.HitTestResult hit = view.getHitTestResult();
-        if (hit != null && hit.getExtra() != null && hit.getExtra().startsWith("http")) {
-          view.loadUrl(hit.getExtra());
-          return false;
-        }
-      }
-      return delegate != null
-          && delegate.onCreateWindow(view, isDialog, isUserGesture, resultMsg);
-    }
-
-    @Override
-    public boolean onConsoleMessage(ConsoleMessage cm) {
-      if (cm != null) {
-        String lvl =
-            cm.messageLevel() != null
-                ? cm.messageLevel().name().toLowerCase(Locale.US)
-                : "log";
-        emitConsoleMessageOnMain(
-            webViewId, lvl, cm.message(), cm.sourceId(), cm.lineNumber());
-      }
-      return delegate != null
-          ? delegate.onConsoleMessage(cm)
-          : super.onConsoleMessage(cm);
-    }
-
-    @Override
-    public void onProgressChanged(WebView view, int newProgress) {
-      if (delegate != null) delegate.onProgressChanged(view, newProgress);
-      else super.onProgressChanged(view, newProgress);
-    }
-
-    @Override
-    public void onReceivedTitle(WebView view, String title) {
-      if (delegate != null) delegate.onReceivedTitle(view, title);
-      else super.onReceivedTitle(view, title);
-    }
-
-    @Override
-    public void onReceivedIcon(WebView view, Bitmap icon) {
-      if (delegate != null) delegate.onReceivedIcon(view, icon);
-      else super.onReceivedIcon(view, icon);
-    }
-
-    @Override
-    public void onReceivedTouchIconUrl(WebView view, String url, boolean precomposed) {
-      if (delegate != null) delegate.onReceivedTouchIconUrl(view, url, precomposed);
-      else super.onReceivedTouchIconUrl(view, url, precomposed);
-    }
-
-    @Override
-    public void onShowCustomView(View view, CustomViewCallback callback) {
-      if (delegate != null) delegate.onShowCustomView(view, callback);
-      else super.onShowCustomView(view, callback);
-    }
-
-    @Override
-    public void onHideCustomView() {
-      if (delegate != null) delegate.onHideCustomView();
-      else super.onHideCustomView();
-    }
-
-    @Override
-    public void onCloseWindow(WebView window) {
-      if (delegate != null) delegate.onCloseWindow(window);
-      else super.onCloseWindow(window);
-    }
-
-    @Override
-    public boolean onJsAlert(WebView view, String url, String message, JsResult result) {
-      return delegate != null
-          ? delegate.onJsAlert(view, url, message, result)
-          : super.onJsAlert(view, url, message, result);
-    }
-
-    @Override
-    public boolean onJsConfirm(WebView view, String url, String message, JsResult result) {
-      return delegate != null
-          ? delegate.onJsConfirm(view, url, message, result)
-          : super.onJsConfirm(view, url, message, result);
-    }
-
-    @Override
-    public boolean onJsPrompt(
-        WebView view, String url, String message, String defaultValue, JsPromptResult result) {
-      return delegate != null
-          ? delegate.onJsPrompt(view, url, message, defaultValue, result)
-          : super.onJsPrompt(view, url, message, defaultValue, result);
-    }
-
-    @Override
-    public boolean onJsBeforeUnload(WebView view, String url, String message, JsResult result) {
-      return delegate != null
-          ? delegate.onJsBeforeUnload(view, url, message, result)
-          : super.onJsBeforeUnload(view, url, message, result);
-    }
-
-    @Override
-    public void onGeolocationPermissionsShowPrompt(
-        String origin, GeolocationPermissions.Callback callback) {
-      if (delegate != null) delegate.onGeolocationPermissionsShowPrompt(origin, callback);
-      else super.onGeolocationPermissionsShowPrompt(origin, callback);
-    }
-
-    @Override
-    public void onGeolocationPermissionsHidePrompt() {
-      if (delegate != null) delegate.onGeolocationPermissionsHidePrompt();
-      else super.onGeolocationPermissionsHidePrompt();
-    }
-
-    @Override
-    public void onPermissionRequest(PermissionRequest request) {
-      if (delegate != null) delegate.onPermissionRequest(request);
-      else super.onPermissionRequest(request);
-    }
-
-    @Override
-    public void onPermissionRequestCanceled(PermissionRequest request) {
-      if (delegate != null) delegate.onPermissionRequestCanceled(request);
-      else super.onPermissionRequestCanceled(request);
-    }
-
-    @Override
-    public Bitmap getDefaultVideoPoster() {
-      return delegate != null ? delegate.getDefaultVideoPoster() : super.getDefaultVideoPoster();
-    }
-
-    @Override
-    public View getVideoLoadingProgressView() {
-      return delegate != null
-          ? delegate.getVideoLoadingProgressView()
-          : super.getVideoLoadingProgressView();
-    }
-
-    @Override
-    public void getVisitedHistory(ValueCallback<String[]> callback) {
-      if (delegate != null) delegate.getVisitedHistory(callback);
-      else super.getVisitedHistory(callback);
-    }
-
-    @Override
-    public boolean onShowFileChooser(
-        WebView webView,
-        ValueCallback<Uri[]> filePathCallback,
-        FileChooserParams fileChooserParams) {
-      return delegate != null
-          ? delegate.onShowFileChooser(webView, filePathCallback, fileChooserParams)
-          : super.onShowFileChooser(webView, filePathCallback, fileChooserParams);
-    }
-  }
 }
