@@ -13,6 +13,7 @@ import android.webkit.MimeTypeMap;
 import java.io.File;
 import java.io.FileNotFoundException;
 import java.io.IOException;
+import java.util.Locale;
 
 public class HeavenFileProvider extends ContentProvider {
 
@@ -40,18 +41,35 @@ public class HeavenFileProvider extends ContentProvider {
     }
     try {
       File target = new File(rawPath).getCanonicalFile();
-      File pubDownloads =
-          Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
-              .getCanonicalFile();
-      boolean allowed = target.getPath().startsWith(pubDownloads.getPath() + File.separator);
-      Context ctx = getContext();
-      if (!allowed && ctx != null) {
-        File appDownloads = ctx.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS);
-        if (appDownloads != null) {
-          String appRoot = appDownloads.getCanonicalFile().getPath() + File.separator;
-          allowed = target.getPath().startsWith(appRoot);
+      boolean allowed = false;
+
+      File extRoot = Environment.getExternalStorageDirectory();
+      if (extRoot != null) {
+        String extCanon = extRoot.getCanonicalFile().getPath() + File.separator;
+        allowed = target.getPath().startsWith(extCanon);
+      }
+      if (!allowed) {
+        File pubDownloads =
+            Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS);
+        if (pubDownloads != null) {
+          String dlCanon = pubDownloads.getCanonicalFile().getPath() + File.separator;
+          allowed = target.getPath().startsWith(dlCanon);
         }
       }
+
+      Context ctx = getContext();
+      if (!allowed && ctx != null) {
+        File appExt = ctx.getExternalFilesDir(null);
+        if (appExt != null) {
+          String appRoot = appExt.getCanonicalFile().getPath() + File.separator;
+          allowed = target.getPath().startsWith(appRoot);
+        }
+        if (!allowed) {
+          String filesRoot = ctx.getFilesDir().getCanonicalFile().getPath() + File.separator;
+          allowed = target.getPath().startsWith(filesRoot);
+        }
+      }
+
       if (!allowed || !target.exists() || !target.isFile()) {
         throw new FileNotFoundException("Access denied or file missing");
       }
@@ -106,7 +124,7 @@ public class HeavenFileProvider extends ContentProvider {
     if (name != null) {
       int dot = name.lastIndexOf('.');
       if (dot >= 0 && dot + 1 < name.length()) {
-        String ext = name.substring(dot + 1).toLowerCase();
+        String ext = name.substring(dot + 1).toLowerCase(Locale.US);
         String mime = MimeTypeMap.getSingleton().getMimeTypeFromExtension(ext);
         if (mime != null && !mime.isEmpty()) {
           return mime;
@@ -129,11 +147,11 @@ public class HeavenFileProvider extends ContentProvider {
 
   @Override
   public int delete(Uri uri, String selection, String[] selectionArgs) {
-    return 0;
+    throw new UnsupportedOperationException("Read-only provider");
   }
 
   @Override
   public int update(Uri uri, ContentValues values, String selection, String[] selectionArgs) {
-    return 0;
+    throw new UnsupportedOperationException("Read-only provider");
   }
 }

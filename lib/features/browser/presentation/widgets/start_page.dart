@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../../../../core/theme/app_theme.dart';
+import '../../../../core/widgets/search_engine_chip_button.dart';
 import '../../../../core/widgets/site_logo.dart';
 import '../../../news/interest_news_service.dart';
 import '../../../search/heaven_search_service.dart';
@@ -51,8 +52,12 @@ class _StartPageState extends State<StartPage> {
   void initState() {
     super.initState();
     _homeSearchFocus.addListener(() {
-      if (!_homeSearchFocus.hasFocus && _suggestions.isNotEmpty && mounted) {
-        setState(() => _suggestions = <String>[]);
+      if (mounted) {
+        setState(() {
+          if (!_homeSearchFocus.hasFocus) {
+            _suggestions = <String>[];
+          }
+        });
       }
     });
     if (!widget.isIncognito) {
@@ -185,7 +190,14 @@ class _StartPageState extends State<StartPage> {
                       const SizedBox(height: 18),
                       // Working Home Screen Search Bar (Search icon submits + Keyboard Enter; Enter arrow button removed!)
                       _buildWorkingHomeSearchBar(context, colors, isDark),
-                      if (_suggestions.isNotEmpty) ...<Widget>[
+                      if (_homeSearchFocus.hasFocus &&
+                          (_suggestions.isNotEmpty ||
+                              (!widget.isIncognito &&
+                                  widget.settings
+                                      .matchingRecentSearches(
+                                        _homeSearchController.text,
+                                      )
+                                      .isNotEmpty))) ...<Widget>[
                         const SizedBox(height: 6),
                         _buildHomeSuggestionsCard(colors, isDark),
                       ],
@@ -302,17 +314,21 @@ class _StartPageState extends State<StartPage> {
       ),
       child: Row(
         children: <Widget>[
+          const SizedBox(width: 4),
+          SearchEngineChipButton(
+            currentEngine: widget.settings.searchEngine,
+            onSelected: (engine) => widget.settings.setSearchEngine(engine),
+          ),
           // Clickable Search Icon submits query (or focuses when empty)!
           IconButton(
             key: const Key('home_search_icon_button'),
             onPressed: _onSearchIconTap,
-            icon: Icon(Icons.search_rounded, color: colors.primary, size: 22),
+            icon: Icon(Icons.search_rounded, color: colors.primary, size: 21),
             tooltip: 'Search',
             visualDensity: VisualDensity.compact,
             padding: EdgeInsets.zero,
-            constraints: const BoxConstraints(minWidth: 38, minHeight: 38),
+            constraints: const BoxConstraints(minWidth: 34, minHeight: 38),
           ),
-          const SizedBox(width: 2),
           Expanded(
             child: TextField(
               key: const Key('home_search_textfield'),
@@ -324,8 +340,9 @@ class _StartPageState extends State<StartPage> {
               onChanged: _onHomeSearchChanged,
               onSubmitted: _submitHomeSearch,
               style: const TextStyle(fontSize: 15),
-              decoration: const InputDecoration(
-                hintText: 'Search anything or type URL',
+              decoration: InputDecoration(
+                hintText:
+                    'Search ${widget.settings.searchEngine.shortLabel} or type URL',
                 border: InputBorder.none,
                 isDense: true,
               ),
@@ -358,6 +375,13 @@ class _StartPageState extends State<StartPage> {
   }
 
   Widget _buildHomeSuggestionsCard(ColorScheme colors, bool isDark) {
+    final List<String> recents = widget.isIncognito
+        ? const <String>[]
+        : widget.settings.matchingRecentSearches(
+            _homeSearchController.text,
+            limit: 6,
+          );
+
     return Material(
       color: isDark ? AppTheme.navyElevated : Colors.white,
       borderRadius: BorderRadius.circular(18),
@@ -370,17 +394,65 @@ class _StartPageState extends State<StartPage> {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: <Widget>[
-            for (final String s in _suggestions)
-              ListTile(
-                dense: true,
-                leading: Icon(
-                  Icons.search_rounded,
-                  size: 18,
-                  color: colors.primary,
+            if (recents.isNotEmpty) ...<Widget>[
+              Padding(
+                padding: const EdgeInsets.fromLTRB(14, 8, 8, 2),
+                child: Row(
+                  children: <Widget>[
+                    Text(
+                      'Recent Searches',
+                      style: TextStyle(
+                        fontSize: 11.5,
+                        fontWeight: FontWeight.w800,
+                        color: colors.onSurfaceVariant,
+                      ),
+                    ),
+                    const Spacer(),
+                    TextButton(
+                      style: TextButton.styleFrom(
+                        visualDensity: VisualDensity.compact,
+                        padding: const EdgeInsets.symmetric(horizontal: 8),
+                      ),
+                      onPressed: widget.settings.clearRecentSearches,
+                      child: const Text(
+                        'Clear',
+                        style: TextStyle(fontSize: 11.5),
+                      ),
+                    ),
+                  ],
                 ),
-                title: Text(s, maxLines: 1, overflow: TextOverflow.ellipsis),
-                onTap: () => _submitHomeSearch(s),
               ),
+              for (final String r in recents)
+                ListTile(
+                  dense: true,
+                  leading: Icon(
+                    Icons.history_rounded,
+                    size: 18,
+                    color: colors.onSurfaceVariant,
+                  ),
+                  title: Text(r, maxLines: 1, overflow: TextOverflow.ellipsis),
+                  trailing: IconButton(
+                    tooltip: 'Remove',
+                    visualDensity: VisualDensity.compact,
+                    icon: const Icon(Icons.close_rounded, size: 16),
+                    onPressed: () => widget.settings.removeRecentSearch(r),
+                  ),
+                  onTap: () => _submitHomeSearch(r),
+                ),
+              if (_suggestions.isNotEmpty) const Divider(height: 1),
+            ],
+            for (final String s in _suggestions)
+              if (!recents.contains(s))
+                ListTile(
+                  dense: true,
+                  leading: Icon(
+                    Icons.search_rounded,
+                    size: 18,
+                    color: colors.primary,
+                  ),
+                  title: Text(s, maxLines: 1, overflow: TextOverflow.ellipsis),
+                  onTap: () => _submitHomeSearch(s),
+                ),
           ],
         ),
       ),

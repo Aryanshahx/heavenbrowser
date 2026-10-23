@@ -116,21 +116,47 @@ class DownloadsController extends ChangeNotifier {
   }
 
   static const String _storageKey = 'hb.downloads.v4';
+  static const String _keyLocationPath = 'hb.downloads.locationPath.v8';
+  static const String _keyLocationLabel = 'hb.downloads.locationLabel.v8';
 
   final SharedPreferences _prefs;
   final bool enableNativePolling;
   Timer? _pollTimer;
   List<DownloadEntry> _items = <DownloadEntry>[];
+  String _downloadLocationPath = '/storage/emulated/0/Download';
+  String _downloadLocationLabel = 'Downloads';
+  List<({String label, String path})> _presetLocations =
+      const <({String label, String path})>[
+        (label: 'Downloads (Default)', path: '/storage/emulated/0/Download'),
+        (
+          label: 'Downloads / HeavenBrowser',
+          path: '/storage/emulated/0/Download/HeavenBrowser',
+        ),
+        (
+          label: 'Documents / HeavenBrowser',
+          path: '/storage/emulated/0/Documents/HeavenBrowser',
+        ),
+      ];
 
   void Function(String message)? onDownloadToast;
 
   List<DownloadEntry> get items => List<DownloadEntry>.unmodifiable(_items);
+  String get downloadLocationPath => _downloadLocationPath;
+  String get downloadLocationLabel => _downloadLocationLabel;
+  List<({String label, String path})> get presetLocations => _presetLocations;
 
   bool get hasActiveDownloads => _items.any((DownloadEntry e) => e.isRunning);
 
   int get activeCount => _items.where((DownloadEntry e) => e.isRunning).length;
 
   void _load() {
+    _downloadLocationPath =
+        _prefs.getString(_keyLocationPath) ?? '/storage/emulated/0/Download';
+    _downloadLocationLabel =
+        _prefs.getString(_keyLocationLabel) ?? 'Downloads';
+    if (enableNativePolling) {
+      unawaited(refreshDownloadLocations());
+    }
     final String? raw = _prefs.getString(_storageKey);
     if (raw == null || raw.isEmpty) {
       return;
@@ -407,6 +433,76 @@ class DownloadsController extends ChangeNotifier {
         .toList();
     await _persist();
     notifyListeners();
+  }
+
+  Future<void> refreshDownloadLocations() async {
+    final Map<String, Object?> info = await NativeShieldBridge.instance
+        .getDownloadLocations();
+    final String? curPath = info['currentPath']?.toString();
+    final String? curLabel = info['currentLabel']?.toString();
+    if (curPath != null && curPath.isNotEmpty) {
+      _downloadLocationPath = curPath;
+      unawaited(_prefs.setString(_keyLocationPath, curPath));
+    }
+    if (curLabel != null && curLabel.isNotEmpty) {
+      _downloadLocationLabel = curLabel;
+      unawaited(_prefs.setString(_keyLocationLabel, curLabel));
+    }
+    final Object? rawPresets = info['presets'];
+    if (rawPresets is List<Object?>) {
+      final List<({String label, String path})> parsed =
+          <({String label, String path})>[];
+      for (final Object? entry in rawPresets) {
+        if (entry is Map<Object?, Object?>) {
+          final String l = entry['label']?.toString().trim() ?? '';
+          final String p = entry['path']?.toString().trim() ?? '';
+          if (l.isNotEmpty && p.isNotEmpty) {
+            parsed.add((label: l, path: p));
+          }
+        }
+      }
+      if (parsed.isNotEmpty) {
+        _presetLocations = parsed;
+      }
+    }
+    notifyListeners();
+  }
+
+  Future<String?> setDownloadLocation(String path, {String? label}) async {
+    final Map<String, Object?> res = await NativeShieldBridge.instance
+        .setDownloadLocation(path);
+    if (res['ok'] != true) {
+      return res['error']?.toString() ?? 'Could not change download folder.';
+    }
+    final String resolvedPath = (res['path']?.toString() ?? path).trim();
+    final String resolvedLabel =
+        (res['label']?.toString() ?? label ?? 'Downloads').trim();
+    _downloadLocationPath = resolvedPath;
+    _downloadLocationLabel = resolvedLabel;
+    await _prefs.setString(_keyLocationPath, resolvedPath);
+    await _prefs.setString(_keyLocationLabel, resolvedLabel);
+    notifyListeners();
+    return null;
+  }
+
+  Future<bool> pickCustomDownloadFolder() async {
+    final Map<String, Object?>? picked = await NativeShieldBridge.instance
+        .pickDownloadFolder();
+    if (picked == null || picked['ok'] != true) {
+      return false;
+    }
+    final String resolvedPath = (picked['path']?.toString() ?? '').trim();
+    final String resolvedLabel = (picked['label']?.toString() ?? 'Custom')
+        .trim();
+    if (resolvedPath.isEmpty) {
+      return false;
+    }
+    _downloadLocationPath = resolvedPath;
+    _downloadLocationLabel = resolvedLabel;
+    await _prefs.setString(_keyLocationPath, resolvedPath);
+    await _prefs.setString(_keyLocationLabel, resolvedLabel);
+    notifyListeners();
+    return true;
   }
 
   static String formatBytes(int bytes) {

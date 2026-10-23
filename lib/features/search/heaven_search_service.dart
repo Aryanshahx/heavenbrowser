@@ -151,6 +151,7 @@ class HeavenSearchResponse {
     required this.videoResults,
     required this.newsResults,
     required this.wikiResults,
+    this.relatedSearches = const <String>[],
     this.instantMathResult,
     this.knowledgeCard,
   });
@@ -162,6 +163,7 @@ class HeavenSearchResponse {
   final List<HeavenSearchResult> videoResults;
   final List<HeavenSearchResult> newsResults;
   final List<HeavenSearchResult> wikiResults;
+  final List<String> relatedSearches;
   final String? instantMathResult;
   final HeavenKnowledgeCard? knowledgeCard;
 }
@@ -320,6 +322,76 @@ class HeavenSearchService {
     'Upgrade-Insecure-Requests': '1',
   };
 
+  /// Fast Web-First search (~180-320ms) for the Google-inspired `All` tab
+  /// without blocking on slow Images/Videos scrapers!
+  Future<HeavenSearchResponse> searchFastWeb(
+    String rawQuery, {
+    HeavenSearchFilters filters = const HeavenSearchFilters(),
+  }) async {
+    final String query = rawQuery.trim();
+    final Stopwatch stopwatch = Stopwatch()..start();
+    final String? mathAnswer = HeavenMathEvaluator.tryEvaluate(query);
+
+    final (
+      List<HeavenSearchResult> web,
+      List<HeavenSearchResult> wiki,
+      HeavenKnowledgeCard? ddgCard,
+      List<String> related,
+    ) = await (
+      _fetchOrganicWebResults(query, filters: filters),
+      _fetchWikipediaResults(query),
+      _fetchKnowledgeCard(query),
+      fetchSuggestions('$query '),
+    ).wait;
+
+    HeavenKnowledgeCard? card = ddgCard;
+    if (card == null && wiki.isNotEmpty) {
+      card = await _fetchWikipediaSummaryCard(wiki.first.title);
+    }
+
+    final List<HeavenSearchResult> mergedWeb = web.isNotEmpty
+        ? web
+        : wiki.take(8).toList(growable: false);
+
+    stopwatch.stop();
+    return HeavenSearchResponse(
+      query: query,
+      elapsedMs: stopwatch.elapsedMilliseconds,
+      webResults: mergedWeb,
+      imageResults: const <HeavenImageResult>[],
+      videoResults: const <HeavenSearchResult>[],
+      newsResults: const <HeavenSearchResult>[],
+      wikiResults: wiki,
+      relatedSearches: related
+          .where((String s) => s.toLowerCase() != query.toLowerCase())
+          .take(6)
+          .toList(growable: false),
+      instantMathResult: mathAnswer,
+      knowledgeCard: card,
+    );
+  }
+
+  Future<List<HeavenImageResult>> fetchTabImages(
+    String rawQuery, {
+    HeavenSearchFilters filters = const HeavenSearchFilters(),
+  }) {
+    return _fetchWebImages(rawQuery.trim(), filters: filters);
+  }
+
+  Future<List<HeavenSearchResult>> fetchTabVideos(
+    String rawQuery, {
+    HeavenSearchFilters filters = const HeavenSearchFilters(),
+  }) {
+    return _fetchVideoResults(rawQuery.trim(), filters: filters);
+  }
+
+  Future<List<HeavenSearchResult>> fetchTabNews(
+    String rawQuery, {
+    HeavenSearchFilters filters = const HeavenSearchFilters(),
+  }) {
+    return _fetchNewsResults(rawQuery.trim(), filters: filters);
+  }
+
   Future<HeavenSearchResponse> search(
     String rawQuery, {
     HeavenSearchFilters filters = const HeavenSearchFilters(),
@@ -335,6 +407,7 @@ class HeavenSearchService {
       List<HeavenSearchResult> news,
       List<HeavenSearchResult> wiki,
       HeavenKnowledgeCard? ddgCard,
+      List<String> related,
     ) = await (
       _fetchOrganicWebResults(query, filters: filters),
       _fetchWebImages(query, filters: filters),
@@ -342,6 +415,7 @@ class HeavenSearchService {
       _fetchNewsResults(query, filters: filters),
       _fetchWikipediaResults(query),
       _fetchKnowledgeCard(query),
+      fetchSuggestions(query),
     ).wait;
 
     HeavenKnowledgeCard? card = ddgCard;
@@ -362,6 +436,7 @@ class HeavenSearchService {
       videoResults: videos,
       newsResults: news,
       wikiResults: wiki,
+      relatedSearches: related,
       instantMathResult: mathAnswer,
       knowledgeCard: card,
     );
@@ -434,9 +509,11 @@ class HeavenSearchService {
     required HeavenSearchFilters filters,
   }) async {
     final (
+      List<HeavenSearchResult> bingRssResults,
       List<HeavenSearchResult> bingResults,
       List<HeavenSearchResult> ddgResults,
     ) = await (
+      _fetchBingWebRss(query, filters: filters),
       _fetchBingOrganicWeb(query, filters: filters),
       _fetchDdgOrganicWeb(query, filters: filters),
     ).wait;
@@ -445,6 +522,7 @@ class HeavenSearchService {
     final Set<String> seen = <String>{};
 
     for (final HeavenSearchResult r in <HeavenSearchResult>[
+      ...bingRssResults,
       ...bingResults,
       ...ddgResults,
     ]) {
@@ -452,11 +530,90 @@ class HeavenSearchService {
       if (seen.add(key)) {
         merged.add(r);
       }
-      if (merged.length >= 26) {
+      if (merged.length >= 28) {
         break;
       }
     }
     return merged;
+  }
+
+  Future<List<HeavenSearchResult>> _fetchBingWebRss(
+    String query, {
+    required HeavenSearchFilters filters,
+  }) async {
+    try {
+      final String ccPart = filters.region == HeavenRegionFilter.global
+          ? ''
+          : '&cc=${filters.region.countryCode}';
+      final Uri uri = Uri.parse(
+        'https://www.bing.com/search?q=${Uri.encodeQueryComponent(query)}'
+        '&format=rss&count=20&setlang=en$ccPart',
+      );
+      final http.Response res = await _client
+          .get(uri, headers: _bingHeaders(filters))
+          .timeout(const Duration(seconds: 4));
+      if (res.statusCode != 200 || !res.body.contains('<item>')) {
+        return const <HeavenSearchResult>[];
+      }
+      return parseBingWebRssResults(res.body, maxItems: 20);
+    } catch (_) {
+      return const <HeavenSearchResult>[];
+    }
+  }
+
+  static List<HeavenSearchResult> parseBingWebRssResults(
+    String xml, {
+    int maxItems = 20,
+  }) {
+    final List<HeavenSearchResult> out = <HeavenSearchResult>[];
+    final Set<String> seen = <String>{};
+    final RegExp itemBlock = RegExp(
+      r'<item>([\s\S]*?)<\/item>',
+      caseSensitive: false,
+    );
+    final RegExp titleRx = RegExp(
+      r'<title>([\s\S]*?)<\/title>',
+      caseSensitive: false,
+    );
+    final RegExp linkRx = RegExp(
+      r'<link>([\s\S]*?)<\/link>',
+      caseSensitive: false,
+    );
+    final RegExp descRx = RegExp(
+      r'<description>([\s\S]*?)<\/description>',
+      caseSensitive: false,
+    );
+
+    for (final RegExpMatch m in itemBlock.allMatches(xml)) {
+      final String block = m.group(1) ?? '';
+      final String link = decodeHtmlEntities(
+        stripHtmlTags(linkRx.firstMatch(block)?.group(1) ?? ''),
+      ).trim();
+      if (!link.startsWith('https://') && !link.startsWith('http://')) {
+        continue;
+      }
+      if (!seen.add(_normalizeDedupeKey(link))) {
+        continue;
+      }
+      final String title = stripHtmlTags(
+        titleRx.firstMatch(block)?.group(1) ?? '',
+      ).trim();
+      if (title.isEmpty) continue;
+      final String snippet = stripHtmlTags(
+        descRx.firstMatch(block)?.group(1) ?? '',
+      ).trim();
+      final String dom = OmniboxParser.cleanDomain(link);
+      out.add(
+        HeavenSearchResult(
+          title: title,
+          url: link,
+          snippet: snippet,
+          sourceLabel: OmniboxParser.friendlySiteTitleFromDomain(dom),
+        ),
+      );
+      if (out.length >= maxItems) break;
+    }
+    return out;
   }
 
   Future<List<HeavenSearchResult>> _fetchBingOrganicWeb(

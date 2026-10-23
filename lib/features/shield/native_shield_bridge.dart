@@ -371,17 +371,22 @@ class NativeShieldBridge {
     }
   }
 
-  Future<Map<String, Object?>> provisionFreeWarpConfig() async {
+  Future<Map<String, Object?>> provisionFreeWarpConfig({
+    String routeMode = 'stealth_4500',
+  }) async {
     const Map<String, Object?> testFallback = <String, Object?>{
       'ok': true,
       'configText':
-          '[Interface]\nPrivateKey = AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=\nAddress = 172.16.0.2/32\nDNS = 1.1.1.1\n\n[Peer]\nPublicKey = bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo=\nAllowedIPs = 0.0.0.0/0\nEndpoint = 162.159.192.6:2408\n',
+          '[Interface]\nPrivateKey = AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=\nAddress = 172.16.0.2/32, 2606:4700:110::2/128\nDNS = 1.1.1.1, 1.0.0.1, 2606:4700:4700::1111\nMTU = 1280\n\n[Peer]\nPublicKey = bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo=\nAllowedIPs = 0.0.0.0/0, ::/0\nEndpoint = 162.159.192.1:4500\n',
       'clientIpv4': '172.16.0.2',
-      'endpoint': '162.159.192.6:2408',
+      'endpoint': '162.159.192.1:4500',
     };
     try {
       final Map<Object?, Object?>? raw = await _channel
-          .invokeMethod<Map<Object?, Object?>>('provisionFreeWarpConfig');
+          .invokeMethod<Map<Object?, Object?>>(
+            'provisionFreeWarpConfig',
+            <String, Object>{'routeMode': routeMode},
+          );
       if (raw == null) {
         return testFallback;
       }
@@ -434,19 +439,24 @@ class NativeShieldBridge {
   Future<Map<String, Object?>> connectVpn({
     required String configText,
     required String profileName,
-    required bool browserOnly,
+    String routeMode = 'stealth_4500',
+    bool browserOnly = false,
+    bool isBuiltInWarp = true,
   }) async {
     final Map<String, Object?> fallback = <String, Object?>{
       'ok': true,
       'connected': true,
       'profileName': profileName,
+      'endpoint': '162.159.192.1:4500',
     };
     try {
       final Map<Object?, Object?>? raw = await _channel
           .invokeMethod<Map<Object?, Object?>>('connectVpn', <String, Object>{
             'configText': configText,
             'profileName': profileName,
+            'routeMode': routeMode,
             'browserOnly': browserOnly,
+            'isBuiltInWarp': isBuiltInWarp,
           });
       if (raw == null) {
         return fallback;
@@ -476,27 +486,54 @@ class NativeShieldBridge {
     }
   }
 
-  Future<Map<String, Object?>> provisionForeignOpenVpnConfig({
-    required String countryCode,
-    List<String> excludeHosts = const <String>[],
-  }) async {
+  Future<Map<String, Object?>> getDownloadLocations() async {
+    const Map<String, Object?> fallback = <String, Object?>{
+      'currentPath': '/storage/emulated/0/Download',
+      'currentLabel': 'Downloads',
+      'presets': <Map<String, String>>[
+        <String, String>{
+          'label': 'Downloads (Default)',
+          'path': '/storage/emulated/0/Download',
+        },
+        <String, String>{
+          'label': 'Downloads / HeavenBrowser',
+          'path': '/storage/emulated/0/Download/HeavenBrowser',
+        },
+        <String, String>{
+          'label': 'Documents / HeavenBrowser',
+          'path': '/storage/emulated/0/Documents/HeavenBrowser',
+        },
+      ],
+    };
+    try {
+      final Map<Object?, Object?>? raw = await _channel
+          .invokeMethod<Map<Object?, Object?>>('getDownloadLocations');
+      if (raw == null || raw.isEmpty) {
+        return fallback;
+      }
+      return <String, Object?>{
+        for (final MapEntry<Object?, Object?> e in raw.entries)
+          if (e.key != null) e.key.toString(): e.value,
+      };
+    } on MissingPluginException {
+      return fallback;
+    } on PlatformException {
+      return fallback;
+    }
+  }
+
+  Future<Map<String, Object?>> setDownloadLocation(String path) async {
     final Map<String, Object?> fallback = <String, Object?>{
       'ok': true,
-      'configText':
-          'client\ndev tun\nremote 89.187.173.169 1194 tcp-client\ncipher AES-256-GCM\n<ca>\nTEST\n</ca>\n<cert>\nTEST\n</cert>\n<key>\nTEST\n</key>\n',
-      'serverHost': '89.187.173.169',
-      'countryCode': countryCode,
-      'countryName': countryCode,
-      'latencyMs': 42,
+      'path': path,
+      'label': path.split('/').where((String s) => s.isNotEmpty).lastOrNull ??
+          'Downloads',
     };
     try {
       final Map<Object?, Object?>? raw = await _channel
           .invokeMethod<Map<Object?, Object?>>(
-            'provisionForeignOpenVpnConfig',
-            <String, Object>{
-              'countryCode': countryCode,
-              'excludeHosts': excludeHosts,
-            },
+            'setDownloadLocation',
+            <String, Object>{'path': path},
           );
       if (raw == null) {
         return fallback;
@@ -510,35 +547,123 @@ class NativeShieldBridge {
     } on PlatformException catch (e) {
       return <String, Object?>{
         'ok': false,
-        'error': e.message ?? 'Foreign VPN provisioning failed',
+        'error': e.message ?? 'Cannot set download folder',
       };
     }
   }
 
-  Future<List<Map<String, Object?>>> fetchLiveForeignCountries() async {
+  Future<Map<String, Object?>?> pickDownloadFolder() async {
     try {
-      final Object? raw = await _channel.invokeMethod<Object?>(
-        'fetchLiveForeignCountries',
-      );
-      final Object? listObj = (raw is Map<Object?, Object?>)
-          ? raw['countries']
-          : raw;
-      if (listObj is List<Object?>) {
-        return listObj
-            .whereType<Map<Object?, Object?>>()
-            .map(
-              (Map<Object?, Object?> m) => <String, Object?>{
-                for (final MapEntry<Object?, Object?> e in m.entries)
-                  if (e.key != null) e.key.toString(): e.value,
-              },
-            )
-            .toList(growable: false);
+      final Map<Object?, Object?>? raw = await _channel
+          .invokeMethod<Map<Object?, Object?>>('pickDownloadFolder');
+      if (raw == null) {
+        return null;
       }
-      return const <Map<String, Object?>>[];
+      return <String, Object?>{
+        for (final MapEntry<Object?, Object?> e in raw.entries)
+          if (e.key != null) e.key.toString(): e.value,
+      };
     } on MissingPluginException {
-      return const <Map<String, Object?>>[];
+      return const <String, Object?>{
+        'ok': true,
+        'path': '/storage/emulated/0/Download/HeavenCustom',
+        'label': 'Download/HeavenCustom',
+      };
     } on PlatformException {
-      return const <Map<String, Object?>>[];
+      return null;
+    }
+  }
+
+  Future<bool> createHomeScreenShortcut({
+    required String title,
+    required String url,
+  }) async {
+    try {
+      final bool? ok = await _channel.invokeMethod<bool>(
+        'createHomeScreenShortcut',
+        <String, Object>{'title': title, 'url': url},
+      );
+      return ok ?? false;
+    } on MissingPluginException {
+      return true;
+    } on PlatformException {
+      return false;
+    }
+  }
+
+  Future<Map<String, Object?>> getNotificationStatus() async {
+    const Map<String, Object?> fallback = <String, Object?>{
+      'systemEnabled': true,
+      'runtimeGranted': true,
+      'downloadNotificationsEnabled': true,
+    };
+    try {
+      final Map<Object?, Object?>? raw = await _channel
+          .invokeMethod<Map<Object?, Object?>>('getNotificationStatus');
+      if (raw == null) {
+        return fallback;
+      }
+      return <String, Object?>{
+        for (final MapEntry<Object?, Object?> e in raw.entries)
+          if (e.key != null) e.key.toString(): e.value,
+      };
+    } on MissingPluginException {
+      return fallback;
+    } on PlatformException {
+      return fallback;
+    }
+  }
+
+  Future<bool> requestNotificationPermission() async {
+    try {
+      final bool? granted = await _channel.invokeMethod<bool>(
+        'requestNotificationPermission',
+      );
+      return granted ?? false;
+    } on MissingPluginException {
+      return true;
+    } on PlatformException {
+      return false;
+    }
+  }
+
+  Future<bool> openNotificationSettings() async {
+    try {
+      final bool? ok = await _channel.invokeMethod<bool>(
+        'openNotificationSettings',
+      );
+      return ok ?? false;
+    } on MissingPluginException {
+      return true;
+    } on PlatformException {
+      return false;
+    }
+  }
+
+  Future<void> setDownloadNotificationsEnabled(bool enabled) async {
+    try {
+      await _channel.invokeMethod<bool>(
+        'setDownloadNotificationsEnabled',
+        <String, Object>{'enabled': enabled},
+      );
+    } on MissingPluginException {
+      // Expected in widget tests.
+    } on PlatformException {
+      // Non-fatal.
+    }
+  }
+
+  Future<bool> clearSiteData({String? domain}) async {
+    try {
+      final bool? ok = await _channel.invokeMethod<bool>(
+        'clearSiteData',
+        <String, Object?>{'domain': domain},
+      );
+      return ok ?? false;
+    } on MissingPluginException {
+      return true;
+    } on PlatformException {
+      return false;
     }
   }
 

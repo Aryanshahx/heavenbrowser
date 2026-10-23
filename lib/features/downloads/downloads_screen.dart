@@ -23,6 +23,11 @@ class DownloadsScreen extends StatelessWidget {
         ),
         actions: <Widget>[
           IconButton(
+            tooltip: 'Change Download Location',
+            onPressed: () => _showLocationSheet(context),
+            icon: const Icon(Icons.folder_open_rounded),
+          ),
+          IconButton(
             tooltip: 'Download from URL',
             onPressed: () => _showUrlDownloadDialog(context),
             icon: const Icon(Icons.add_link_rounded),
@@ -50,74 +55,161 @@ class DownloadsScreen extends StatelessWidget {
           listenable: downloads,
           builder: (BuildContext context, _) {
             final List<DownloadEntry> items = downloads.items;
-            if (items.isEmpty) {
-              return RefreshIndicator(
-                onRefresh: downloads.refreshStatuses,
-                child: ListView(
-                  physics: const AlwaysScrollableScrollPhysics(),
-                  children: <Widget>[
-                    SizedBox(height: MediaQuery.sizeOf(context).height * 0.18),
-                    Center(
+            return Column(
+              children: <Widget>[
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 8, 16, 4),
+                  child: Material(
+                    color: isDark ? AppTheme.navySurface : Colors.white,
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(14),
+                      side: BorderSide(
+                        color: colors.outlineVariant.withValues(alpha: 0.35),
+                      ),
+                    ),
+                    child: InkWell(
+                      key: const Key('change_download_location_card'),
+                      borderRadius: BorderRadius.circular(14),
+                      onTap: () => _showLocationSheet(context),
                       child: Padding(
-                        padding: const EdgeInsets.symmetric(horizontal: 28),
-                        child: Column(
-                          mainAxisSize: MainAxisSize.min,
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 12,
+                          vertical: 10,
+                        ),
+                        child: Row(
                           children: <Widget>[
-                            Container(
-                              width: 68,
-                              height: 68,
-                              decoration: BoxDecoration(
-                                color: colors.primary.withValues(alpha: 0.14),
-                                borderRadius: BorderRadius.circular(22),
-                              ),
-                              child: Icon(
-                                Icons.download_done_rounded,
-                                size: 34,
-                                color: colors.primary,
+                            Icon(
+                              Icons.folder_special_rounded,
+                              color: colors.primary,
+                              size: 20,
+                            ),
+                            const SizedBox(width: 10),
+                            Expanded(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: <Widget>[
+                                  Text(
+                                    'Location: ${downloads.downloadLocationLabel}',
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: const TextStyle(
+                                      fontSize: 12.5,
+                                      fontWeight: FontWeight.w700,
+                                    ),
+                                  ),
+                                  Text(
+                                    downloads.downloadLocationPath,
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: TextStyle(
+                                      fontSize: 11,
+                                      color: colors.onSurfaceVariant,
+                                    ),
+                                  ),
+                                ],
                               ),
                             ),
-                            const SizedBox(height: 16),
-                            Text(
-                              'No downloads yet',
-                              style: theme.textTheme.titleMedium?.copyWith(
-                                fontWeight: FontWeight.w800,
-                              ),
-                            ),
-                            const SizedBox(height: 6),
-                            Text(
-                              'Files, videos, APKs, and images you download appear here with live Pause & Resume.',
-                              textAlign: TextAlign.center,
-                              style: theme.textTheme.bodyMedium?.copyWith(
-                                color: colors.onSurfaceVariant,
-                              ),
-                            ),
-                            const SizedBox(height: 20),
-                            FilledButton.icon(
-                              onPressed: () => _showUrlDownloadDialog(context),
-                              icon: const Icon(Icons.add_link_rounded),
-                              label: const Text('Download via Direct Link'),
+                            TextButton(
+                              onPressed: () => _showLocationSheet(context),
+                              child: const Text('Change'),
                             ),
                           ],
                         ),
                       ),
                     ),
-                  ],
+                  ),
                 ),
-              );
-            }
-
-            return RefreshIndicator(
-              onRefresh: downloads.refreshStatuses,
-              child: ListView.separated(
-                physics: const AlwaysScrollableScrollPhysics(),
-                padding: const EdgeInsets.fromLTRB(16, 10, 16, 28),
-                itemCount: items.length,
-                separatorBuilder: (_, _) => const SizedBox(height: 10),
-                itemBuilder: (BuildContext context, int index) {
-                  final DownloadEntry item = items[index];
-                  return _buildDownloadCard(context, colors, isDark, item);
-                },
-              ),
+                Expanded(
+                  child: items.isEmpty
+                      ? RefreshIndicator(
+                          onRefresh: downloads.refreshStatuses,
+                          child: ListView(
+                            physics: const AlwaysScrollableScrollPhysics(),
+                            children: <Widget>[
+                              SizedBox(
+                                height: MediaQuery.sizeOf(context).height * 0.14,
+                              ),
+                              Center(
+                                child: Padding(
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 28,
+                                  ),
+                                  child: Column(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: <Widget>[
+                                      Container(
+                                        width: 68,
+                                        height: 68,
+                                        decoration: BoxDecoration(
+                                          color: colors.primary.withValues(
+                                            alpha: 0.14,
+                                          ),
+                                          borderRadius: BorderRadius.circular(
+                                            22,
+                                          ),
+                                        ),
+                                        child: Icon(
+                                          Icons.download_done_rounded,
+                                          size: 34,
+                                          color: colors.primary,
+                                        ),
+                                      ),
+                                      const SizedBox(height: 16),
+                                      Text(
+                                        'No downloads yet',
+                                        style: theme.textTheme.titleMedium
+                                            ?.copyWith(
+                                              fontWeight: FontWeight.w800,
+                                            ),
+                                      ),
+                                      const SizedBox(height: 6),
+                                      Text(
+                                        'Files, videos, APKs, and images you download appear here with live Pause & Resume.',
+                                        textAlign: TextAlign.center,
+                                        style: theme.textTheme.bodyMedium
+                                            ?.copyWith(
+                                              color: colors.onSurfaceVariant,
+                                            ),
+                                      ),
+                                      const SizedBox(height: 20),
+                                      FilledButton.icon(
+                                        onPressed: () =>
+                                            _showUrlDownloadDialog(context),
+                                        icon: const Icon(
+                                          Icons.add_link_rounded,
+                                        ),
+                                        label: const Text(
+                                          'Download via Direct Link',
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                        )
+                      : RefreshIndicator(
+                          onRefresh: downloads.refreshStatuses,
+                          child: ListView.separated(
+                            physics: const AlwaysScrollableScrollPhysics(),
+                            padding: const EdgeInsets.fromLTRB(16, 8, 16, 28),
+                            itemCount: items.length,
+                            separatorBuilder: (_, _) =>
+                                const SizedBox(height: 10),
+                            itemBuilder: (BuildContext context, int index) {
+                              final DownloadEntry item = items[index];
+                              return _buildDownloadCard(
+                                context,
+                                colors,
+                                isDark,
+                                item,
+                              );
+                            },
+                          ),
+                        ),
+                ),
+              ],
             );
           },
         ),
@@ -418,5 +510,96 @@ class DownloadsScreen extends StatelessWidget {
         );
       }
     }
+  }
+
+  Future<void> _showLocationSheet(BuildContext context) async {
+    await downloads.refreshDownloadLocations();
+    if (!context.mounted) return;
+
+    await showModalBottomSheet<void>(
+      context: context,
+      showDragHandle: true,
+      builder: (BuildContext sheetContext) {
+        return ListenableBuilder(
+          listenable: downloads,
+          builder: (BuildContext context, _) {
+            final ColorScheme colors = Theme.of(context).colorScheme;
+            return SafeArea(
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(16, 4, 16, 20),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: <Widget>[
+                    const Text(
+                      'Choose Download Location',
+                      style: TextStyle(
+                        fontSize: 17,
+                        fontWeight: FontWeight.w800,
+                      ),
+                    ),
+                    const SizedBox(height: 10),
+                    for (final ({String label, String path}) loc
+                        in downloads.presetLocations)
+                      ListTile(
+                        dense: true,
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        leading: Icon(
+                          Icons.folder_rounded,
+                          color: downloads.downloadLocationPath == loc.path
+                              ? colors.primary
+                              : colors.onSurfaceVariant,
+                        ),
+                        title: Text(
+                          loc.label,
+                          style: const TextStyle(fontWeight: FontWeight.w700),
+                        ),
+                        subtitle: Text(
+                          loc.path,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(fontSize: 11),
+                        ),
+                        trailing: downloads.downloadLocationPath == loc.path
+                            ? Icon(
+                                Icons.check_circle_rounded,
+                                color: colors.primary,
+                              )
+                            : null,
+                        onTap: () async {
+                          final String? err = await downloads
+                              .setDownloadLocation(loc.path, label: loc.label);
+                          if (sheetContext.mounted) {
+                            Navigator.pop(sheetContext);
+                            if (err != null) {
+                              ScaffoldMessenger.of(sheetContext).showSnackBar(
+                                SnackBar(content: Text(err)),
+                              );
+                            }
+                          }
+                        },
+                      ),
+                    const SizedBox(height: 10),
+                    OutlinedButton.icon(
+                      onPressed: () async {
+                        final bool ok = await downloads
+                            .pickCustomDownloadFolder();
+                        if (sheetContext.mounted && ok) {
+                          Navigator.pop(sheetContext);
+                        }
+                      },
+                      icon: const Icon(Icons.create_new_folder_rounded),
+                      label: const Text('Choose Custom Folder...'),
+                    ),
+                  ],
+                ),
+              ),
+            );
+          },
+        );
+      },
+    );
   }
 }

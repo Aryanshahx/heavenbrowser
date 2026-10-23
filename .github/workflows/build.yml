@@ -18,7 +18,7 @@ concurrency:
 
 jobs:
   build-android:
-    name: Analyze, Test & Build APK/AAB
+    name: Analyze, Test & Build Release APK/AAB
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
@@ -48,10 +48,6 @@ jobs:
       - name: Run Flutter tests
         run: flutter test
 
-      - name: Build Debug APK
-        if: github.event_name != 'pull_request'
-        run: flutter build apk --debug
-
       - name: Build Release APK
         if: github.event_name != 'pull_request'
         run: flutter build apk --release
@@ -60,11 +56,10 @@ jobs:
         if: github.event_name != 'pull_request'
         run: flutter build appbundle --release
 
-      - name: Stage named APK and AAB artifacts
+      - name: Stage named Release APK and AAB artifacts
         if: github.event_name != 'pull_request'
         run: |
           mkdir -p dist-artifacts
-          cp build/app/outputs/flutter-apk/app-debug.apk dist-artifacts/HeavenBrowser-v0.0.1-debug.apk
           cp build/app/outputs/flutter-apk/app-release.apk dist-artifacts/HeavenBrowser-v0.0.1-release.apk
           cp build/app/outputs/bundle/release/app-release.aab dist-artifacts/HeavenBrowser-v0.0.1-release.aab
           ls -lh dist-artifacts/
@@ -74,14 +69,6 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           path: dist-artifacts/HeavenBrowser-v0.0.1-release.apk
-          archive: false
-          if-no-files-found: error
-
-      - name: Upload Debug APK
-        if: github.event_name != 'pull_request'
-        uses: actions/upload-artifact@v7
-        with:
-          path: dist-artifacts/HeavenBrowser-v0.0.1-debug.apk
           archive: false
           if-no-files-found: error
 

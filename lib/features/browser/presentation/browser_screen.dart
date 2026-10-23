@@ -9,13 +9,19 @@ import 'package:webview_flutter/webview_flutter.dart';
 
 import '../../../core/theme/app_theme.dart';
 import '../../../core/utils/omnibox_parser.dart';
+import '../../../core/widgets/search_engine_chip_button.dart';
 import '../../../core/widgets/site_logo.dart';
 import '../../downloads/downloads_controller.dart';
 import '../../downloads/downloads_screen.dart';
+import '../../extensions/extensions_controller.dart';
+import '../../extensions/extensions_screen.dart';
 import '../../news/interest_news_service.dart';
 import '../../search/heaven_search_service.dart';
 import '../../search/heaven_search_view.dart';
 import '../../settings/browser_settings.dart';
+import '../../settings/help_screen.dart';
+import '../../settings/languages_screen.dart';
+import '../../settings/notifications_screen.dart';
 import '../../settings/settings_screen.dart';
 import '../../shield/native_shield_bridge.dart';
 import '../../tabs/tab_manager.dart';
@@ -23,6 +29,7 @@ import '../../tabs/tabs_screen.dart';
 import '../../vpn/vpn_controller.dart';
 import '../../vpn/vpn_screen.dart';
 import '../engine/browser_engine.dart';
+import '../site_controls_sheet.dart';
 import 'widgets/library_screen.dart';
 import 'widgets/reader_mode_sheet.dart';
 import 'widgets/shield_sheet.dart';
@@ -38,6 +45,7 @@ class BrowserScreen extends StatefulWidget {
     required this.newsService,
     required this.interests,
     required this.vpn,
+    this.extensions,
   });
 
   final BrowserSettingsController settings;
@@ -47,6 +55,7 @@ class BrowserScreen extends StatefulWidget {
   final HeavenNewsFeedService newsService;
   final InterestProfileController interests;
   final VpnController vpn;
+  final ExtensionsController? extensions;
 
   @override
   State<BrowserScreen> createState() => _BrowserScreenState();
@@ -241,6 +250,7 @@ class _BrowserScreenState extends State<BrowserScreen>
         widget.settings,
         widget.downloads,
         widget.vpn,
+        if (widget.extensions != null) widget.extensions!,
       ]),
       builder: (BuildContext context, _) {
         final bool incognito = widget.tabManager.isActiveIncognito;
@@ -254,9 +264,16 @@ class _BrowserScreenState extends State<BrowserScreen>
             _isEditingOmnibox &&
             _showLinkActionsCard &&
             !engine.isShowingStartPage;
+        final List<String> recentMatches = (_isEditingOmnibox && !incognito)
+            ? widget.settings.matchingRecentSearches(
+                _omniboxController.text,
+                limit: 6,
+              )
+            : const <String>[];
         final bool showOverlayPanel =
             showLinkActions ||
-            (_isEditingOmnibox && _liveSuggestions.isNotEmpty);
+            (_isEditingOmnibox &&
+                (_liveSuggestions.isNotEmpty || recentMatches.isNotEmpty));
 
         return Theme(
           data: effectiveTheme,
@@ -301,6 +318,43 @@ class _BrowserScreenState extends State<BrowserScreen>
                       child: Stack(
                         children: <Widget>[
                           _buildTabsViewport(colors),
+                          if (widget.settings.gesturesEnabled &&
+                              widget.settings.edgeSwipeNavigation &&
+                              !engine.isShowingStartPage &&
+                              !_isEditingOmnibox) ...<Widget>[
+                            Positioned(
+                              left: 0,
+                              top: 0,
+                              bottom: 0,
+                              width: 16,
+                              child: GestureDetector(
+                                behavior: HitTestBehavior.translucent,
+                                onHorizontalDragEnd: (DragEndDetails d) {
+                                  if ((d.primaryVelocity ?? 0) > 260 &&
+                                      engine.canGoBack) {
+                                    HapticFeedback.selectionClick();
+                                    engine.goBack();
+                                  }
+                                },
+                              ),
+                            ),
+                            Positioned(
+                              right: 0,
+                              top: 0,
+                              bottom: 0,
+                              width: 16,
+                              child: GestureDetector(
+                                behavior: HitTestBehavior.translucent,
+                                onHorizontalDragEnd: (DragEndDetails d) {
+                                  if ((d.primaryVelocity ?? 0) < -260 &&
+                                      engine.canGoForward) {
+                                    HapticFeedback.selectionClick();
+                                    engine.goForward();
+                                  }
+                                },
+                              ),
+                            ),
+                          ],
                           if (engine.pullProgress > 0.02)
                             Positioned(
                               top: 10 + (engine.pullProgress * 46),
@@ -614,8 +668,102 @@ class _BrowserScreenState extends State<BrowserScreen>
                   ],
                 ),
               ),
-            if (showLinkActions && _liveSuggestions.isNotEmpty)
+            if (showLinkActions &&
+                (_liveSuggestions.isNotEmpty ||
+                    (!widget.tabManager.isActiveIncognito &&
+                        widget.settings
+                            .matchingRecentSearches(_omniboxController.text)
+                            .isNotEmpty)))
               const Divider(height: 1),
+            if (!widget.tabManager.isActiveIncognito)
+              Builder(
+                builder: (BuildContext context) {
+                  final List<String> recents = widget.settings
+                      .matchingRecentSearches(
+                        _omniboxController.text,
+                        limit: 5,
+                      );
+                  if (recents.isEmpty) {
+                    return const SizedBox.shrink();
+                  }
+                  return Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: <Widget>[
+                      Padding(
+                        padding: const EdgeInsets.fromLTRB(14, 6, 8, 0),
+                        child: Row(
+                          children: <Widget>[
+                            Text(
+                              'Recent Searches',
+                              style: TextStyle(
+                                fontSize: 11.5,
+                                fontWeight: FontWeight.w800,
+                                color: colors.onSurfaceVariant,
+                              ),
+                            ),
+                            const Spacer(),
+                            TextButton(
+                              style: TextButton.styleFrom(
+                                visualDensity: VisualDensity.compact,
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 8,
+                                ),
+                              ),
+                              onPressed: widget.settings.clearRecentSearches,
+                              child: const Text(
+                                'Clear',
+                                style: TextStyle(fontSize: 11.5),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                      for (final String r in recents)
+                        ListTile(
+                          dense: true,
+                          leading: Icon(
+                            Icons.history_rounded,
+                            size: 18,
+                            color: colors.onSurfaceVariant,
+                          ),
+                          title: Text(
+                            r,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                          trailing: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: <Widget>[
+                              IconButton(
+                                visualDensity: VisualDensity.compact,
+                                icon: const Icon(
+                                  Icons.north_west_rounded,
+                                  size: 16,
+                                ),
+                                onPressed: () {
+                                  _omniboxController.text = r;
+                                  _omniboxController.selection =
+                                      TextSelection.fromPosition(
+                                        TextPosition(offset: r.length),
+                                      );
+                                  _onOmniboxTextChanged(r);
+                                },
+                              ),
+                              IconButton(
+                                visualDensity: VisualDensity.compact,
+                                icon: const Icon(Icons.close_rounded, size: 16),
+                                onPressed: () =>
+                                    widget.settings.removeRecentSearch(r),
+                              ),
+                            ],
+                          ),
+                          onTap: () => _submitOmnibox(r),
+                        ),
+                      if (_liveSuggestions.isNotEmpty) const Divider(height: 1),
+                    ],
+                  );
+                },
+              ),
             for (final String suggestion in _liveSuggestions)
               ListTile(
                 dense: true,
@@ -845,9 +993,15 @@ class _BrowserScreenState extends State<BrowserScreen>
           icon: const Icon(Icons.arrow_back_rounded, size: 19),
           visualDensity: VisualDensity.compact,
           padding: EdgeInsets.zero,
-          constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
+          constraints: const BoxConstraints(minWidth: 34, minHeight: 36),
           tooltip: 'Cancel',
         ),
+        SearchEngineChipButton(
+          currentEngine: widget.settings.searchEngine,
+          onSelected: (SearchEngine sel) =>
+              widget.settings.setSearchEngine(sel),
+        ),
+        const SizedBox(width: 6),
         Expanded(
           child: TextField(
             key: const Key('top_omnibox_textfield'),
@@ -912,11 +1066,16 @@ class _BrowserScreenState extends State<BrowserScreen>
     return Row(
       children: <Widget>[
         const SizedBox(width: 4),
+        SearchEngineChipButton(
+          currentEngine: widget.settings.searchEngine,
+          onSelected: (SearchEngine sel) =>
+              widget.settings.setSearchEngine(sel),
+        ),
         InkWell(
           borderRadius: BorderRadius.circular(18),
           onTap: () => _openShieldSheet(context),
           child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 6),
+            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 6),
             child: Icon(
               widget.vpn.isConnected
                   ? Icons.vpn_lock_rounded
@@ -927,7 +1086,7 @@ class _BrowserScreenState extends State<BrowserScreen>
                               : (engine.isSecure
                                     ? Icons.lock_outline_rounded
                                     : Icons.warning_amber_rounded))),
-              size: 16.5,
+              size: 16,
               color: widget.vpn.isConnected
                   ? AppTheme.shieldEmerald
                   : (incognito
@@ -945,6 +1104,29 @@ class _BrowserScreenState extends State<BrowserScreen>
             key: const Key('omnibox_display_pill'),
             behavior: HitTestBehavior.opaque,
             onTap: _beginOmniboxEdit,
+            onHorizontalDragEnd:
+                (widget.settings.gesturesEnabled &&
+                    widget.settings.barSwipeSwitchTabs)
+                ? (DragEndDetails d) {
+                    final double v = d.primaryVelocity ?? 0;
+                    if (v.abs() > 220) {
+                      final bool switched = widget.tabManager.switchAdjacentTab(
+                        v < 0 ? 1 : -1,
+                      );
+                      if (switched) {
+                        HapticFeedback.selectionClick();
+                      }
+                    }
+                  }
+                : null,
+            onVerticalDragEnd: widget.settings.gesturesEnabled
+                ? (DragEndDetails d) {
+                    if ((d.primaryVelocity ?? 0).abs() > 240) {
+                      HapticFeedback.selectionClick();
+                      _openTabsScreen();
+                    }
+                  }
+                : null,
             child: Text(
               engine.isShowingStartPage
                   ? 'Search or type URL'
@@ -1373,6 +1555,8 @@ class _BrowserScreenState extends State<BrowserScreen>
                                 builder: (_) => SettingsScreen(
                                   settings: widget.settings,
                                   tabManager: widget.tabManager,
+                                  extensions: widget.extensions,
+                                  downloads: widget.downloads,
                                 ),
                               ),
                             );
@@ -1382,6 +1566,150 @@ class _BrowserScreenState extends State<BrowserScreen>
                     },
                   ),
                   const SizedBox(height: 8),
+                  const Divider(height: 1),
+                  ListTile(
+                    dense: true,
+                    contentPadding: const EdgeInsets.symmetric(horizontal: 8),
+                    leading: Icon(
+                      Icons.workspaces_outline,
+                      size: 20,
+                      color: colors.primary,
+                    ),
+                    title: const Text('Add tab to new group'),
+                    onTap: () {
+                      Navigator.pop(sheetContext);
+                      TabsScreen.showCreateGroupDialog(
+                        context,
+                        tabManager: widget.tabManager,
+                        tabId: widget.tabManager.activeTab.id,
+                      );
+                    },
+                  ),
+                  if (widget.extensions != null)
+                    ListTile(
+                      dense: true,
+                      contentPadding: const EdgeInsets.symmetric(horizontal: 8),
+                      leading: Icon(
+                        Icons.extension_outlined,
+                        size: 20,
+                        color: colors.primary,
+                      ),
+                      title: const Text('Extensions'),
+                      trailing: Text(
+                        '${widget.extensions!.enabledCount} ON',
+                        style: TextStyle(
+                          fontSize: 11.5,
+                          fontWeight: FontWeight.w800,
+                          color: colors.primary,
+                        ),
+                      ),
+                      onTap: () {
+                        Navigator.pop(sheetContext);
+                        Navigator.of(context).push(
+                          MaterialPageRoute<void>(
+                            builder: (_) => ExtensionsScreen(
+                              extensions: widget.extensions!,
+                            ),
+                          ),
+                        );
+                      },
+                    ),
+                  ListTile(
+                    dense: true,
+                    contentPadding: const EdgeInsets.symmetric(horizontal: 8),
+                    leading: Icon(
+                      Icons.tune_rounded,
+                      size: 20,
+                      color: colors.primary,
+                    ),
+                    title: const Text('Site controls'),
+                    onTap: () {
+                      Navigator.pop(sheetContext);
+                      SiteControlsSheet.show(
+                        context,
+                        engine: engine,
+                        settings: widget.settings,
+                      );
+                    },
+                  ),
+                  ListTile(
+                    dense: true,
+                    contentPadding: const EdgeInsets.symmetric(horizontal: 8),
+                    leading: Icon(
+                      Icons.add_to_home_screen_rounded,
+                      size: 20,
+                      color: colors.primary,
+                    ),
+                    title: const Text('Create shortcut'),
+                    onTap: () async {
+                      Navigator.pop(sheetContext);
+                      await _createShortcutForCurrentPage(context, engine);
+                    },
+                  ),
+                  ListTile(
+                    dense: true,
+                    contentPadding: const EdgeInsets.symmetric(horizontal: 8),
+                    leading: Icon(
+                      Icons.notifications_outlined,
+                      size: 20,
+                      color: colors.primary,
+                    ),
+                    title: const Text('Notifications'),
+                    onTap: () {
+                      Navigator.pop(sheetContext);
+                      Navigator.of(context).push(
+                        MaterialPageRoute<void>(
+                          builder: (_) =>
+                              NotificationsScreen(settings: widget.settings),
+                        ),
+                      );
+                    },
+                  ),
+                  ListTile(
+                    dense: true,
+                    contentPadding: const EdgeInsets.symmetric(horizontal: 8),
+                    leading: Icon(
+                      Icons.translate_rounded,
+                      size: 20,
+                      color: colors.primary,
+                    ),
+                    title: const Text('Languages'),
+                    trailing: Text(
+                      widget.settings.language.nativeLabel,
+                      style: TextStyle(
+                        fontSize: 11.5,
+                        color: colors.onSurfaceVariant,
+                      ),
+                    ),
+                    onTap: () {
+                      Navigator.pop(sheetContext);
+                      Navigator.of(context).push(
+                        MaterialPageRoute<void>(
+                          builder: (_) =>
+                              LanguagesScreen(settings: widget.settings),
+                        ),
+                      );
+                    },
+                  ),
+                  ListTile(
+                    dense: true,
+                    contentPadding: const EdgeInsets.symmetric(horizontal: 8),
+                    leading: Icon(
+                      Icons.help_outline_rounded,
+                      size: 20,
+                      color: colors.primary,
+                    ),
+                    title: const Text('Help'),
+                    onTap: () {
+                      Navigator.pop(sheetContext);
+                      Navigator.of(context).push(
+                        MaterialPageRoute<void>(
+                          builder: (_) => const HelpScreen(),
+                        ),
+                      );
+                    },
+                  ),
+                  const Divider(height: 1),
                   SwitchListTile.adaptive(
                     dense: true,
                     secondary: const Icon(Icons.desktop_windows_outlined),
@@ -1481,6 +1809,103 @@ class _BrowserScreenState extends State<BrowserScreen>
         );
       },
     );
+  }
+
+  Future<void> _createShortcutForCurrentPage(
+    BuildContext context,
+    BrowserEngine engine,
+  ) async {
+    final String initialUrl =
+        (engine.currentUrl != null &&
+            (engine.currentUrl!.startsWith('http://') ||
+                engine.currentUrl!.startsWith('https://')))
+        ? engine.currentUrl!
+        : 'https://www.google.com';
+    final String initialTitle =
+        (!engine.isShowingStartPage && engine.pageTitle.trim().isNotEmpty)
+        ? engine.pageTitle.trim()
+        : 'Heaven Browser';
+
+    final TextEditingController titleCtrl = TextEditingController(
+      text: initialTitle,
+    );
+    final TextEditingController urlCtrl = TextEditingController(
+      text: initialUrl,
+    );
+
+    final bool? confirmed = await showDialog<bool>(
+      context: context,
+      builder: (BuildContext dialogContext) {
+        return AlertDialog(
+          title: const Text('Create Shortcut'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: <Widget>[
+              TextField(
+                controller: titleCtrl,
+                decoration: const InputDecoration(
+                  labelText: 'Shortcut Name',
+                  border: OutlineInputBorder(),
+                  isDense: true,
+                ),
+              ),
+              const SizedBox(height: 10),
+              TextField(
+                controller: urlCtrl,
+                keyboardType: TextInputType.url,
+                decoration: const InputDecoration(
+                  labelText: 'Website URL',
+                  border: OutlineInputBorder(),
+                  isDense: true,
+                ),
+              ),
+            ],
+          ),
+          actions: <Widget>[
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext, false),
+              child: const Text('Cancel'),
+            ),
+            FilledButton.icon(
+              onPressed: () => Navigator.pop(dialogContext, true),
+              icon: const Icon(Icons.add_to_home_screen_rounded, size: 18),
+              label: const Text('Add Shortcut'),
+            ),
+          ],
+        );
+      },
+    );
+
+    final String chosenTitle = titleCtrl.text.trim();
+    final String chosenUrl = urlCtrl.text.trim();
+    titleCtrl.dispose();
+    urlCtrl.dispose();
+
+    if (confirmed != true || chosenUrl.isEmpty) {
+      return;
+    }
+
+    await widget.settings.recordPageVisit(
+      url: chosenUrl,
+      title: chosenTitle.isEmpty ? chosenUrl : chosenTitle,
+    );
+    final bool pinned = await NativeShieldBridge.instance
+        .createHomeScreenShortcut(
+          url: chosenUrl,
+          title: chosenTitle.isEmpty ? 'Heaven Shortcut' : chosenTitle,
+        );
+    if (context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            pinned
+                ? 'Shortcut added to Home Screen & Quick Launch!'
+                : 'Added to Heaven Quick Launch!',
+          ),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    }
   }
 }
 

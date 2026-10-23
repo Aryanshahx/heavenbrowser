@@ -166,7 +166,9 @@ class ShieldSheet extends StatelessWidget {
                                 ),
                               ),
                               Text(
-                                vpn.selectedProfile.countryLabel,
+                                vpn.isConnected
+                                    ? '${vpn.selectedProfile.name} • Silent'
+                                    : vpn.selectedProfile.countryLabel,
                                 maxLines: 1,
                                 overflow: TextOverflow.ellipsis,
                                 style: TextStyle(

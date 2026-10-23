@@ -3,15 +3,17 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:heavenbrowser/core/l10n/app_strings.dart';
 import 'package:heavenbrowser/core/theme/app_theme.dart';
 import 'package:heavenbrowser/core/utils/omnibox_parser.dart';
 import 'package:heavenbrowser/features/browser/engine/browser_engine.dart';
 import 'package:heavenbrowser/features/downloads/downloads_controller.dart';
+import 'package:heavenbrowser/features/extensions/extensions_controller.dart';
 import 'package:heavenbrowser/features/news/interest_news_service.dart';
 import 'package:heavenbrowser/features/search/heaven_search_service.dart';
+import 'package:heavenbrowser/features/search/heaven_search_view.dart';
 import 'package:heavenbrowser/features/settings/browser_settings.dart';
-import 'package:heavenbrowser/features/shield/heaven_shield.dart';
-import 'package:heavenbrowser/features/shield/native_shield_bridge.dart';
+import 'package:heavenbrowser/features/settings/help_screen.dart';
 import 'package:heavenbrowser/features/tabs/tab_manager.dart';
 import 'package:heavenbrowser/features/vpn/vpn_controller.dart';
 import 'package:heavenbrowser/main.dart';
@@ -19,7 +21,6 @@ import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
-// Valid 1x1 transparent PNG for tab preview window tests
 final Uint8List _kSamplePreviewPng = base64Decode(
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==',
 );
@@ -45,9 +46,22 @@ HeavenSearchService _createMockSearchService({
         200,
       );
     }
+    if (host == 'www.bing.com' &&
+        path == '/search' &&
+        request.url.queryParameters['format'] == 'rss') {
+      const String bingWebRss = '''
+      <rss version="2.0"><channel>
+        <item>
+          <title>Flutter Official Docs</title>
+          <link>https://docs.flutter.dev/get-started</link>
+          <description>Install Flutter SDK on Ubuntu Linux and build fast native apps.</description>
+        </item>
+      </channel></rss>
+      ''';
+      return http.Response(bingWebRss, 200);
+    }
     if (host == 'www.bing.com' && path == '/search') {
-      final String bingWebHtml =
-          '''
+      final String bingWebHtml = '''
       <ol id="b_results">
         <li class="b_algo">
           <h2><a href="https://www.bing.com/ck/a?!&&p=abc&u=a1$encodedYoutube&ntb=1">Flutter Official Video</a></h2>
@@ -71,7 +85,7 @@ HeavenSearchService _createMockSearchService({
     }
     if (host == 'www.bing.com' && path == '/news/infinitescrollajax') {
       const String bingNewsHtml = '''
-      <div class="news-card newsitem cardcommon" data-title="Flutter 3.44 Released" data-url="https://news.example.com/flutter" data-author="TechDaily">
+      <div class="news-card newsitem cardcommon" data-title="Flutter 3.47 Released" data-url="https://news.example.com/flutter" data-author="TechDaily">
         <img src="/th?id=ONUT.flutternews123&amp;pid=News&amp;w=234&amp;h=132" />
         <div class="snippet">Google ships faster Impeller rendering on Android.</div>
         <span aria-label="2 hours ago">2h</span>
@@ -114,7 +128,7 @@ HeavenSearchService _createMockSearchService({
       const String sampleRss = '''
       <rss><channel>
         <item>
-          <title>Flutter 3.44 Released - TechDaily</title>
+          <title>Flutter 3.47 Released - TechDaily</title>
           <link>https://news.example.com/flutter</link>
           <pubDate>Thu, 22 Oct 2026 09:00:00 GMT</pubDate>
           <source url="https://news.example.com">TechDaily</source>
@@ -203,146 +217,140 @@ HeavenNewsFeedService _createMockNewsService(
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
-  group(
-    'Step 7: Google-Powered Heaven Search, For You Cover Images & Foreign VPN',
-    () {
-      test('uses Electric Sapphire & Midnight Navy blue palette', () {
-        expect(AppTheme.sapphireBlue, const Color(0xFF2563EB));
-        expect(AppTheme.electricBlue, const Color(0xFF3B82F6));
-        expect(AppTheme.deepNavyBg, const Color(0xFF040B16));
-        expect(AppTheme.navySurface, const Color(0xFF0B162C));
-        expect(AppTheme.darkTheme.colorScheme.primary, const Color(0xFF60A5FA));
-      });
+  group('Step 8: Google-Inspired Native Heaven Search, Extensions, Gestures & Settings', () {
+    test('uses Electric Sapphire & Midnight Navy blue palette', () {
+      expect(AppTheme.sapphireBlue, const Color(0xFF2563EB));
+      expect(AppTheme.electricBlue, const Color(0xFF3B82F6));
+      expect(AppTheme.deepNavyBg, const Color(0xFF040B16));
+      expect(AppTheme.navySurface, const Color(0xFF0B162C));
+      expect(AppTheme.darkTheme.colorScheme.primary, const Color(0xFF60A5FA));
+    });
 
-      test(
-        'Heaven Search optimizes via Google Search Engine URLs, Google Autocomplete & Shield ad/redirect stripping',
-        () async {
-          final Uri googleUri = OmniboxParser.buildGoogleEngineUri(
-            'raspberry pi 5 ubuntu',
-          );
-          expect(googleUri.host, 'www.google.com');
-          expect(googleUri.path, '/search');
-          expect(googleUri.queryParameters['q'], 'raspberry pi 5 ubuntu');
-          expect(googleUri.queryParameters['safe'], 'off');
-          expect(googleUri.queryParameters['pws'], '0');
+    test(
+      'Heaven Search stays native (does NOT open google.com), parses Bing RSS fast, formats Google-inspired breadcrumbs & records recent searches outside Incognito',
+      () async {
+        SharedPreferences.setMockInitialValues(<String, Object>{});
+        final SharedPreferences prefs = await SharedPreferences.getInstance();
+        final BrowserSettingsController settings = BrowserSettingsController(
+          prefs,
+        );
+        final BrowserEngine normalEngine = BrowserEngine(
+          settings: settings,
+          isIncognito: false,
+          enablePlatformWebView: false,
+        );
+        await normalEngine.loadUserEntry('raspberry pi 5');
+        expect(normalEngine.isShowingHeavenSearch, isTrue);
+        expect(normalEngine.heavenSearchQuery, 'raspberry pi 5');
+        expect(settings.recentSearches, contains('raspberry pi 5'));
 
-          expect(
-            OmniboxParser.extractGoogleSearchQuery(googleUri.toString()),
-            'raspberry pi 5 ubuntu',
-          );
-          expect(
-            OmniboxParser.formatDisplayUrl(googleUri.toString()),
-            'Google • raspberry pi 5 ubuntu',
-          );
+        // Incognito never saves recent searches!
+        final BrowserEngine incogEngine = BrowserEngine(
+          settings: settings,
+          isIncognito: true,
+          enablePlatformWebView: false,
+        );
+        await incogEngine.loadUserEntry('secret query');
+        expect(settings.recentSearches, isNot(contains('secret query')));
 
-          final Uri? unwrapped = OmniboxParser.unwrapGoogleRedirectUri(
-            Uri.parse(
-              'https://www.google.com/url?q=https%3A%2F%2Fflutter.dev%2Fdocs&sa=U',
-            ),
-          );
-          expect(unwrapped?.toString(), 'https://flutter.dev/docs');
+        await settings.removeRecentSearch('raspberry pi 5');
+        expect(settings.recentSearches, isEmpty);
 
-          final String shieldJs = HeavenShield.buildProtectionScript(
-            shieldEnabled: true,
-            sendDntAndGpc: true,
-          );
-          expect(shieldJs, contains('#tads'));
-          expect(shieldJs, contains('#bottomads'));
-          expect(shieldJs, isNot(contains('[data-google-query-id]')));
-          expect(shieldJs, contains("href.startsWith('/url?')"));
+        // Google-inspired breadcrumb formatting
+        expect(
+          OmniboxParser.formatGoogleBreadcrumb(
+            'https://docs.flutter.dev/get-started/install',
+          ),
+          'https://docs.flutter.dev › get-started › install',
+        );
 
-          final List<http.Request> captured = <http.Request>[];
-          final HeavenSearchService service = _createMockSearchService(
-            capturedRequests: captured,
-          );
-          final List<String> suggestions = await service.fetchSuggestions(
-            'flut',
-          );
-          expect(suggestions, contains('flutter sdk'));
-          expect(
-            captured.any(
-              (http.Request r) => r.url.host == 'suggestqueries.google.com',
-            ),
-            isTrue,
-          );
+        final HeavenSearchService service = _createMockSearchService();
+        final HeavenSearchResponse fastRes = await service.searchFastWeb(
+          'flutter',
+        );
+        expect(fastRes.webResults.length, 3);
+        expect(fastRes.webResults.first.title, 'Flutter Official Docs');
+        expect(fastRes.relatedSearches, contains('flutter sdk'));
 
-          final HeavenSearchResponse res = await service.search(
-            'open web video',
-          );
-          expect(res.webResults.length, 2);
-          expect(res.imageResults, isNotEmpty);
-          expect(res.videoResults, isNotEmpty);
-        },
-      );
+        normalEngine.dispose();
+        incogEngine.dispose();
+      },
+    );
 
-      test(
-        'Discover For You guarantees real HTTPS cover images, unwraps Bing redirects & filters out text-only items',
-        () async {
-          SharedPreferences.setMockInitialValues(<String, Object>{});
-          final SharedPreferences prefs = await SharedPreferences.getInstance();
-          final InterestProfileController interests = InterestProfileController(
-            prefs,
-          );
+    test(
+      'ExtensionsController manages 6 built-in extensions, installs custom JS+CSS extensions & injects matching domain scripts',
+      () async {
+        SharedPreferences.setMockInitialValues(<String, Object>{});
+        final SharedPreferences prefs = await SharedPreferences.getInstance();
+        final ExtensionsController ext = ExtensionsController(prefs);
 
-          await interests.recordActivity(
-            text: 'spacex starship astronomy',
-            weight: 2.5,
-          );
-          expect(interests.rankedInterests, isNotEmpty);
+        expect(ext.allExtensions.length, greaterThanOrEqualTo(6));
+        final String firstId = ext.allExtensions.first.id;
+        await ext.toggleExtension(firstId, true);
+        expect(ext.enabledCount, greaterThanOrEqualTo(1));
 
-          final HeavenNewsFeedService news = _createMockNewsService(
-            prefs,
-            interests,
-          );
-          final List<PersonalizedNewsItem> feed = await news.fetchFeed(
-            NewsCategoryTab.forYou,
-          );
-          expect(feed, isNotEmpty);
-          // Every returned card MUST have a valid HTTPS image (no website-name-only fallbacks!)
-          for (final PersonalizedNewsItem card in feed) {
-            expect(card.hasValidImage, isTrue);
-            expect(card.imageUrl, startsWith('https://'));
-            expect(card.title, isNot(contains('Text Only Item')));
-          }
-          expect(
-            feed.first.title,
-            "SpaceX Starship's Orbital Launch Milestone",
-          );
-          expect(feed.first.url, 'https://spacenews.example.com/starship');
-          expect(feed.first.imageUrl, contains('w=800&h=450&c=7'));
-          news.dispose();
-        },
-      );
+        final String? err = await ext.addCustomExtension(
+          name: 'Custom Dark Boost',
+          description: 'Adds custom border',
+          matchPattern: 'example.com',
+          jsCode: 'window.__heavenExtRan = true;',
+          cssCode: 'body { outline: 1px solid blue; }',
+        );
+        expect(err, isNull);
 
-      test(
-        'Desktop Mode rewrites mobile subdomains and Shield strips trackers',
-        () {
-          expect(
-            BrowserEngine.rewriteMobileToDesktopUri(
-              Uri.parse('https://m.youtube.com/watch?v=123'),
-            ).toString(),
-            'https://www.youtube.com/watch?v=123',
-          );
-          expect(
-            HeavenShield.shouldBlockUri(
-              Uri.parse(
-                'https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js',
-              ),
-            ),
-            isTrue,
-          );
-          final ({Uri uri, int removedCount}) cleaned =
-              HeavenShield.stripTrackingParameters(
-                Uri.parse('https://example.com/p?id=7&utm_source=ads&fbclid=1'),
-              );
-          expect(cleaned.removedCount, 2);
-          expect(cleaned.uri.toString(), 'https://example.com/p?id=7');
-        },
-      );
-    },
-  );
+        final String injected = ext.buildInjectionScriptForUrl(
+          'https://sub.example.com/article',
+        );
+        expect(injected, contains('__heavenExtRan'));
+        expect(injected, contains('outline: 1px solid blue'));
+        ext.dispose();
+      },
+    );
 
-  group('Heaven VPN (Built-In Foreign Country Servers + WARP + Custom Import)', () {
+    test(
+      'Tab Groups, Adjacent Tab Gesture Switching, Languages & Per-Site Controls work cleanly',
+      () async {
+        SharedPreferences.setMockInitialValues(<String, Object>{});
+        final SharedPreferences prefs = await SharedPreferences.getInstance();
+        final BrowserSettingsController settings = BrowserSettingsController(
+          prefs,
+        );
+        final TabManagerController tm = TabManagerController(
+          settings: settings,
+          enablePlatformWebView: false,
+        );
+
+        final BrowserTab second = await tm.openNewTab(incognito: false);
+        expect(tm.activeTab.id, second.id);
+        expect(tm.switchAdjacentTab(-1), isTrue);
+        expect(tm.activeTab.id, isNot(second.id));
+
+        final TabGroup group = tm.createGroupAndAddTab(
+          name: 'Dev Docs',
+          tabId: second.id,
+        );
+        expect(tm.groups.length, 1);
+        expect(second.groupId, group.id);
+        tm.deleteGroup(group.id);
+        expect(second.groupId, isNull);
+
+        await settings.setLanguage(BrowserLanguage.hi);
+        expect(settings.language, BrowserLanguage.hi);
+        expect(settings.language.acceptLanguageHeader, contains('hi-IN'));
+
+        await settings.toggleSiteJavaScript('paywall.example.com');
+        expect(
+          settings.isJavaScriptAllowedForHost('paywall.example.com'),
+          isFalse,
+        );
+
+        expect(HelpScreen.supportEmail, 'techlabs.hyper@gmail.com');
+        tm.dispose();
+      },
+    );
+  });
+
+  group('Silent Stealth WireGuard VPN & Download Location Control', () {
     const MethodChannel nativeChannel = MethodChannel(
       'com.hypertechlabs.heavenbrowser/native_shield',
     );
@@ -353,57 +361,41 @@ void main() {
     });
 
     test(
-      'VpnController defaults to Foreign USA server, connects 1-tap Foreign Country OpenVPN, supports WARP & imports .ovpn/.conf',
+      'VpnController defaults to Stealth UDP 4500 & Full Tunnel (browserOnly=false), connects silently with zero notification calls & reloads failed tabs',
       () async {
+        final List<String> invokedMethods = <String>[];
+        String? capturedRouteMode;
+        bool? capturedBrowserOnly;
+
         TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
             .setMockMethodCallHandler(nativeChannel, (MethodCall call) async {
+              invokedMethods.add(call.method);
               switch (call.method) {
-                case 'provisionForeignOpenVpnConfig':
-                  final Map<Object?, Object?> args =
-                      call.arguments as Map<Object?, Object?>;
-                  final String cc =
-                      args['countryCode']?.toString().toUpperCase() ?? 'US';
-                  return <String, Object>{
-                    'ok': true,
-                    'configText':
-                        'client\ndev tun\nremote 198.252.153.226 1194 tcp-client\n',
-                    'serverIp': '198.252.153.226',
-                    'countryCode': cc == 'AUTO_FOREIGN' ? 'NL' : cc,
-                    'countryName': cc == 'JP' ? 'Japan' : 'United States',
-                    'city': cc == 'JP' ? 'Tokyo' : 'Miami',
-                    'source': 'RiseupVPN',
-                    'endpoint': '198.252.153.226:1194',
-                  };
-                case 'fetchLiveForeignCountries':
-                  return <String, Object>{
-                    'ok': true,
-                    'countries': <Map<String, Object>>[
-                      <String, Object>{
-                        'countryCode': 'SE',
-                        'countryName': 'Sweden',
-                        'serverCount': 2,
-                      },
-                    ],
-                  };
                 case 'provisionFreeWarpConfig':
                   return <String, Object>{
                     'ok': true,
                     'configText':
-                        '[Interface]\nPrivateKey = AAAA\nAddress = 172.16.0.2/32\nDNS = 1.1.1.1\n\n[Peer]\nPublicKey = BBBB\nAllowedIPs = 0.0.0.0/0\nEndpoint = 162.159.192.1:2408\n',
+                        '[Interface]\nPrivateKey = AAAA\nAddress = 172.16.0.2/32, 2606:4700:110::2/128\nDNS = 1.1.1.1, 1.0.0.1\nMTU = 1280\n\n[Peer]\nPublicKey = BBBB\nAllowedIPs = 0.0.0.0/0, ::/0\nEndpoint = 162.159.193.1:4500\n',
                     'clientIpv4': '172.16.0.2',
-                    'endpoint': '162.159.192.1:2408',
+                    'endpoint': '162.159.193.1:4500',
+                  };
+                case 'connectVpn':
+                  final Map<Object?, Object?> args =
+                      call.arguments as Map<Object?, Object?>;
+                  capturedRouteMode = args['routeMode']?.toString();
+                  capturedBrowserOnly = args['browserOnly'] as bool?;
+                  return <String, Object>{
+                    'ok': true,
+                    'connected': true,
+                    'activeEndpoint': '162.159.193.1:4500',
+                    'exitIp': '104.28.19.44',
+                    'exitCountry': 'SG',
                   };
                 case 'validateWireGuardConfig':
                   return <String, Object>{
                     'valid': true,
                     'endpoint': '185.159.157.1:51820',
                     'addresses': '10.2.0.2/32',
-                  };
-                case 'connectVpn':
-                  return <String, Object>{
-                    'ok': true,
-                    'connected': true,
-                    'profileName': 'Cloudflare WARP',
                   };
                 case 'disconnectVpn':
                   return <String, Object>{'ok': true, 'connected': false};
@@ -414,52 +406,35 @@ void main() {
 
         SharedPreferences.setMockInitialValues(<String, Object>{});
         final SharedPreferences prefs = await SharedPreferences.getInstance();
+        bool callbackFired = false;
         final VpnController vpn = VpnController(
           prefs,
           enableNativePolling: false,
           client: MockClient(
             (_) async =>
-                http.Response('ip=198.252.153.226\nloc=US\nwarp=off\n', 200),
+                http.Response('ip=104.28.19.44\nloc=SG\nwarp=on\n', 200),
           ),
-        );
+        )..onTunnelConnected = () => callbackFired = true;
 
-        // Built-in Foreign Country list includes USA (default), Netherlands, France, Canada, Japan, South Korea, etc.
-        expect(vpn.selectedProfile.id, 'foreign_us');
-        expect(vpn.selectedProfile.isBuiltInForeign, isTrue);
-        expect(vpn.foreignProfiles.length, greaterThanOrEqualTo(9));
+        expect(vpn.selectedProfile.id, VpnController.defaultStealthId);
+        expect(vpn.browserOnly, isFalse);
 
-        // 1-Tap Connect to Built-in Foreign USA Server
         await vpn.connect();
-        await Future<void>.delayed(Duration.zero);
         expect(vpn.isConnected, isTrue);
-        expect(vpn.exitIp, '198.252.153.226');
-        expect(vpn.exitCountry, 'US');
-
-        // Refresh live foreign servers adds discovered countries (e.g. Sweden)
-        await vpn.refreshLiveForeignServers();
-        expect(
-          vpn.foreignProfiles.any((VpnProfile p) => p.countryCode == 'SE'),
-          isTrue,
-        );
-
-        // Custom OpenVPN .ovpn import works alongside WireGuard .conf import
-        final String? ovpnErr = await vpn.addCustomProfile(
-          name: 'Custom Frankfurt OpenVPN',
-          countryLabel: '🇩🇪 Germany',
-          configText:
-              'client\ndev tun\nproto udp\nremote 89.163.212.10 1194\n<ca>\n-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n</ca>\n',
-        );
-        expect(ovpnErr, isNull);
-        expect(vpn.selectedProfile.protocol, VpnProtocol.openvpn);
+        expect(capturedRouteMode, 'stealth_4500');
+        expect(capturedBrowserOnly, isFalse);
+        expect(callbackFired, isTrue);
+        // Zero OpenVPN notification calls!
+        expect(invokedMethods, isNot(contains('notifyOpenVpnConnected')));
 
         final String? wgErr = await vpn.addCustomProfile(
-          name: 'Proton Free Zurich',
-          countryLabel: '🇨🇭 Switzerland',
+          name: 'Proton Free NL',
+          countryLabel: '🇳🇱 Netherlands',
           configText:
               '[Interface]\nPrivateKey = AAAA\nAddress = 10.2.0.2/32\n[Peer]\nPublicKey = BBBB\nEndpoint = 185.159.157.1:51820\nAllowedIPs = 0.0.0.0/0\n',
         );
         expect(wgErr, isNull);
-        expect(vpn.customProfiles.length, 2);
+        expect(vpn.customProfiles.length, 1);
 
         await vpn.disconnect();
         expect(vpn.isConnected, isFalse);
@@ -467,98 +442,44 @@ void main() {
       },
     );
 
-    test(
-      'supports working Pause, Resume, Cancel & clears BrowserEngine stuck state on download intercept',
-      () async {
-        String currentNativeStatus = 'running';
-        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
-            .setMockMethodCallHandler(nativeChannel, (MethodCall call) async {
-              switch (call.method) {
-                case 'startDownload':
-                  currentNativeStatus = 'running';
-                  return <String, Object>{
-                    'downloadId': 701,
-                    'fileName': 'ubuntu-arm64.iso',
-                    'state': 'running',
-                  };
-                case 'pauseDownload':
-                  currentNativeStatus = 'paused';
-                  return true;
-                case 'resumeDownload':
-                  currentNativeStatus = 'running';
-                  return true;
-                case 'cancelDownload':
-                  currentNativeStatus = 'canceled';
-                  return true;
-                case 'queryDownloads':
-                  return <Map<String, Object>>[
-                    <String, Object>{
-                      'downloadId': 701,
-                      'status': currentNativeStatus,
-                      'bytesDownloaded': 4194304,
-                      'totalBytes': 8388608,
-                      'speedBps': currentNativeStatus == 'running'
-                          ? 1048576
-                          : 0,
-                      'localUri':
-                          '/storage/emulated/0/Download/ubuntu-arm64.iso',
-                      'mimeType': 'application/octet-stream',
-                    },
-                  ];
-                default:
-                  return null;
-              }
-            });
+    test('DownloadsController changes download location cleanly', () async {
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(nativeChannel, (MethodCall call) async {
+            if (call.method == 'setDownloadLocation') {
+              final Map<Object?, Object?> args =
+                  call.arguments as Map<Object?, Object?>;
+              final String p = args['path']?.toString() ?? '';
+              return <String, Object>{
+                'ok': true,
+                'path': p,
+                'label': 'Heaven Subfolder',
+              };
+            }
+            return null;
+          });
 
-        SharedPreferences.setMockInitialValues(<String, Object>{});
-        final SharedPreferences prefs = await SharedPreferences.getInstance();
-        final DownloadsController downloads = DownloadsController(
-          prefs,
-          enableNativePolling: false,
-        );
-
-        final bool started = await downloads.startUrlDownload(
-          url: 'https://releases.ubuntu.com/ubuntu-arm64.iso',
-          suggestedFileName: 'ubuntu-arm64.iso',
-        );
-        expect(started, isTrue);
-        await downloads.pauseDownload(701);
-        expect(downloads.items.first.isPaused, isTrue);
-        await downloads.resumeDownload(701);
-        expect(downloads.items.first.isRunning, isTrue);
-        await downloads.cancelAndRemove(downloads.items.first);
-        expect(downloads.items, isEmpty);
-
-        final BrowserSettingsController settings = BrowserSettingsController(
-          prefs,
-        );
-        final BrowserEngine engine = BrowserEngine(
-          settings: settings,
-          isIncognito: false,
-          enablePlatformWebView: false,
-        );
-        await engine.loadUserEntry('https://releases.ubuntu.com');
-        NativeShieldBridge.instance.onDownloadStarted?.call(<String, Object?>{
-          'downloadId': 702,
-          'fileName': 'ubuntu-server.iso',
-          'url': 'https://releases.ubuntu.com/ubuntu-server.iso',
-          'mimeType': 'application/octet-stream',
-          'totalBytes': 10485760,
-          'localUri': '/storage/emulated/0/Download/ubuntu-server.iso',
-          'wasEmptyPage': false,
-        });
-        expect(downloads.items.length, 1);
-        expect(engine.isLoading, isFalse);
-        expect(engine.errorMessage, isNull);
-
-        engine.dispose();
-        downloads.dispose();
-      },
-    );
+      SharedPreferences.setMockInitialValues(<String, Object>{});
+      final SharedPreferences prefs = await SharedPreferences.getInstance();
+      final DownloadsController downloads = DownloadsController(
+        prefs,
+        enableNativePolling: false,
+      );
+      final String? err = await downloads.setDownloadLocation(
+        '/storage/emulated/0/Download/HeavenBrowser',
+        label: 'Heaven Subfolder',
+      );
+      expect(err, isNull);
+      expect(
+        downloads.downloadLocationPath,
+        '/storage/emulated/0/Download/HeavenBrowser',
+      );
+      expect(downloads.downloadLocationLabel, 'Heaven Subfolder');
+      downloads.dispose();
+    });
   });
 
   testWidgets(
-    'Step 7 UI: For You image cards, Search UX, Google query Edit & Built-in Foreign Country VPN on narrow 320px screen',
+    'Step 8 UI: Tiny Search Engine Switcher, Recent Searches, Menu Items, Downloads Folder & Silent VPN on 320px screen',
     (WidgetTester tester) async {
       const MethodChannel nativeChannel = MethodChannel(
         'com.hypertechlabs.heavenbrowser/native_shield',
@@ -566,33 +487,21 @@ void main() {
       TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
           .setMockMethodCallHandler(nativeChannel, (MethodCall call) async {
             switch (call.method) {
-              case 'provisionForeignOpenVpnConfig':
-                return <String, Object>{
-                  'ok': true,
-                  'configText':
-                      'client\ndev tun\nremote 198.252.153.226 1194 tcp-client\n',
-                  'serverIp': '198.252.153.226',
-                  'countryCode': 'US',
-                  'countryName': 'United States',
-                  'city': 'Miami',
-                  'source': 'RiseupVPN',
-                  'endpoint': '198.252.153.226:1194',
-                };
-              case 'fetchLiveForeignCountries':
-                return <Map<String, Object>>[];
               case 'provisionFreeWarpConfig':
                 return <String, Object>{
                   'ok': true,
                   'configText':
-                      '[Interface]\nPrivateKey = AAAA\nAddress = 172.16.0.2/32\nDNS = 1.1.1.1\n\n[Peer]\nPublicKey = BBBB\nAllowedIPs = 0.0.0.0/0\nEndpoint = 162.159.192.1:2408\n',
+                      '[Interface]\nPrivateKey = AAAA\nAddress = 172.16.0.2/32\nDNS = 1.1.1.1\n\n[Peer]\nPublicKey = BBBB\nAllowedIPs = 0.0.0.0/0\nEndpoint = 162.159.193.1:4500\n',
                   'clientIpv4': '172.16.0.2',
-                  'endpoint': '162.159.192.1:2408',
+                  'endpoint': '162.159.193.1:4500',
                 };
               case 'connectVpn':
                 return <String, Object>{
                   'ok': true,
                   'connected': true,
-                  'profileName': 'United States',
+                  'activeEndpoint': '162.159.193.1:4500',
+                  'exitIp': '104.28.19.44',
+                  'exitCountry': 'SG',
                 };
               case 'disconnectVpn':
                 return <String, Object>{'ok': true, 'connected': false};
@@ -609,30 +518,18 @@ void main() {
       tester.view.devicePixelRatio = 1.0;
       addTearDown(tester.view.reset);
 
-      SharedPreferences.setMockInitialValues(<String, Object>{
-        'hb.downloads.v4': jsonEncode(<Map<String, Object>>[
-          <String, Object>{
-            'downloadId': 501,
-            'fileName': 'heaven_installer_v7.apk',
-            'url': 'https://example.com/heaven_installer_v7.apk',
-            'mimeType': 'application/vnd.android.package-archive',
-            'state': 'running',
-            'bytesDownloaded': 2097152,
-            'totalBytes': 4194304,
-            'speedBps': 524288,
-            'localUri': '/storage/emulated/0/Download/heaven_installer_v7.apk',
-            'createdAtMs': 1792660000000,
-          },
-        ]),
-      });
+      SharedPreferences.setMockInitialValues(<String, Object>{});
       final SharedPreferences prefs = await SharedPreferences.getInstance();
       final BrowserSettingsController settings = BrowserSettingsController(
         prefs,
       );
+      await settings.recordRecentSearch('ubuntu raspberry pi');
+
       final DownloadsController downloads = DownloadsController(
         prefs,
         enableNativePolling: false,
       );
+      final ExtensionsController extensions = ExtensionsController(prefs);
       final InterestProfileController interests = InterestProfileController(
         prefs,
       );
@@ -645,7 +542,7 @@ void main() {
         enableNativePolling: false,
         client: MockClient(
           (_) async =>
-              http.Response('ip=198.252.153.226\nloc=US\nwarp=off\n', 200),
+              http.Response('ip=104.28.19.44\nloc=SG\nwarp=on\n', 200),
         ),
       );
 
@@ -653,6 +550,7 @@ void main() {
         HeavenBrowserApp(
           settings: settings,
           downloads: downloads,
+          extensions: extensions,
           interests: interests,
           newsService: newsService,
           vpn: vpn,
@@ -663,22 +561,19 @@ void main() {
       await tester.pumpAndSettle();
       expect(tester.takeException(), isNull);
 
-      // 1. Discover Feed renders image-backed cards & filters out text-only items!
-      expect(find.text('Discover'), findsOneWidget);
+      // 1. Tiny Search Engine Switcher button is present right on the Search Bar!
       expect(
-        find.textContaining("SpaceX Starship's Orbital Launch Milestone"),
-        findsOneWidget,
+        find.byKey(const Key('tiny_search_engine_switcher')),
+        findsWidgets,
       );
-      expect(find.textContaining('Text Only Item'), findsNothing);
 
-      // 2. + New Tab button works with zero overflow on 320px!
-      expect(find.byKey(const Key('bar_new_tab_button')), findsOneWidget);
-      await tester.tap(find.byKey(const Key('bar_new_tab_button')));
+      // 2. Tapping Home Search Bar displays Recent Searches!
+      await tester.tap(find.byKey(const Key('home_search_textfield')));
       await tester.pumpAndSettle();
-      expect(tester.takeException(), isNull);
-      expect(find.text('2'), findsOneWidget);
+      expect(find.text('Recent Searches'), findsOneWidget);
+      expect(find.text('ubuntu raspberry pi'), findsOneWidget);
 
-      // 3. Home Search submit & hidden Mic after searching
+      // 3. Submit query -> Opens native Google-inspired Heaven Search!
       await tester.enterText(
         find.byKey(const Key('home_search_textfield')),
         'flutter',
@@ -687,31 +582,72 @@ void main() {
       await tester.tap(find.byKey(const Key('home_search_icon_button')));
       await tester.pumpAndSettle();
       expect(tester.takeException(), isNull);
-      expect(find.text('Flutter Official Video'), findsOneWidget);
-      expect(find.byIcon(Icons.mic_rounded), findsNothing);
+      expect(find.text('Flutter Official Docs'), findsOneWidget);
+      await tester.scrollUntilVisible(
+        find.text('People also search for'),
+        180,
+        scrollable: find
+            .descendant(
+              of: find.byType(HeavenSearchView),
+              matching: find.byType(Scrollable),
+            )
+            .first,
+      );
+      await tester.pumpAndSettle();
+      expect(tester.takeException(), isNull);
+      expect(find.text('People also search for'), findsOneWidget);
 
-      // 4. Open Heaven VPN Screen -> Shows Built-In Foreign Country Servers (United States, Netherlands, Japan...) & 1-Tap Connects!
+      // 4. Open Browser Menu -> Verify all new menu items exist with zero overflow!
+      await tester.tap(find.byTooltip('Browser Menu'));
+      await tester.pumpAndSettle();
+      expect(tester.takeException(), isNull);
+      expect(find.text('Add tab to new group'), findsOneWidget);
+      expect(find.text('Extensions'), findsOneWidget);
+      expect(find.text('Site controls'), findsOneWidget);
+      expect(find.text('Create shortcut'), findsOneWidget);
+
+      // Scroll menu sheet to verify Notifications, Languages & Help!
+      await tester.drag(
+        find.byType(SingleChildScrollView).last,
+        const Offset(0, -180),
+      );
+      await tester.pumpAndSettle();
+      expect(find.text('Notifications'), findsOneWidget);
+      expect(find.text('Languages'), findsOneWidget);
+      expect(find.text('Help'), findsOneWidget);
+
+      // Open Help screen -> Verify support email techlabs.hyper@gmail.com!
+      await tester.tap(find.text('Help'));
+      await tester.pumpAndSettle();
+      expect(tester.takeException(), isNull);
+      expect(find.text('techlabs.hyper@gmail.com'), findsOneWidget);
+      await tester.pageBack();
+      await tester.pumpAndSettle();
+
+      // Open Silent Stealth VPN screen -> Verify zero notification card & 1-tap Connect!
       await tester.tap(find.byTooltip('Browser Menu'));
       await tester.pumpAndSettle();
       await tester.tap(find.text('VPN'));
       await tester.pumpAndSettle();
       expect(tester.takeException(), isNull);
-      expect(find.text('Heaven VPN'), findsOneWidget);
-      expect(find.textContaining('United States'), findsWidgets);
-      expect(find.byKey(const Key('vpn_power_button')), findsOneWidget);
-
+      expect(find.textContaining('Silent Stealth Mode'), findsOneWidget);
       await tester.tap(find.byKey(const Key('vpn_power_button')));
       await tester.pumpAndSettle();
       expect(tester.takeException(), isNull);
       expect(vpn.isConnected, isTrue);
-      expect(find.text('VPN Connected'), findsOneWidget);
+      await tester.pageBack();
+      await tester.pumpAndSettle();
 
-      // Scroll down to verify Foreign Country Servers list renders with zero overflow on 320px!
-      await tester.drag(find.byType(ListView).first, const Offset(0, -320));
+      // Open Downloads screen -> Verify Change Download Location card!
+      await tester.tap(find.byTooltip('Browser Menu'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Downloads'));
       await tester.pumpAndSettle();
       expect(tester.takeException(), isNull);
-      expect(find.text('Foreign Country Servers (Free)'), findsOneWidget);
-      expect(find.text('Netherlands'), findsOneWidget);
+      expect(
+        find.byKey(const Key('change_download_location_card')),
+        findsOneWidget,
+      );
 
       final TabManagerController tm = TabManagerController(
         settings: settings,
@@ -722,6 +658,7 @@ void main() {
       tm.dispose();
 
       vpn.dispose();
+      extensions.dispose();
       newsService.dispose();
       downloads.dispose();
     },

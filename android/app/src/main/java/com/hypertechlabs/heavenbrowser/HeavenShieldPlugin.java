@@ -11,9 +11,16 @@ import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
+import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
+import android.content.pm.ShortcutInfo;
+import android.content.pm.ShortcutManager;
 import android.graphics.Bitmap;
 import android.graphics.Canvas;
+import android.graphics.Color;
+import android.graphics.Paint;
+import android.graphics.RectF;
+import android.graphics.drawable.Icon;
 import android.media.MediaScannerConnection;
 import android.net.Uri;
 import android.net.http.SslError;
@@ -23,6 +30,7 @@ import android.os.Handler;
 import android.os.Looper;
 import android.os.Message;
 import android.os.SystemClock;
+import android.provider.DocumentsContract;
 import android.provider.Settings;
 import android.speech.RecognizerIntent;
 import android.view.KeyEvent;
@@ -40,6 +48,7 @@ import android.webkit.WebResourceError;
 import android.webkit.WebResourceRequest;
 import android.webkit.WebResourceResponse;
 import android.webkit.WebSettings;
+import android.webkit.WebStorage;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
 import io.flutter.embedding.engine.plugins.FlutterPlugin;
@@ -75,15 +84,20 @@ public class HeavenShieldPlugin
     implements FlutterPlugin,
         ActivityAware,
         MethodChannel.MethodCallHandler,
-        PluginRegistry.ActivityResultListener {
+        PluginRegistry.ActivityResultListener,
+        PluginRegistry.RequestPermissionsResultListener {
 
   private static final String CHANNEL_NAME = "com.hypertechlabs.heavenbrowser/native_shield";
+  private static final String NATIVE_PREFS_NAME = "heaven_native_prefs";
+  private static final String PREF_DOWNLOAD_PATH = "custom_download_path";
+  private static final String PREF_DL_NOTIFS_ENABLED = "download_notifs_enabled";
   private static final String ACTION_DOWNLOAD_CONTROL =
       "com.hypertechlabs.heavenbrowser.DOWNLOAD_CONTROL";
   private static final String NOTIF_CHANNEL_PROGRESS = "heaven_dl_progress_v5";
   private static final String NOTIF_CHANNEL_COMPLETE = "heaven_dl_complete_v5";
   private static final int VOICE_SEARCH_REQUEST_CODE = 49021;
   private static final int NOTIF_PERM_REQUEST_CODE = 49022;
+  private static final int FOLDER_PICKER_REQUEST_CODE = 49025;
 
   private static final byte[] TRANSPARENT_GIF = new byte[] {
     0x47, 0x49, 0x46, 0x38, 0x39, 0x61, 0x01, 0x00, 0x01, 0x00, (byte) 0x80, 0x00,
@@ -195,6 +209,8 @@ public class HeavenShieldPlugin
   private FlutterPluginBinding pluginBinding;
   private MethodChannel channel;
   private MethodChannel.Result pendingVoiceResult;
+  private MethodChannel.Result pendingFolderResult;
+  private MethodChannel.Result pendingNotifPermResult;
   private HeavenVpnManager vpnManager;
 
   private final ExecutorService downloadPool = Executors.newCachedThreadPool();
@@ -202,6 +218,8 @@ public class HeavenShieldPlugin
   private final AtomicLong idGenerator = new AtomicLong(System.currentTimeMillis());
   private BroadcastReceiver controlReceiver;
   private boolean notifChannelsReady = false;
+  private volatile String customDownloadPath = "";
+  private volatile boolean downloadNotificationsEnabled = true;
 
   private volatile boolean shieldEnabled = true;
   private volatile boolean desktopMode = false;
@@ -230,11 +248,15 @@ public class HeavenShieldPlugin
   @Override
   public void onAttachedToEngine(FlutterPluginBinding binding) {
     this.pluginBinding = binding;
-    this.vpnManager = new HeavenVpnManager(binding.getApplicationContext());
+    Context appCtx = binding.getApplicationContext();
+    SharedPreferences sp = appCtx.getSharedPreferences(NATIVE_PREFS_NAME, Context.MODE_PRIVATE);
+    this.customDownloadPath = sp.getString(PREF_DOWNLOAD_PATH, "");
+    this.downloadNotificationsEnabled = sp.getBoolean(PREF_DL_NOTIFS_ENABLED, true);
+    this.vpnManager = new HeavenVpnManager(appCtx);
     this.channel = new MethodChannel(binding.getBinaryMessenger(), CHANNEL_NAME);
     this.channel.setMethodCallHandler(this);
     setupServiceWorkerShield();
-    registerDownloadControlReceiver(binding.getApplicationContext());
+    registerDownloadControlReceiver(appCtx);
   }
 
   @Override
@@ -252,12 +274,14 @@ public class HeavenShieldPlugin
     this.activity = binding.getActivity();
     this.activityBinding = binding;
     binding.addActivityResultListener(this);
+    binding.addRequestPermissionsResultListener(this);
   }
 
   @Override
   public void onDetachedFromActivityForConfigChanges() {
     if (this.activityBinding != null) {
       this.activityBinding.removeActivityResultListener(this);
+      this.activityBinding.removeRequestPermissionsResultListener(this);
       this.activityBinding = null;
     }
   }
@@ -271,6 +295,7 @@ public class HeavenShieldPlugin
   public void onDetachedFromActivity() {
     if (this.activityBinding != null) {
       this.activityBinding.removeActivityResultListener(this);
+      this.activityBinding.removeRequestPermissionsResultListener(this);
       this.activityBinding = null;
     }
     this.activity = null;
@@ -379,6 +404,57 @@ public class HeavenShieldPlugin
         }
       }
       callback.success(null);
+      return true;
+    }
+    if (requestCode == FOLDER_PICKER_REQUEST_CODE) {
+      MethodChannel.Result folderCb = this.pendingFolderResult;
+      this.pendingFolderResult = null;
+      if (folderCb == null) {
+        return true;
+      }
+      if (resultCode == Activity.RESULT_OK && data != null && data.getData() != null) {
+        Uri treeUri = data.getData();
+        Context ctx = resolveContext();
+        if (ctx != null) {
+          try {
+            int takeFlags =
+                data.getFlags()
+                    & (Intent.FLAG_GRANT_READ_URI_PERMISSION
+                        | Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
+            ctx.getContentResolver().takePersistableUriPermission(treeUri, takeFlags);
+          } catch (Throwable ignored) {
+          }
+          String resolvedPath = resolveTreeUriToFilePath(ctx, treeUri);
+          if (resolvedPath != null && !resolvedPath.isEmpty()) {
+            saveCustomDownloadPath(ctx, resolvedPath);
+            Map<String, Object> out = new HashMap<>();
+            out.put("ok", true);
+            out.put("path", resolvedPath);
+            out.put("label", friendlyFolderLabel(resolvedPath));
+            folderCb.success(out);
+            return true;
+          }
+        }
+      }
+      folderCb.success(null);
+      return true;
+    }
+    return false;
+  }
+
+  @Override
+  public boolean onRequestPermissionsResult(
+      int requestCode, String[] permissions, int[] grantResults) {
+    if (requestCode == NOTIF_PERM_REQUEST_CODE) {
+      MethodChannel.Result cb = this.pendingNotifPermResult;
+      this.pendingNotifPermResult = null;
+      if (cb != null) {
+        boolean granted =
+            grantResults != null
+                && grantResults.length > 0
+                && grantResults[0] == PackageManager.PERMISSION_GRANTED;
+        cb.success(granted);
+      }
       return true;
     }
     return false;
@@ -527,28 +603,50 @@ public class HeavenShieldPlugin
         handleOpenDownloadedFile(call, result);
         break;
 
+      case "getDownloadLocations":
+        handleGetDownloadLocations(result);
+        break;
+
+      case "setDownloadLocation":
+        handleSetDownloadLocation(call, result);
+        break;
+
+      case "pickDownloadFolder":
+        handlePickDownloadFolder(result);
+        break;
+
+      case "createHomeScreenShortcut":
+        handleCreateHomeScreenShortcut(call, result);
+        break;
+
+      case "getNotificationStatus":
+        handleGetNotificationStatus(result);
+        break;
+
+      case "requestNotificationPermission":
+        handleRequestNotificationPermission(result);
+        break;
+
+      case "openNotificationSettings":
+        result.success(openAppNotificationSettings());
+        break;
+
+      case "setDownloadNotificationsEnabled":
+        Boolean dlNotifArg = call.argument("enabled");
+        setDownloadNotificationsEnabledInternal(dlNotifArg == null || dlNotifArg);
+        result.success(true);
+        break;
+
+      case "clearSiteData":
+        String targetDomain = call.argument("domain");
+        handleClearSiteData(targetDomain, result);
+        break;
+
       case "provisionFreeWarpConfig":
         if (vpnManager != null) {
-          vpnManager.provisionFreeWarpConfig(result);
-        } else {
-          result.success(Collections.singletonMap("ok", false));
-        }
-        break;
-
-      case "provisionForeignOpenVpnConfig":
-        if (vpnManager != null) {
-          String countryCode = call.argument("countryCode");
-          List<String> excludeHosts = call.argument("excludeHosts");
-          vpnManager.provisionForeignOpenVpnConfig(
-              countryCode != null ? countryCode : "AUTO_FOREIGN", excludeHosts, result);
-        } else {
-          result.success(Collections.singletonMap("ok", false));
-        }
-        break;
-
-      case "fetchLiveForeignCountries":
-        if (vpnManager != null) {
-          vpnManager.fetchLiveForeignCountries(result);
+          String routeMode = call.argument("routeMode");
+          vpnManager.provisionFreeWarpConfig(
+              routeMode != null ? routeMode : "stealth_4500", result);
         } else {
           result.success(Collections.singletonMap("ok", false));
         }
@@ -567,12 +665,16 @@ public class HeavenShieldPlugin
         if (vpnManager != null) {
           String cfgText = call.argument("configText");
           String profName = call.argument("profileName");
+          String routeMode = call.argument("routeMode");
           Boolean bOnly = call.argument("browserOnly");
+          Boolean builtInWarp = call.argument("isBuiltInWarp");
           vpnManager.connectVpn(
               this.activity,
               cfgText != null ? cfgText : "",
-              profName != null ? profName : "Heaven Free VPN",
-              bOnly == null || bOnly,
+              profName != null ? profName : "Heaven Stealth VPN",
+              routeMode != null ? routeMode : "stealth_4500",
+              bOnly != null && bOnly,
+              builtInWarp == null || builtInWarp,
               result);
         } else {
           result.success(Collections.singletonMap("ok", false));
@@ -900,6 +1002,13 @@ public class HeavenShieldPlugin
   }
 
   private File resolveDownloadsDir(Context ctx) {
+    String custom = this.customDownloadPath;
+    if (custom != null && !custom.trim().isEmpty()) {
+      File customDir = new File(custom.trim());
+      if ((customDir.exists() || customDir.mkdirs()) && customDir.canWrite()) {
+        return customDir;
+      }
+    }
     File pub = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS);
     if (pub != null && (pub.exists() || pub.mkdirs()) && pub.canWrite()) {
       return pub;
@@ -910,6 +1019,365 @@ public class HeavenShieldPlugin
       fallback.mkdirs();
     }
     return fallback != null ? fallback : ctx.getFilesDir();
+  }
+
+  private void saveCustomDownloadPath(Context ctx, String path) {
+    String clean = path == null ? "" : path.trim();
+    this.customDownloadPath = clean;
+    if (ctx != null) {
+      ctx.getSharedPreferences(NATIVE_PREFS_NAME, Context.MODE_PRIVATE)
+          .edit()
+          .putString(PREF_DOWNLOAD_PATH, clean)
+          .apply();
+    }
+  }
+
+  private String friendlyFolderLabel(String rawPath) {
+    if (rawPath == null || rawPath.trim().isEmpty()) {
+      return "Downloads";
+    }
+    String p = rawPath.trim();
+    File ext = Environment.getExternalStorageDirectory();
+    if (ext != null) {
+      String root = ext.getAbsolutePath();
+      if (p.equals(root)) {
+        return "Internal Storage";
+      }
+      if (p.startsWith(root + File.separator)) {
+        return p.substring(root.length() + 1);
+      }
+    }
+    if (p.contains("/Android/data/")) {
+      return "App Private Downloads";
+    }
+    File f = new File(p);
+    return f.getName().isEmpty() ? p : f.getName();
+  }
+
+  private void handleGetDownloadLocations(MethodChannel.Result result) {
+    Context ctx = resolveContext();
+    if (ctx == null) {
+      result.success(Collections.emptyMap());
+      return;
+    }
+    File activeDir = resolveDownloadsDir(ctx);
+    List<Map<String, String>> presets = new ArrayList<>();
+
+    File pubDl = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS);
+    if (pubDl != null) {
+      presets.add(makeLocationItem("Downloads (Default)", pubDl.getAbsolutePath()));
+      presets.add(
+          makeLocationItem(
+              "Downloads / HeavenBrowser", new File(pubDl, "HeavenBrowser").getAbsolutePath()));
+    }
+    File pubDocs = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOCUMENTS);
+    if (pubDocs != null) {
+      presets.add(
+          makeLocationItem(
+              "Documents / HeavenBrowser", new File(pubDocs, "HeavenBrowser").getAbsolutePath()));
+    }
+    File pubPics = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES);
+    if (pubPics != null) {
+      presets.add(
+          makeLocationItem(
+              "Pictures / HeavenBrowser", new File(pubPics, "HeavenBrowser").getAbsolutePath()));
+    }
+    File pubMovies = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_MOVIES);
+    if (pubMovies != null) {
+      presets.add(
+          makeLocationItem(
+              "Movies / HeavenBrowser", new File(pubMovies, "HeavenBrowser").getAbsolutePath()));
+    }
+    File appPrivate = ctx.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS);
+    if (appPrivate != null) {
+      presets.add(makeLocationItem("App Private Storage", appPrivate.getAbsolutePath()));
+    }
+
+    Map<String, Object> out = new HashMap<>();
+    out.put("currentPath", activeDir.getAbsolutePath());
+    out.put("currentLabel", friendlyFolderLabel(activeDir.getAbsolutePath()));
+    out.put("presets", presets);
+    result.success(out);
+  }
+
+  private static Map<String, String> makeLocationItem(String label, String path) {
+    Map<String, String> m = new HashMap<>(4);
+    m.put("label", label);
+    m.put("path", path);
+    return m;
+  }
+
+  private void handleSetDownloadLocation(MethodCall call, MethodChannel.Result result) {
+    Context ctx = resolveContext();
+    String path = call.argument("path");
+    if (ctx == null || path == null || path.trim().isEmpty()) {
+      result.success(Collections.singletonMap("ok", false));
+      return;
+    }
+    File dir = new File(path.trim());
+    if (!dir.exists()) {
+      //noinspection ResultOfMethodCallIgnored
+      dir.mkdirs();
+    }
+    if (!dir.exists() || !dir.canWrite()) {
+      Map<String, Object> err = new HashMap<>();
+      err.put("ok", false);
+      err.put("error", "Cannot write to selected folder on this Android version. Use Choose Custom Folder.");
+      result.success(err);
+      return;
+    }
+    saveCustomDownloadPath(ctx, dir.getAbsolutePath());
+    Map<String, Object> out = new HashMap<>();
+    out.put("ok", true);
+    out.put("path", dir.getAbsolutePath());
+    out.put("label", friendlyFolderLabel(dir.getAbsolutePath()));
+    result.success(out);
+  }
+
+  private void handlePickDownloadFolder(MethodChannel.Result result) {
+    if (this.activity == null) {
+      result.success(null);
+      return;
+    }
+    try {
+      Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT_TREE);
+      intent.addFlags(
+          Intent.FLAG_GRANT_READ_URI_PERMISSION
+              | Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+              | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
+      this.pendingFolderResult = result;
+      this.activity.startActivityForResult(intent, FOLDER_PICKER_REQUEST_CODE);
+    } catch (ActivityNotFoundException e) {
+      this.pendingFolderResult = null;
+      result.success(null);
+    }
+  }
+
+  private String resolveTreeUriToFilePath(Context ctx, Uri treeUri) {
+    try {
+      String docId = DocumentsContract.getTreeDocumentId(treeUri);
+      if (docId != null) {
+        if (docId.startsWith("raw:")) {
+          return docId.substring(4);
+        }
+        String[] split = docId.split(":", 2);
+        if (split.length >= 1 && "primary".equalsIgnoreCase(split[0])) {
+          File root = Environment.getExternalStorageDirectory();
+          String rel = split.length == 2 ? split[1] : "";
+          File resolved = rel.isEmpty() ? root : new File(root, rel);
+          if (resolved.exists() || resolved.mkdirs()) {
+            return resolved.getAbsolutePath();
+          }
+        }
+      }
+    } catch (Throwable ignored) {
+    }
+    File fallback = ctx.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS);
+    return fallback != null ? fallback.getAbsolutePath() : null;
+  }
+
+  @SuppressWarnings("deprecation")
+  private void handleCreateHomeScreenShortcut(MethodCall call, MethodChannel.Result result) {
+    Context ctx = resolveContext();
+    String title = call.argument("title");
+    String url = call.argument("url");
+    if (ctx == null || url == null || url.trim().isEmpty()) {
+      result.success(false);
+      return;
+    }
+    String cleanUrl = url.trim();
+    String cleanTitle =
+        (title != null && !title.trim().isEmpty()) ? title.trim() : cleanUrl;
+    if (cleanTitle.length() > 28) {
+      cleanTitle = cleanTitle.substring(0, 28).trim();
+    }
+
+    Intent launchIntent = new Intent(Intent.ACTION_VIEW, Uri.parse(cleanUrl));
+    launchIntent.setClassName(
+        ctx.getPackageName(), "com.hypertechlabs.heavenbrowser.MainActivity");
+    launchIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP);
+
+    Bitmap iconBmp = buildShortcutIconBitmap(cleanTitle);
+
+    try {
+      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+        ShortcutManager sm = ctx.getSystemService(ShortcutManager.class);
+        if (sm != null && sm.isRequestPinShortcutSupported()) {
+          String shortcutId = "hb_site_" + Math.abs(cleanUrl.hashCode());
+          ShortcutInfo info =
+              new ShortcutInfo.Builder(ctx, shortcutId)
+                  .setShortLabel(cleanTitle)
+                  .setLongLabel(cleanTitle)
+                  .setIcon(Icon.createWithBitmap(iconBmp))
+                  .setIntent(launchIntent)
+                  .build();
+          boolean requested = sm.requestPinShortcut(info, null);
+          result.success(requested);
+          return;
+        }
+      }
+      Intent legacy = new Intent("com.android.launcher.action.INSTALL_SHORTCUT");
+      legacy.putExtra(Intent.EXTRA_SHORTCUT_INTENT, launchIntent);
+      legacy.putExtra(Intent.EXTRA_SHORTCUT_NAME, cleanTitle);
+      legacy.putExtra(Intent.EXTRA_SHORTCUT_ICON, iconBmp);
+      ctx.sendBroadcast(legacy);
+      result.success(true);
+    } catch (Throwable t) {
+      result.success(false);
+    }
+  }
+
+  private static Bitmap buildShortcutIconBitmap(String label) {
+    int size = 192;
+    Bitmap bmp = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888);
+    Canvas canvas = new Canvas(bmp);
+
+    Paint bg = new Paint(Paint.ANTI_ALIAS_FLAG);
+    bg.setColor(Color.parseColor("#2563EB"));
+    RectF rect = new RectF(12f, 12f, size - 12f, size - 12f);
+    canvas.drawRoundRect(rect, 44f, 44f, bg);
+
+    String initial = "H";
+    if (label != null) {
+      for (int i = 0; i < label.length(); i++) {
+        char ch = label.charAt(i);
+        if (Character.isLetterOrDigit(ch)) {
+          initial = String.valueOf(Character.toUpperCase(ch));
+          break;
+        }
+      }
+    }
+
+    Paint txt = new Paint(Paint.ANTI_ALIAS_FLAG);
+    txt.setColor(Color.WHITE);
+    txt.setTextAlign(Paint.Align.CENTER);
+    txt.setFakeBoldText(true);
+    txt.setTextSize(92f);
+    Paint.FontMetrics fm = txt.getFontMetrics();
+    float centerY = (size / 2f) - ((fm.ascent + fm.descent) / 2f);
+    canvas.drawText(initial, size / 2f, centerY, txt);
+    return bmp;
+  }
+
+  private void handleGetNotificationStatus(MethodChannel.Result result) {
+    Context ctx = resolveContext();
+    boolean systemEnabled = true;
+    boolean runtimeGranted = true;
+    if (ctx != null) {
+      NotificationManager nm =
+          (NotificationManager) ctx.getSystemService(Context.NOTIFICATION_SERVICE);
+      if (nm != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+        systemEnabled = nm.areNotificationsEnabled();
+      }
+      if (Build.VERSION.SDK_INT >= 33) {
+        runtimeGranted =
+            ctx.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS)
+                == PackageManager.PERMISSION_GRANTED;
+      }
+    }
+    Map<String, Object> out = new HashMap<>();
+    out.put("systemEnabled", systemEnabled && runtimeGranted);
+    out.put("runtimeGranted", runtimeGranted);
+    out.put("downloadNotificationsEnabled", this.downloadNotificationsEnabled);
+    result.success(out);
+  }
+
+  private void handleRequestNotificationPermission(MethodChannel.Result result) {
+    if (Build.VERSION.SDK_INT < 33) {
+      result.success(true);
+      return;
+    }
+    if (this.activity == null) {
+      result.success(false);
+      return;
+    }
+    if (this.activity.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS)
+        == PackageManager.PERMISSION_GRANTED) {
+      result.success(true);
+      return;
+    }
+    this.pendingNotifPermResult = result;
+    this.activity.requestPermissions(
+        new String[] {Manifest.permission.POST_NOTIFICATIONS}, NOTIF_PERM_REQUEST_CODE);
+  }
+
+  private boolean openAppNotificationSettings() {
+    Context ctx = resolveContext();
+    if (ctx == null) {
+      return false;
+    }
+    try {
+      Intent intent;
+      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+        intent = new Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS);
+        intent.putExtra(Settings.EXTRA_APP_PACKAGE, ctx.getPackageName());
+      } else {
+        intent = new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS);
+        intent.setData(Uri.parse("package:" + ctx.getPackageName()));
+      }
+      if (this.activity != null) {
+        this.activity.startActivity(intent);
+      } else {
+        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+        ctx.startActivity(intent);
+      }
+      return true;
+    } catch (Throwable ignored) {
+      return false;
+    }
+  }
+
+  private void setDownloadNotificationsEnabledInternal(boolean enabled) {
+    this.downloadNotificationsEnabled = enabled;
+    Context ctx = resolveContext();
+    if (ctx != null) {
+      ctx.getSharedPreferences(NATIVE_PREFS_NAME, Context.MODE_PRIVATE)
+          .edit()
+          .putBoolean(PREF_DL_NOTIFS_ENABLED, enabled)
+          .apply();
+      if (!enabled) {
+        NotificationManager nm =
+            (NotificationManager) ctx.getSystemService(Context.NOTIFICATION_SERVICE);
+        if (nm != null) {
+          for (DownloadJob job : downloadJobs.values()) {
+            nm.cancel(job.notifId());
+          }
+        }
+      }
+    }
+  }
+
+  private void handleClearSiteData(String domain, MethodChannel.Result result) {
+    try {
+      CookieManager cm = CookieManager.getInstance();
+      if (domain != null && !domain.trim().isEmpty()) {
+        String clean = normalizeHost(domain);
+        String existing = cm.getCookie("https://" + clean);
+        if (existing != null) {
+          String[] pairs = existing.split(";");
+          for (String pair : pairs) {
+            int eq = pair.indexOf('=');
+            String name = (eq > 0 ? pair.substring(0, eq) : pair).trim();
+            if (!name.isEmpty()) {
+              cm.setCookie(
+                  "https://" + clean, name + "=; Max-Age=0; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT");
+              cm.setCookie(
+                  "https://." + clean, name + "=; Max-Age=0; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT");
+            }
+          }
+        }
+        cm.flush();
+        WebStorage.getInstance().deleteOrigin("https://" + clean);
+        WebStorage.getInstance().deleteOrigin("https://www." + clean);
+      } else {
+        cm.removeAllCookies(null);
+        cm.flush();
+        WebStorage.getInstance().deleteAllData();
+      }
+      result.success(true);
+    } catch (Throwable t) {
+      result.success(false);
+    }
   }
 
   private File uniqueTargetFile(File dir, String rawName) {
@@ -1416,6 +1884,9 @@ public class HeavenShieldPlugin
 
   @SuppressWarnings("deprecation")
   private void postDownloadNotification(DownloadJob job) {
+    if (!this.downloadNotificationsEnabled) {
+      return;
+    }
     Context ctx = resolveContext();
     if (ctx == null) {
       return;

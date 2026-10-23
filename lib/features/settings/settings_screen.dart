@@ -3,19 +3,30 @@ import 'package:flutter/material.dart';
 import '../../core/constants/app_constants.dart';
 import '../../core/utils/omnibox_parser.dart';
 import '../../core/widgets/site_logo.dart';
+import '../downloads/downloads_controller.dart';
+import '../downloads/downloads_screen.dart';
+import '../extensions/extensions_controller.dart';
+import '../extensions/extensions_screen.dart';
 import '../shield/native_shield_bridge.dart';
 import '../tabs/tab_manager.dart';
 import 'browser_settings.dart';
+import 'help_screen.dart';
+import 'languages_screen.dart';
+import 'notifications_screen.dart';
 
 class SettingsScreen extends StatelessWidget {
   const SettingsScreen({
     super.key,
     required this.settings,
     required this.tabManager,
+    this.extensions,
+    this.downloads,
   });
 
   final BrowserSettingsController settings;
   final TabManagerController tabManager;
+  final ExtensionsController? extensions;
+  final DownloadsController? downloads;
 
   @override
   Widget build(BuildContext context) {
@@ -264,6 +275,120 @@ class SettingsScreen extends StatelessWidget {
                             },
                           ),
                         ],
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 20),
+                _SectionTitle('Touch Gestures', colors),
+                _SettingsCard(
+                  children: <Widget>[
+                    SwitchListTile.adaptive(
+                      title: const Text('Enable App Touch Gestures'),
+                      subtitle: const Text(
+                        'Swipe address bar & screen edges for fast one-hand navigation',
+                      ),
+                      value: settings.gesturesEnabled,
+                      onChanged: settings.setGesturesEnabled,
+                    ),
+                    const Divider(height: 1),
+                    SwitchListTile.adaptive(
+                      title: const Text('Swipe Address Bar to Switch Tabs'),
+                      subtitle: const Text(
+                        'Slide left/right on address bar for adjacent tabs, swipe up for Tab Grid',
+                      ),
+                      value: settings.barSwipeSwitchTabs,
+                      onChanged: settings.gesturesEnabled
+                          ? settings.setBarSwipeSwitchTabs
+                          : null,
+                    ),
+                    const Divider(height: 1),
+                    SwitchListTile.adaptive(
+                      title: const Text('Edge Swipe Back & Forward'),
+                      subtitle: const Text(
+                        'Swipe inward from left/right screen edge to navigate history',
+                      ),
+                      value: settings.edgeSwipeNavigation,
+                      onChanged: settings.gesturesEnabled
+                          ? settings.setEdgeSwipeNavigation
+                          : null,
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 20),
+                _SectionTitle('Extensions, Languages & Tools', colors),
+                _SettingsCard(
+                  children: <Widget>[
+                    if (extensions != null) ...<Widget>[
+                      ListTile(
+                        leading: const Icon(Icons.extension_rounded),
+                        title: const Text('Browser Extensions'),
+                        subtitle: Text(
+                          '${extensions!.enabledCount} active • Add custom JS/CSS or .user.js',
+                        ),
+                        trailing: const Icon(Icons.chevron_right_rounded),
+                        onTap: () => Navigator.of(context).push(
+                          MaterialPageRoute<void>(
+                            builder: (_) =>
+                                ExtensionsScreen(extensions: extensions!),
+                          ),
+                        ),
+                      ),
+                      const Divider(height: 1),
+                    ],
+                    if (downloads != null) ...<Widget>[
+                      ListTile(
+                        leading: const Icon(Icons.folder_open_rounded),
+                        title: const Text('Download Location'),
+                        subtitle: Text(downloads!.downloadLocationPath),
+                        trailing: const Icon(Icons.chevron_right_rounded),
+                        onTap: () => Navigator.of(context).push(
+                          MaterialPageRoute<void>(
+                            builder: (_) =>
+                                DownloadsScreen(downloads: downloads!),
+                          ),
+                        ),
+                      ),
+                      const Divider(height: 1),
+                    ],
+                    ListTile(
+                      leading: const Icon(Icons.notifications_outlined),
+                      title: const Text('Notifications'),
+                      subtitle: const Text(
+                        'Download alerts, website notifications & silent VPN',
+                      ),
+                      trailing: const Icon(Icons.chevron_right_rounded),
+                      onTap: () => Navigator.of(context).push(
+                        MaterialPageRoute<void>(
+                          builder: (_) =>
+                              NotificationsScreen(settings: settings),
+                        ),
+                      ),
+                    ),
+                    const Divider(height: 1),
+                    ListTile(
+                      leading: const Icon(Icons.translate_rounded),
+                      title: const Text('Languages'),
+                      subtitle: Text(
+                        '${settings.language.nativeLabel} (${settings.language.englishLabel})',
+                      ),
+                      trailing: const Icon(Icons.chevron_right_rounded),
+                      onTap: () => Navigator.of(context).push(
+                        MaterialPageRoute<void>(
+                          builder: (_) => LanguagesScreen(settings: settings),
+                        ),
+                      ),
+                    ),
+                    const Divider(height: 1),
+                    ListTile(
+                      leading: const Icon(Icons.help_outline_rounded),
+                      title: const Text('Help & Support'),
+                      subtitle: const Text(HelpScreen.supportEmail),
+                      trailing: const Icon(Icons.chevron_right_rounded),
+                      onTap: () => Navigator.of(context).push(
+                        MaterialPageRoute<void>(
+                          builder: (_) => const HelpScreen(),
+                        ),
                       ),
                     ),
                   ],

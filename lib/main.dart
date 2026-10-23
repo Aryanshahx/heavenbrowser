@@ -10,6 +10,7 @@ import 'core/constants/app_constants.dart';
 import 'core/theme/app_theme.dart';
 import 'features/browser/presentation/browser_screen.dart';
 import 'features/downloads/downloads_controller.dart';
+import 'features/extensions/extensions_controller.dart';
 import 'features/news/interest_news_service.dart';
 import 'features/search/heaven_search_service.dart';
 import 'features/settings/browser_settings.dart';
@@ -21,6 +22,7 @@ Future<void> main() async {
   final SharedPreferences prefs = await SharedPreferences.getInstance();
   final BrowserSettingsController settings = BrowserSettingsController(prefs);
   final DownloadsController downloads = DownloadsController(prefs);
+  final ExtensionsController extensions = ExtensionsController(prefs);
   final InterestProfileController interests = InterestProfileController(prefs);
   final HeavenNewsFeedService newsService = HeavenNewsFeedService(
     prefs: prefs,
@@ -32,6 +34,7 @@ Future<void> main() async {
     HeavenBrowserApp(
       settings: settings,
       downloads: downloads,
+      extensions: extensions,
       interests: interests,
       newsService: newsService,
       vpn: vpn,
@@ -44,6 +47,7 @@ class HeavenBrowserApp extends StatefulWidget {
     super.key,
     required this.settings,
     this.downloads,
+    this.extensions,
     this.interests,
     this.newsService,
     this.vpn,
@@ -53,6 +57,7 @@ class HeavenBrowserApp extends StatefulWidget {
 
   final BrowserSettingsController settings;
   final DownloadsController? downloads;
+  final ExtensionsController? extensions;
   final InterestProfileController? interests;
   final HeavenNewsFeedService? newsService;
   final VpnController? vpn;
@@ -68,12 +73,15 @@ class _HeavenBrowserAppState extends State<HeavenBrowserApp>
   late final TabManagerController _tabManager;
   late final HeavenSearchService _searchService;
   DownloadsController? _ownedDownloads;
+  ExtensionsController? _ownedExtensions;
   InterestProfileController? _ownedInterests;
   HeavenNewsFeedService? _ownedNewsService;
   VpnController? _ownedVpn;
 
   DownloadsController get _effectiveDownloads =>
       widget.downloads ?? _ownedDownloads!;
+  ExtensionsController get _effectiveExtensions =>
+      widget.extensions ?? _ownedExtensions!;
   InterestProfileController get _effectiveInterests =>
       widget.interests ?? _ownedInterests!;
   HeavenNewsFeedService get _effectiveNews =>
@@ -84,8 +92,12 @@ class _HeavenBrowserAppState extends State<HeavenBrowserApp>
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    if (widget.extensions == null) {
+      _ownedExtensions = ExtensionsController(widget.settings.prefs);
+    }
     _tabManager = TabManagerController(
       settings: widget.settings,
+      extensions: _effectiveExtensions,
       enablePlatformWebView: widget.enablePlatformWebView,
     );
     _searchService = widget.searchService ?? HeavenSearchService();
@@ -120,6 +132,9 @@ class _HeavenBrowserAppState extends State<HeavenBrowserApp>
               ),
       );
     }
+    _effectiveVpn.onTunnelConnected = () {
+      unawaited(_tabManager.reloadFailedTabs());
+    };
 
     final String initialRoute = PlatformDispatcher.instance.defaultRouteName;
     if (initialRoute.startsWith('http://') ||
@@ -145,6 +160,7 @@ class _HeavenBrowserAppState extends State<HeavenBrowserApp>
     WidgetsBinding.instance.removeObserver(this);
     _tabManager.dispose();
     _ownedDownloads?.dispose();
+    _ownedExtensions?.dispose();
     _ownedInterests?.dispose();
     _ownedNewsService?.dispose();
     _ownedVpn?.dispose();
@@ -159,6 +175,7 @@ class _HeavenBrowserAppState extends State<HeavenBrowserApp>
         return MaterialApp(
           title: AppConstants.appName,
           debugShowCheckedModeBanner: false,
+          locale: Locale(widget.settings.language.code),
           theme: AppTheme.lightTheme,
           darkTheme: AppTheme.darkTheme,
           themeMode: widget.settings.themeMode,
@@ -169,6 +186,7 @@ class _HeavenBrowserAppState extends State<HeavenBrowserApp>
                 tabManager: _tabManager,
                 searchService: _searchService,
                 downloads: _effectiveDownloads,
+                extensions: _effectiveExtensions,
                 newsService: _effectiveNews,
                 interests: _effectiveInterests,
                 vpn: _effectiveVpn,
@@ -189,6 +207,7 @@ class _HeavenBrowserAppState extends State<HeavenBrowserApp>
                 tabManager: _tabManager,
                 searchService: _searchService,
                 downloads: _effectiveDownloads,
+                extensions: _effectiveExtensions,
                 newsService: _effectiveNews,
                 interests: _effectiveInterests,
                 vpn: _effectiveVpn,

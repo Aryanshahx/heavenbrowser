@@ -40,6 +40,9 @@ class _HeavenSearchViewState extends State<HeavenSearchView> {
   HeavenSearchTab _selectedTab = HeavenSearchTab.all;
   HeavenSearchFilters _filters = const HeavenSearchFilters();
   Future<HeavenSearchResponse>? _future;
+  Future<List<HeavenImageResult>>? _imagesFuture;
+  Future<List<HeavenSearchResult>>? _videosFuture;
+  Future<List<HeavenSearchResult>>? _newsFuture;
   late final TextEditingController _searchController;
 
   @override
@@ -61,11 +64,41 @@ class _HeavenSearchViewState extends State<HeavenSearchView> {
   void _runSearch() {
     if (widget.query.trim().isEmpty) {
       _future = null;
+      _imagesFuture = null;
+      _videosFuture = null;
+      _newsFuture = null;
       return;
     }
     setState(() {
-      _future = widget.searchService.search(widget.query, filters: _filters);
+      _future = widget.searchService.searchFastWeb(
+        widget.query,
+        filters: _filters,
+      );
+      _imagesFuture = null;
+      _videosFuture = null;
+      _newsFuture = null;
+      _ensureLazyTabLoaded(_selectedTab);
     });
+  }
+
+  void _ensureLazyTabLoaded(HeavenSearchTab tab) {
+    if (widget.query.trim().isEmpty) return;
+    if (tab == HeavenSearchTab.images && _imagesFuture == null) {
+      _imagesFuture = widget.searchService.fetchTabImages(
+        widget.query,
+        filters: _filters,
+      );
+    } else if (tab == HeavenSearchTab.videos && _videosFuture == null) {
+      _videosFuture = widget.searchService.fetchTabVideos(
+        widget.query,
+        filters: _filters,
+      );
+    } else if (tab == HeavenSearchTab.news && _newsFuture == null) {
+      _newsFuture = widget.searchService.fetchTabNews(
+        widget.query,
+        filters: _filters,
+      );
+    }
   }
 
   @override
@@ -143,31 +176,107 @@ class _HeavenSearchViewState extends State<HeavenSearchView> {
                     }
 
                     if (_selectedTab == HeavenSearchTab.images) {
-                      return _buildImagesSliver(
-                        context,
-                        colors,
-                        data.imageResults,
+                      return FutureBuilder<List<HeavenImageResult>>(
+                        future: _imagesFuture,
+                        builder:
+                            (
+                              BuildContext context,
+                              AsyncSnapshot<List<HeavenImageResult>> imgSnap,
+                            ) {
+                              if (imgSnap.connectionState ==
+                                  ConnectionState.waiting) {
+                                return const SliverFillRemaining(
+                                  hasScrollBody: false,
+                                  child: Center(
+                                    child: CircularProgressIndicator(),
+                                  ),
+                                );
+                              }
+                              return _buildImagesSliver(
+                                context,
+                                colors,
+                                imgSnap.data ?? data.imageResults,
+                              );
+                            },
+                      );
+                    }
+
+                    if (_selectedTab == HeavenSearchTab.videos ||
+                        _selectedTab == HeavenSearchTab.news) {
+                      final Future<List<HeavenSearchResult>>? lazyFuture =
+                          _selectedTab == HeavenSearchTab.videos
+                          ? _videosFuture
+                          : _newsFuture;
+                      return FutureBuilder<List<HeavenSearchResult>>(
+                        future: lazyFuture,
+                        builder:
+                            (
+                              BuildContext context,
+                              AsyncSnapshot<List<HeavenSearchResult>> tabSnap,
+                            ) {
+                              if (tabSnap.connectionState ==
+                                  ConnectionState.waiting) {
+                                return const SliverFillRemaining(
+                                  hasScrollBody: false,
+                                  child: Center(
+                                    child: CircularProgressIndicator(),
+                                  ),
+                                );
+                              }
+                              final List<HeavenSearchResult> items =
+                                  tabSnap.data ??
+                                  (_selectedTab == HeavenSearchTab.videos
+                                      ? data.videoResults
+                                      : data.newsResults);
+                              return SliverPadding(
+                                padding: const EdgeInsets.fromLTRB(
+                                  14,
+                                  8,
+                                  14,
+                                  32,
+                                ),
+                                sliver: SliverList.list(
+                                  children: <Widget>[
+                                    if (items.isEmpty)
+                                      _buildEmptyState(context, colors)
+                                    else
+                                      for (final HeavenSearchResult item
+                                          in items)
+                                        _selectedTab == HeavenSearchTab.videos
+                                            ? _buildVideoCard(
+                                                context,
+                                                colors,
+                                                isDark,
+                                                item,
+                                              )
+                                            : _buildResultCard(
+                                                context,
+                                                colors,
+                                                isDark,
+                                                item,
+                                              ),
+                                    const SizedBox(height: 12),
+                                    _buildExternalFallbackBar(context, colors),
+                                  ],
+                                ),
+                              );
+                            },
                       );
                     }
 
                     final List<HeavenSearchResult> activeResults =
-                        switch (_selectedTab) {
-                          HeavenSearchTab.all => data.webResults,
-                          HeavenSearchTab.videos => data.videoResults,
-                          HeavenSearchTab.news => data.newsResults,
-                          HeavenSearchTab.wiki => data.wikiResults,
-                          HeavenSearchTab.images =>
-                            const <HeavenSearchResult>[],
-                        };
+                        _selectedTab == HeavenSearchTab.wiki
+                        ? data.wikiResults
+                        : data.webResults;
 
                     return SliverPadding(
-                      padding: const EdgeInsets.fromLTRB(14, 8, 14, 32),
+                      padding: const EdgeInsets.fromLTRB(12, 6, 12, 32),
                       sliver: SliverList.list(
                         children: <Widget>[
                           Padding(
-                            padding: const EdgeInsets.only(bottom: 10, left: 4),
+                            padding: const EdgeInsets.only(bottom: 8, left: 4),
                             child: Text(
-                              '${activeResults.length} results (${(data.elapsedMs / 1000).toStringAsFixed(2)}s) • ${_filters.region.label}',
+                              'About ${activeResults.length} results (${(data.elapsedMs / 1000).toStringAsFixed(2)}s) • ${_filters.region.label}',
                               style: theme.textTheme.labelSmall?.copyWith(
                                 color: colors.onSurfaceVariant,
                               ),
@@ -192,19 +301,17 @@ class _HeavenSearchViewState extends State<HeavenSearchView> {
                             _buildEmptyState(context, colors)
                           else
                             for (final HeavenSearchResult item in activeResults)
-                              _selectedTab == HeavenSearchTab.videos
-                                  ? _buildVideoCard(
-                                      context,
-                                      colors,
-                                      isDark,
-                                      item,
-                                    )
-                                  : _buildResultCard(
-                                      context,
-                                      colors,
-                                      isDark,
-                                      item,
-                                    ),
+                              _buildResultCard(context, colors, isDark, item),
+                          if (data.relatedSearches.isNotEmpty &&
+                              _selectedTab == HeavenSearchTab.all) ...<Widget>[
+                            const SizedBox(height: 10),
+                            _buildPeopleAlsoSearchCard(
+                              context,
+                              colors,
+                              isDark,
+                              data.relatedSearches,
+                            ),
+                          ],
                           const SizedBox(height: 12),
                           _buildExternalFallbackBar(context, colors),
                         ],
@@ -296,44 +403,46 @@ class _HeavenSearchViewState extends State<HeavenSearchView> {
               ],
             ),
           ),
-          const SizedBox(height: 10),
-          // Vertical category tabs (all 5 fit cleanly in full view on any phone width)
+          const SizedBox(height: 8),
+          // Google Search-inspired horizontal underline category tabs
           Row(
             children: <Widget>[
               for (final HeavenSearchTab tab in HeavenSearchTab.values)
                 Expanded(
-                  child: Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 2.5),
-                    child: InkWell(
-                      borderRadius: BorderRadius.circular(11),
-                      onTap: () => setState(() => _selectedTab = tab),
-                      child: AnimatedContainer(
-                        duration: const Duration(milliseconds: 160),
-                        padding: const EdgeInsets.symmetric(
-                          vertical: 7,
-                          horizontal: 4,
+                  child: InkWell(
+                    borderRadius: BorderRadius.circular(8),
+                    onTap: () {
+                      setState(() {
+                        _selectedTab = tab;
+                        _ensureLazyTabLoaded(tab);
+                      });
+                    },
+                    child: Container(
+                      padding: const EdgeInsets.only(top: 7, bottom: 8),
+                      alignment: Alignment.center,
+                      decoration: BoxDecoration(
+                        border: Border(
+                          bottom: BorderSide(
+                            color: _selectedTab == tab
+                                ? colors.primary
+                                : Colors.transparent,
+                            width: 2.8,
+                          ),
                         ),
-                        alignment: Alignment.center,
-                        decoration: BoxDecoration(
-                          color: _selectedTab == tab
-                              ? colors.primary
-                              : colors.surfaceContainerHighest.withValues(
-                                  alpha: 0.45,
-                                ),
-                          borderRadius: BorderRadius.circular(11),
-                        ),
-                        child: FittedBox(
-                          fit: BoxFit.scaleDown,
-                          child: Text(
-                            tab.label,
-                            maxLines: 1,
-                            style: TextStyle(
-                              fontWeight: FontWeight.w800,
-                              fontSize: 12.5,
-                              color: _selectedTab == tab
-                                  ? colors.onPrimary
-                                  : colors.onSurface,
-                            ),
+                      ),
+                      child: FittedBox(
+                        fit: BoxFit.scaleDown,
+                        child: Text(
+                          tab.label,
+                          maxLines: 1,
+                          style: TextStyle(
+                            fontWeight: _selectedTab == tab
+                                ? FontWeight.w800
+                                : FontWeight.w600,
+                            fontSize: 13,
+                            color: _selectedTab == tab
+                                ? colors.primary
+                                : colors.onSurfaceVariant,
                           ),
                         ),
                       ),
@@ -774,8 +883,8 @@ class _HeavenSearchViewState extends State<HeavenSearchView> {
                   SiteLogo(
                     urlOrDomain: item.url,
                     fallbackLabel: item.sourceLabel,
-                    size: 26,
-                    borderRadius: 8,
+                    size: 28,
+                    borderRadius: 14,
                   ),
                   const SizedBox(width: 10),
                   Expanded(
@@ -790,16 +899,16 @@ class _HeavenSearchViewState extends State<HeavenSearchView> {
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
                           style: const TextStyle(
-                            fontSize: 12.5,
+                            fontSize: 13,
                             fontWeight: FontWeight.w700,
                           ),
                         ),
                         Text(
-                          item.displayDomain,
+                          OmniboxParser.formatGoogleBreadcrumb(item.url),
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
                           style: TextStyle(
-                            fontSize: 11,
+                            fontSize: 11.5,
                             color: colors.onSurfaceVariant,
                           ),
                         ),
@@ -814,32 +923,139 @@ class _HeavenSearchViewState extends State<HeavenSearchView> {
                   ),
                 ],
               ),
-              const SizedBox(height: 7),
+              const SizedBox(height: 6),
               Text(
                 item.title,
                 style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                  fontSize: 15.5,
-                  fontWeight: FontWeight.w700,
-                  color: isDark ? AppTheme.skyHighlight : AppTheme.sapphireBlue,
-                  height: 1.3,
+                  fontSize: 17,
+                  fontWeight: FontWeight.w600,
+                  color: isDark
+                      ? const Color(0xFF8AB4F8)
+                      : const Color(0xFF1A0DAB),
+                  height: 1.28,
                 ),
               ),
               if (item.snippet.isNotEmpty) ...<Widget>[
                 const SizedBox(height: 5),
-                Text(
+                _buildHighlightedSnippet(
+                  context,
                   item.snippet,
-                  maxLines: 3,
-                  overflow: TextOverflow.ellipsis,
-                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                    fontSize: 13,
-                    color: colors.onSurface.withValues(alpha: 0.82),
-                    height: 1.4,
-                  ),
+                  widget.query,
+                  colors.onSurface.withValues(alpha: 0.84),
                 ),
               ],
             ],
           ),
         ),
+      ),
+    );
+  }
+
+  Widget _buildHighlightedSnippet(
+    BuildContext context,
+    String snippet,
+    String query,
+    Color baseColor,
+  ) {
+    final List<String> terms = query
+        .toLowerCase()
+        .split(RegExp(r'\s+'))
+        .where((String w) => w.length >= 2)
+        .toSet()
+        .toList(growable: false);
+    if (terms.isEmpty) {
+      return Text(
+        snippet,
+        maxLines: 3,
+        overflow: TextOverflow.ellipsis,
+        style: TextStyle(fontSize: 13.5, color: baseColor, height: 1.42),
+      );
+    }
+    final String pattern = terms.map(RegExp.escape).join('|');
+    final RegExp rx = RegExp('($pattern)', caseSensitive: false);
+    final List<TextSpan> spans = <TextSpan>[];
+    int cursor = 0;
+    for (final RegExpMatch m in rx.allMatches(snippet)) {
+      if (m.start > cursor) {
+        spans.add(TextSpan(text: snippet.substring(cursor, m.start)));
+      }
+      spans.add(
+        TextSpan(
+          text: snippet.substring(m.start, m.end),
+          style: const TextStyle(fontWeight: FontWeight.w700),
+        ),
+      );
+      cursor = m.end;
+    }
+    if (cursor < snippet.length) {
+      spans.add(TextSpan(text: snippet.substring(cursor)));
+    }
+    return RichText(
+      maxLines: 3,
+      overflow: TextOverflow.ellipsis,
+      text: TextSpan(
+        style: TextStyle(fontSize: 13.5, color: baseColor, height: 1.42),
+        children: spans,
+      ),
+    );
+  }
+
+  Widget _buildPeopleAlsoSearchCard(
+    BuildContext context,
+    ColorScheme colors,
+    bool isDark,
+    List<String> suggestions,
+  ) {
+    return Container(
+      padding: const EdgeInsets.fromLTRB(14, 13, 14, 10),
+      decoration: BoxDecoration(
+        color: isDark ? AppTheme.navySurface : Colors.white,
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(
+          color: colors.outlineVariant.withValues(alpha: 0.35),
+        ),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: <Widget>[
+          const Text(
+            'People also search for',
+            style: TextStyle(fontSize: 15, fontWeight: FontWeight.w800),
+          ),
+          const SizedBox(height: 8),
+          for (final String s in suggestions)
+            InkWell(
+              borderRadius: BorderRadius.circular(10),
+              onTap: () => widget.onSubmitNewQuery(s),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 4),
+                child: Row(
+                  children: <Widget>[
+                    Icon(
+                      Icons.search_rounded,
+                      size: 18,
+                      color: colors.onSurfaceVariant,
+                    ),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: Text(
+                        s,
+                        style: const TextStyle(
+                          fontSize: 13.5,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    ),
+                    Icon(
+                      Icons.north_west_rounded,
+                      size: 16,
+                      color: colors.onSurfaceVariant,
+                    ),
+                  ],
+                ),
+              ),
+            ),
+        ],
       ),
     );
   }

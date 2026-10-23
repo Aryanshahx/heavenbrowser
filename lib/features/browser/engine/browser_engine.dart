@@ -9,6 +9,7 @@ import 'package:webview_flutter_android/webview_flutter_android.dart';
 
 import '../../../core/constants/app_constants.dart';
 import '../../../core/utils/omnibox_parser.dart';
+import '../../extensions/extensions_controller.dart';
 import '../../settings/browser_settings.dart';
 import '../../shield/heaven_shield.dart';
 import '../../shield/native_shield_bridge.dart';
@@ -29,15 +30,18 @@ class BrowserEngine extends ChangeNotifier {
   BrowserEngine({
     required this.settings,
     required this.isIncognito,
+    this.extensions,
     this.enablePlatformWebView = true,
   }) {
     settings.addListener(_onSettingsChanged);
+    extensions?.addListener(_onExtensionsChanged);
     if (enablePlatformWebView) {
       _initializeController();
     }
   }
 
   final BrowserSettingsController settings;
+  final ExtensionsController? extensions;
   final bool isIncognito;
   final bool enablePlatformWebView;
 
@@ -59,7 +63,6 @@ class BrowserEngine extends ChangeNotifier {
   String? _errorMessage;
   String? _lastCompletedWebUrl;
   int _lastDownloadInterceptMs = 0;
-  bool _controllerSettingsDirty = true;
 
   WebViewController? get controller => _controller;
   String? get currentUrl => _currentUrl;
@@ -98,13 +101,15 @@ class BrowserEngine extends ChangeNotifier {
   }
 
   Map<String, String> get _clientHintHeaders => settings.desktopMode
-      ? const <String, String>{
+      ? <String, String>{
           'Sec-CH-UA-Mobile': '?0',
           'Sec-CH-UA-Platform': '"Linux"',
+          'Accept-Language': settings.language.acceptLanguageHeader,
         }
-      : const <String, String>{
+      : <String, String>{
           'Sec-CH-UA-Mobile': '?1',
           'Sec-CH-UA-Platform': '"Android"',
+          'Accept-Language': settings.language.acceptLanguageHeader,
         };
 
   void _initializeController() {
@@ -400,8 +405,14 @@ class BrowserEngine extends ChangeNotifier {
   }
 
   void _onSettingsChanged() {
-    _controllerSettingsDirty = true;
     unawaited(_applyControllerSettings());
+  }
+
+  void _onExtensionsChanged() {
+    final String? url = _currentUrl;
+    if (url != null && !isShowingStartPage && !isShowingHeavenSearch) {
+      unawaited(_injectProtectionAndZoom(url));
+    }
   }
 
   Future<void> _prewarmGoogleSearchConnection() async {
@@ -422,17 +433,16 @@ class BrowserEngine extends ChangeNotifier {
     }
   }
 
-  Future<void> _applyControllerSettings() async {
+  Future<void> _applyControllerSettings({String? forHost}) async {
     final WebViewController? webController = _controller;
     if (webController == null) {
       return;
     }
-    _controllerSettingsDirty = false;
 
+    final String? host = forHost ?? currentHost;
+    final bool allowJs = settings.isJavaScriptAllowedForHost(host);
     await webController.setJavaScriptMode(
-      settings.javascriptEnabled
-          ? JavaScriptMode.unrestricted
-          : JavaScriptMode.disabled,
+      allowJs ? JavaScriptMode.unrestricted : JavaScriptMode.disabled,
     );
 
     await webController.setUserAgent(
@@ -487,19 +497,35 @@ class BrowserEngine extends ChangeNotifier {
 
   Future<void> _injectProtectionAndZoom(String url) async {
     final WebViewController? webController = _controller;
-    if (webController == null || !settings.javascriptEnabled) {
+    final Uri? parsed = Uri.tryParse(url);
+    if (webController == null ||
+        !settings.isJavaScriptAllowedForHost(parsed?.host)) {
       return;
     }
 
-    final Uri? parsed = Uri.tryParse(url);
     final bool trusted = settings.isHostTrusted(parsed?.host);
-    final String script = HeavenShield.buildProtectionScript(
-      shieldEnabled: settings.shieldEnabled && !trusted,
-      sendDntAndGpc: settings.sendDntAndGpc,
+    final bool blockPopups = settings.arePopupsBlockedForHost(parsed?.host);
+    final StringBuffer combined = StringBuffer(
+      HeavenShield.buildProtectionScript(
+        shieldEnabled: settings.shieldEnabled && !trusted,
+        sendDntAndGpc: settings.sendDntAndGpc,
+      ),
     );
+    if (blockPopups) {
+      combined.write(
+        '\n;(function(){try{window.open=function(){return null;};}catch(_){}})();',
+      );
+    }
+    final String extScript =
+        extensions?.buildInjectionScriptForUrl(url) ?? '';
+    if (extScript.isNotEmpty) {
+      combined
+        ..write('\n')
+        ..write(extScript);
+    }
 
     try {
-      await webController.runJavaScript(script);
+      await webController.runJavaScript(combined.toString());
     } catch (_) {
       // Ignore JS errors on non-HTML responses.
     }
@@ -522,8 +548,15 @@ class BrowserEngine extends ChangeNotifier {
   }
 
   Future<void> loadUserEntry(String rawInput) async {
+    final String trimmed = rawInput.trim();
+    if (!isIncognito &&
+        trimmed.isNotEmpty &&
+        !OmniboxParser.looksLikeDirectDestination(trimmed) &&
+        !OmniboxParser.isHeavenSearchUrl(trimmed)) {
+      unawaited(settings.recordRecentSearch(trimmed));
+    }
     final Uri target = OmniboxParser.resolveInput(
-      rawInput,
+      trimmed,
       searchEngine: settings.searchEngine,
       httpsUpgrade: settings.httpsUpgrade,
     );
@@ -536,24 +569,15 @@ class BrowserEngine extends ChangeNotifier {
     _pageBlockedDomains.clear();
     _pullProgress = 0;
 
-    // On real Android WebView, Heaven Search uses Google Search Engine directly
-    // at native Chromium HTTP/3 speed with Heaven Shield ad & redirect stripping.
-    Uri effectiveUri = uri;
-    if (enablePlatformWebView &&
-        uri.scheme == 'heaven' &&
-        uri.host == 'search') {
-      final String q = OmniboxParser.extractHeavenQuery(uri.toString());
-      effectiveUri = q.isEmpty
-          ? Uri.parse('https://www.google.com')
-          : OmniboxParser.buildGoogleEngineUri(q);
-    }
-
-    final String targetUrl = effectiveUri.toString();
+    final String targetUrl = uri.toString();
     _pushVirtualLocation(targetUrl);
 
     if (OmniboxParser.isHeavenSearchUrl(targetUrl)) {
-      _currentUrl = targetUrl;
       final String q = OmniboxParser.extractHeavenQuery(targetUrl);
+      if (!isIncognito && q.isNotEmpty) {
+        unawaited(settings.recordRecentSearch(q));
+      }
+      _currentUrl = targetUrl;
       _pageTitle = q.isEmpty ? 'Heaven Search' : '$q — Heaven Search';
       _isLoading = false;
       _progress = 0;
@@ -563,9 +587,7 @@ class BrowserEngine extends ChangeNotifier {
       return;
     }
 
-    Uri finalUri = settings.desktopMode
-        ? rewriteMobileToDesktopUri(effectiveUri)
-        : effectiveUri;
+    Uri finalUri = settings.desktopMode ? rewriteMobileToDesktopUri(uri) : uri;
     final bool shieldActive =
         settings.shieldEnabled && !settings.isHostTrusted(finalUri.host);
     if (shieldActive) {
@@ -593,9 +615,7 @@ class BrowserEngine extends ChangeNotifier {
       );
     }
 
-    if (_controllerSettingsDirty) {
-      await _applyControllerSettings();
-    }
+    await _applyControllerSettings(forHost: finalUri.host);
     await _controller?.loadRequest(finalUri, headers: _clientHintHeaders);
     if (_controller == null) {
       _isLoading = false;
@@ -827,6 +847,7 @@ class BrowserEngine extends ChangeNotifier {
   @override
   void dispose() {
     settings.removeListener(_onSettingsChanged);
+    extensions?.removeListener(_onExtensionsChanged);
     if (_androidWebViewId != null) {
       NativeShieldBridge.instance.detachWebView(_androidWebViewId!);
     }

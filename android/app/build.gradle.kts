@@ -23,13 +23,6 @@ android {
         versionName = flutter.versionName
     }
 
-    // Required for OpenVPN native binary execution (libovpnexec.so & libopenvpn.so) on Android 9+
-    packaging {
-        jniLibs {
-            useLegacyPackaging = true
-        }
-    }
-
     buildTypes {
         release {
             signingConfig = signingConfigs.getByName("debug")

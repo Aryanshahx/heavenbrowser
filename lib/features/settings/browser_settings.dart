@@ -1,8 +1,10 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import '../../core/l10n/app_strings.dart';
 import '../../core/utils/omnibox_parser.dart';
 import '../shield/native_shield_bridge.dart';
 
@@ -147,6 +149,15 @@ class BrowserSettingsController extends ChangeNotifier {
   static const String _keyTextScalePercent = 'hb.textScalePercent';
   static const String _keyTotalBlocked = 'hb.totalBlocked';
   static const String _keyTrustedHosts = 'hb.trustedHosts';
+  static const String _keyJsDisabledHosts = 'hb.jsDisabledHosts.v8';
+  static const String _keyPopupAllowedHosts = 'hb.popupAllowedHosts.v8';
+  static const String _keyRecentSearches = 'hb.recentSearches.v8';
+  static const String _keyLanguage = 'hb.language.v8';
+  static const String _keyGesturesEnabled = 'hb.gesturesEnabled.v8';
+  static const String _keyEdgeSwipe = 'hb.edgeSwipe.v8';
+  static const String _keyBarSwipeTabs = 'hb.barSwipeTabs.v8';
+  static const String _keyDownloadNotifs = 'hb.downloadNotifs.v8';
+  static const String _keyWebNotifs = 'hb.webNotifs.v8';
   static const String _keySiteUsage = 'hb.siteUsage.v3';
   static const String _keyHiddenDomains = 'hb.hiddenQuickDomains.v3';
   static const String _keyBookmarks = 'hb.bookmarks.v3';
@@ -155,6 +166,7 @@ class BrowserSettingsController extends ChangeNotifier {
   // Heaven Search is ALWAYS the default search engine, and TOP dock is ALWAYS default.
   SearchEngine _searchEngine = SearchEngine.heaven;
   ThemeMode _themeMode = ThemeMode.dark;
+  BrowserLanguage _language = BrowserLanguage.en;
   bool _bottomOmnibox = false;
   bool _shieldEnabled = true;
   bool _httpsUpgrade = true;
@@ -163,10 +175,18 @@ class BrowserSettingsController extends ChangeNotifier {
   bool _clearOnExit = false;
   bool _javascriptEnabled = true;
   bool _desktopMode = false;
+  bool _gesturesEnabled = true;
+  bool _edgeSwipeNavigation = true;
+  bool _barSwipeSwitchTabs = true;
+  bool _downloadNotificationsEnabled = true;
+  bool _webNotificationsEnabled = false;
   int _textScalePercent = 100;
   int _totalTrackersBlocked = 0;
 
   final Set<String> _trustedHosts = <String>{};
+  final Set<String> _jsDisabledHosts = <String>{};
+  final Set<String> _popupAllowedHosts = <String>{};
+  List<String> _recentSearches = <String>[];
   final Map<String, SiteUsageEntry> _siteUsageByDomain =
       <String, SiteUsageEntry>{};
   final Set<String> _hiddenQuickDomains = <String>{};
@@ -176,6 +196,7 @@ class BrowserSettingsController extends ChangeNotifier {
   SharedPreferences get prefs => _prefs;
   SearchEngine get searchEngine => _searchEngine;
   ThemeMode get themeMode => _themeMode;
+  BrowserLanguage get language => _language;
   bool get bottomOmnibox => _bottomOmnibox;
   bool get shieldEnabled => _shieldEnabled;
   bool get httpsUpgrade => _httpsUpgrade;
@@ -184,9 +205,15 @@ class BrowserSettingsController extends ChangeNotifier {
   bool get clearOnExit => _clearOnExit;
   bool get javascriptEnabled => _javascriptEnabled;
   bool get desktopMode => _desktopMode;
+  bool get gesturesEnabled => _gesturesEnabled;
+  bool get edgeSwipeNavigation => _edgeSwipeNavigation;
+  bool get barSwipeSwitchTabs => _barSwipeSwitchTabs;
+  bool get downloadNotificationsEnabled => _downloadNotificationsEnabled;
+  bool get webNotificationsEnabled => _webNotificationsEnabled;
   int get textScalePercent => _textScalePercent;
   int get totalTrackersBlocked => _totalTrackersBlocked;
   Set<String> get trustedHosts => Set<String>.unmodifiable(_trustedHosts);
+  List<String> get recentSearches => List<String>.unmodifiable(_recentSearches);
   List<BookmarkItem> get bookmarks =>
       List<BookmarkItem>.unmodifiable(_bookmarks);
   List<HistoryItem> get history => List<HistoryItem>.unmodifiable(_history);
@@ -247,6 +274,40 @@ class BrowserSettingsController extends ChangeNotifier {
       175,
     );
     _totalTrackersBlocked = _prefs.getInt(_keyTotalBlocked) ?? 0;
+    _language = BrowserLanguage.fromCode(_prefs.getString(_keyLanguage));
+    _gesturesEnabled = _prefs.getBool(_keyGesturesEnabled) ?? true;
+    _edgeSwipeNavigation = _prefs.getBool(_keyEdgeSwipe) ?? true;
+    _barSwipeSwitchTabs = _prefs.getBool(_keyBarSwipeTabs) ?? true;
+    _downloadNotificationsEnabled =
+        _prefs.getBool(_keyDownloadNotifs) ?? true;
+    _webNotificationsEnabled = _prefs.getBool(_keyWebNotifs) ?? false;
+
+    final List<String>? savedJsDisabled = _prefs.getStringList(
+      _keyJsDisabledHosts,
+    );
+    if (savedJsDisabled != null) {
+      _jsDisabledHosts
+        ..clear()
+        ..addAll(savedJsDisabled);
+    }
+
+    final List<String>? savedPopupAllowed = _prefs.getStringList(
+      _keyPopupAllowedHosts,
+    );
+    if (savedPopupAllowed != null) {
+      _popupAllowedHosts
+        ..clear()
+        ..addAll(savedPopupAllowed);
+    }
+
+    final List<String>? savedRecent = _prefs.getStringList(_keyRecentSearches);
+    if (savedRecent != null) {
+      _recentSearches = savedRecent
+          .map((String s) => s.trim())
+          .where((String s) => s.isNotEmpty)
+          .take(15)
+          .toList();
+    }
 
     final List<String>? savedTrusted = _prefs.getStringList(_keyTrustedHosts);
     if (savedTrusted != null) {
@@ -621,6 +682,121 @@ class BrowserSettingsController extends ChangeNotifier {
   Future<void> setTextScalePercent(int value) async {
     _textScalePercent = value.clamp(75, 175);
     await _prefs.setInt(_keyTextScalePercent, _textScalePercent);
+    notifyListeners();
+  }
+
+  Future<void> setLanguage(BrowserLanguage lang) async {
+    if (_language == lang) return;
+    _language = lang;
+    await _prefs.setString(_keyLanguage, lang.name);
+    notifyListeners();
+  }
+
+  Future<void> setGesturesEnabled(bool value) async {
+    _gesturesEnabled = value;
+    await _prefs.setBool(_keyGesturesEnabled, value);
+    notifyListeners();
+  }
+
+  Future<void> setEdgeSwipeNavigation(bool value) async {
+    _edgeSwipeNavigation = value;
+    await _prefs.setBool(_keyEdgeSwipe, value);
+    notifyListeners();
+  }
+
+  Future<void> setBarSwipeSwitchTabs(bool value) async {
+    _barSwipeSwitchTabs = value;
+    await _prefs.setBool(_keyBarSwipeTabs, value);
+    notifyListeners();
+  }
+
+  Future<void> setDownloadNotificationsEnabled(bool value) async {
+    _downloadNotificationsEnabled = value;
+    await _prefs.setBool(_keyDownloadNotifs, value);
+    unawaited(NativeShieldBridge.instance.setDownloadNotificationsEnabled(value));
+    notifyListeners();
+  }
+
+  Future<void> setWebNotificationsEnabled(bool value) async {
+    _webNotificationsEnabled = value;
+    await _prefs.setBool(_keyWebNotifs, value);
+    notifyListeners();
+  }
+
+  List<String> matchingRecentSearches(String prefix, {int limit = 8}) {
+    final String q = prefix.trim().toLowerCase();
+    if (q.isEmpty) {
+      return List<String>.unmodifiable(_recentSearches.take(limit));
+    }
+    return _recentSearches
+        .where((String s) => s.toLowerCase().contains(q))
+        .take(limit)
+        .toList(growable: false);
+  }
+
+  Future<void> recordRecentSearch(String rawQuery) async {
+    final String clean = rawQuery.trim();
+    if (clean.isEmpty ||
+        clean.startsWith('http://') ||
+        clean.startsWith('https://') ||
+        clean.startsWith('heaven://')) {
+      return;
+    }
+    _recentSearches = <String>[
+      clean,
+      ..._recentSearches.where(
+        (String s) => s.toLowerCase() != clean.toLowerCase(),
+      ),
+    ].take(15).toList();
+    await _prefs.setStringList(_keyRecentSearches, _recentSearches);
+    notifyListeners();
+  }
+
+  Future<void> removeRecentSearch(String query) async {
+    _recentSearches = _recentSearches
+        .where((String s) => s != query)
+        .toList();
+    await _prefs.setStringList(_keyRecentSearches, _recentSearches);
+    notifyListeners();
+  }
+
+  Future<void> clearRecentSearches() async {
+    _recentSearches = <String>[];
+    await _prefs.remove(_keyRecentSearches);
+    notifyListeners();
+  }
+
+  bool isJavaScriptAllowedForHost(String? host) {
+    if (!_javascriptEnabled) return false;
+    if (host == null || host.isEmpty) return true;
+    return !_jsDisabledHosts.contains(OmniboxParser.cleanDomain(host));
+  }
+
+  Future<void> toggleSiteJavaScript(String host) async {
+    final String clean = OmniboxParser.cleanDomain(host);
+    if (clean.isEmpty) return;
+    if (!_jsDisabledHosts.remove(clean)) {
+      _jsDisabledHosts.add(clean);
+    }
+    await _prefs.setStringList(_keyJsDisabledHosts, _jsDisabledHosts.toList());
+    notifyListeners();
+  }
+
+  bool arePopupsBlockedForHost(String? host) {
+    if (host == null || host.isEmpty) return true;
+    return !_popupAllowedHosts.contains(OmniboxParser.cleanDomain(host));
+  }
+
+  Future<void> toggleSitePopups(String host) async {
+    final String clean = OmniboxParser.cleanDomain(host);
+    if (clean.isEmpty) return;
+    if (!_popupAllowedHosts.remove(clean)) {
+      _popupAllowedHosts.add(clean);
+    }
+    await _prefs.setStringList(
+      _keyPopupAllowedHosts,
+      _popupAllowedHosts.toList(),
+    );
     notifyListeners();
   }
 }

@@ -1,37 +1,43 @@
 enum SearchEngine {
   heaven(
-    label: 'Heaven Search (Google Engine)',
+    label: 'Heaven Search',
     shortLabel: 'Heaven',
+    badge: 'H',
     homeUrl: 'heaven://search',
     queryPrefix: 'heaven://search?q=',
   ),
   google(
     label: 'Google Search',
     shortLabel: 'Google',
+    badge: 'G',
     homeUrl: 'https://www.google.com',
     queryPrefix: 'https://www.google.com/search?safe=off&q=',
-  ),
-  heavenLite(
-    label: 'Heaven Lite (Multi-Source)',
-    shortLabel: 'Heaven Lite',
-    homeUrl: 'heaven://lite',
-    queryPrefix: 'heaven://lite?q=',
   ),
   duckDuckGo(
     label: 'DuckDuckGo',
     shortLabel: 'DDG',
+    badge: 'D',
     homeUrl: 'https://duckduckgo.com',
     queryPrefix: 'https://duckduckgo.com/?kp=-2&q=',
   ),
   brave(
     label: 'Brave Search',
     shortLabel: 'Brave',
+    badge: 'Br',
     homeUrl: 'https://search.brave.com',
     queryPrefix: 'https://search.brave.com/search?q=',
+  ),
+  bing(
+    label: 'Bing Search',
+    shortLabel: 'Bing',
+    badge: 'Bi',
+    homeUrl: 'https://www.bing.com',
+    queryPrefix: 'https://www.bing.com/search?adlt=off&q=',
   ),
   startpage(
     label: 'Startpage',
     shortLabel: 'Startpage',
+    badge: 'S',
     homeUrl: 'https://www.startpage.com',
     queryPrefix: 'https://www.startpage.com/sp/search?query=',
   );
@@ -39,17 +45,18 @@ enum SearchEngine {
   const SearchEngine({
     required this.label,
     required this.shortLabel,
+    required this.badge,
     required this.homeUrl,
     required this.queryPrefix,
   });
 
   final String label;
   final String shortLabel;
+  final String badge;
   final String homeUrl;
   final String queryPrefix;
 
-  bool get isNativeHeaven =>
-      this == SearchEngine.heaven || this == SearchEngine.heavenLite;
+  bool get isNativeHeaven => this == SearchEngine.heaven;
 
   String buildSearchUrl(String rawQuery) {
     return '$queryPrefix${Uri.encodeQueryComponent(rawQuery.trim())}';
@@ -81,6 +88,18 @@ class OmniboxParser {
     caseSensitive: false,
   );
 
+  static bool looksLikeDirectDestination(String raw) {
+    final String trimmed = raw.trim();
+    if (trimmed.isEmpty || trimmed.contains(' ')) {
+      return false;
+    }
+    return trimmed.startsWith('http://') ||
+        trimmed.startsWith('https://') ||
+        _domainLikePattern.hasMatch(trimmed) ||
+        _ipv4Pattern.hasMatch(trimmed) ||
+        _localhostPattern.hasMatch(trimmed);
+  }
+
   static bool isHeavenSearchUrl(String? url) {
     if (url == null || url.isEmpty) {
       return false;
@@ -89,14 +108,6 @@ class OmniboxParser {
     return uri != null &&
         uri.scheme == 'heaven' &&
         (uri.host == 'search' || uri.host == 'lite');
-  }
-
-  static bool isHeavenLiteUrl(String? url) {
-    if (url == null || url.isEmpty) {
-      return false;
-    }
-    final Uri? uri = Uri.tryParse(url);
-    return uri != null && uri.scheme == 'heaven' && uri.host == 'lite';
   }
 
   static String extractHeavenQuery(String? url) {
@@ -110,7 +121,6 @@ class OmniboxParser {
     return (uri.queryParameters['q'] ?? '').trim();
   }
 
-  /// Extracts the search query if [url] is a Google Search results URL.
   static String extractGoogleSearchQuery(String? url) {
     if (url == null || url.isEmpty) {
       return '';
@@ -131,16 +141,6 @@ class OmniboxParser {
     return (uri.queryParameters['q'] ?? '').trim();
   }
 
-  /// Builds a clean, fast, unrestricted Google Search Engine URI.
-  static Uri buildGoogleEngineUri(String query) {
-    return Uri.https('www.google.com', '/search', <String, String>{
-      'q': query.trim(),
-      'safe': 'off',
-      'pws': '0',
-    });
-  }
-
-  /// Unwraps `https://www.google.com/url?q=https://...` tracking redirects to direct URLs.
   static Uri? unwrapGoogleRedirectUri(Uri uri) {
     final String host = uri.host.toLowerCase();
     if ((host == 'www.google.com' ||
@@ -155,6 +155,27 @@ class OmniboxParser {
       }
     }
     return null;
+  }
+
+  static bool looksLikeSearchQuery(
+    String rawInput, {
+    required SearchEngine searchEngine,
+  }) {
+    final String input = rawInput.trim();
+    if (input.isEmpty) return false;
+    if (input == 'about:blank' ||
+        input.startsWith('heaven://') ||
+        input.startsWith('http://') ||
+        input.startsWith('https://')) {
+      return false;
+    }
+    if (input.contains(' ')) return true;
+    if (_localhostPattern.hasMatch(input) ||
+        _ipv4Pattern.hasMatch(input) ||
+        _domainLikePattern.hasMatch(input)) {
+      return false;
+    }
+    return true;
   }
 
   static Uri resolveInput(
@@ -256,6 +277,27 @@ class OmniboxParser {
       host = host.substring(4);
     }
     return host;
+  }
+
+  /// Formats a URL into a Google Search-inspired breadcrumb (`https://ubuntu.com › download › pi`).
+  static String formatGoogleBreadcrumb(String rawUrl) {
+    final Uri? uri = Uri.tryParse(rawUrl);
+    if (uri == null || uri.host.isEmpty) {
+      return rawUrl;
+    }
+    final String base = '${uri.scheme}://${uri.host}';
+    final List<String> segments = uri.pathSegments
+        .where((String s) => s.trim().isNotEmpty)
+        .take(3)
+        .map((String s) {
+          final String clean = Uri.decodeComponent(s);
+          return clean.length > 20 ? '${clean.substring(0, 20)}…' : clean;
+        })
+        .toList();
+    if (segments.isEmpty) {
+      return base;
+    }
+    return '$base › ${segments.join(' › ')}';
   }
 
   static String friendlySiteTitleFromDomain(String domain) {

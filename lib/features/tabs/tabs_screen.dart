@@ -10,12 +10,103 @@ class TabsScreen extends StatefulWidget {
 
   final TabManagerController tabManager;
 
+  static Future<TabGroup?> showCreateGroupDialog(
+    BuildContext context, {
+    required TabManagerController tabManager,
+    required String tabId,
+  }) async {
+    final TextEditingController nameCtrl = TextEditingController(
+      text: 'Research',
+    );
+    int selectedColor = TabGroup.palette.first;
+    final TabGroup? created = await showDialog<TabGroup>(
+      context: context,
+      builder: (BuildContext dialogContext) {
+        return StatefulBuilder(
+          builder: (BuildContext context, StateSetter setModalState) {
+            return AlertDialog(
+              title: const Text('Add Tab to New Group'),
+              content: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: <Widget>[
+                  TextField(
+                    controller: nameCtrl,
+                    autofocus: true,
+                    decoration: const InputDecoration(
+                      labelText: 'Group Name',
+                      border: OutlineInputBorder(),
+                      isDense: true,
+                    ),
+                  ),
+                  const SizedBox(height: 14),
+                  const Text(
+                    'Group Color',
+                    style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700),
+                  ),
+                  const SizedBox(height: 8),
+                  Wrap(
+                    spacing: 10,
+                    children: <Widget>[
+                      for (final int c in TabGroup.palette)
+                        GestureDetector(
+                          onTap: () => setModalState(() => selectedColor = c),
+                          child: Container(
+                            width: 30,
+                            height: 30,
+                            decoration: BoxDecoration(
+                              color: Color(c),
+                              shape: BoxShape.circle,
+                              border: selectedColor == c
+                                  ? Border.all(color: Colors.white, width: 2.5)
+                                  : null,
+                            ),
+                            child: selectedColor == c
+                                ? const Icon(
+                                    Icons.check_rounded,
+                                    size: 16,
+                                    color: Colors.white,
+                                  )
+                                : null,
+                          ),
+                        ),
+                    ],
+                  ),
+                ],
+              ),
+              actions: <Widget>[
+                TextButton(
+                  onPressed: () => Navigator.pop(dialogContext),
+                  child: const Text('Cancel'),
+                ),
+                FilledButton(
+                  onPressed: () {
+                    final TabGroup g = tabManager.createGroupAndAddTab(
+                      name: nameCtrl.text,
+                      tabId: tabId,
+                      colorValue: selectedColor,
+                    );
+                    Navigator.pop(dialogContext, g);
+                  },
+                  child: const Text('Create Group'),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+    nameCtrl.dispose();
+    return created;
+  }
+
   @override
   State<TabsScreen> createState() => _TabsScreenState();
 }
 
 class _TabsScreenState extends State<TabsScreen> {
   late bool _viewingIncognito;
+  String? _selectedGroupId;
 
   @override
   void initState() {
@@ -33,9 +124,15 @@ class _TabsScreenState extends State<TabsScreen> {
             : Theme.of(context);
         final ColorScheme colors = theme.colorScheme;
         final bool isDark = theme.brightness == Brightness.dark;
-        final List<BrowserTab> tabs = _viewingIncognito
+        final List<BrowserTab> allModeTabs = _viewingIncognito
             ? widget.tabManager.incognitoTabs
             : widget.tabManager.normalTabs;
+        final List<BrowserTab> tabs =
+            (!_viewingIncognito && _selectedGroupId != null)
+            ? allModeTabs
+                  .where((BrowserTab t) => t.groupId == _selectedGroupId)
+                  .toList(growable: false)
+            : allModeTabs;
 
         return Theme(
           data: theme,
@@ -55,6 +152,8 @@ class _TabsScreenState extends State<TabsScreen> {
             body: SafeArea(
               child: Column(
                 children: <Widget>[
+                  if (!_viewingIncognito)
+                    _buildGroupFilterBar(context, colors, isDark),
                   if (_viewingIncognito)
                     Container(
                       margin: const EdgeInsets.fromLTRB(16, 4, 16, 8),
@@ -244,14 +343,18 @@ class _TabsScreenState extends State<TabsScreen> {
           widget.tabManager.switchToTab(tab.id);
           Navigator.pop(context);
         },
+        onLongPress: tab.isIncognito
+            ? null
+            : () => _showGroupSheetForTab(context, tab),
         child: Container(
           decoration: BoxDecoration(
             borderRadius: BorderRadius.circular(18),
             border: Border.all(
               color: isActive
                   ? colors.primary
-                  : colors.outlineVariant.withValues(alpha: 0.45),
-              width: isActive ? 2.4 : 1,
+                  : (widget.tabManager.groupById(tab.groupId)?.color ??
+                        colors.outlineVariant.withValues(alpha: 0.45)),
+              width: isActive ? 2.4 : (tab.groupId != null ? 1.8 : 1),
             ),
           ),
           clipBehavior: Clip.antiAlias,
@@ -265,6 +368,18 @@ class _TabsScreenState extends State<TabsScreen> {
                 color: headerBg,
                 child: Row(
                   children: <Widget>[
+                    if (widget.tabManager.groupById(tab.groupId)
+                        case final TabGroup grp) ...<Widget>[
+                      Container(
+                        width: 8,
+                        height: 8,
+                        decoration: BoxDecoration(
+                          color: grp.color,
+                          shape: BoxShape.circle,
+                        ),
+                      ),
+                      const SizedBox(width: 5),
+                    ],
                     SiteLogo(
                       urlOrDomain: tab.engine.currentUrl,
                       fallbackLabel: tab.displayTitle,
@@ -574,6 +689,135 @@ class _TabsScreenState extends State<TabsScreen> {
           ),
         ],
       ),
+    );
+  }
+
+  Widget _buildGroupFilterBar(
+    BuildContext context,
+    ColorScheme colors,
+    bool isDark,
+  ) {
+    final List<TabGroup> groups = widget.tabManager.groups;
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(12, 4, 12, 4),
+      child: SingleChildScrollView(
+        scrollDirection: Axis.horizontal,
+        child: Row(
+          children: <Widget>[
+            ChoiceChip(
+              label: Text('All (${widget.tabManager.normalTabs.length})'),
+              selected: _selectedGroupId == null,
+              onSelected: (_) => setState(() => _selectedGroupId = null),
+              visualDensity: VisualDensity.compact,
+            ),
+            const SizedBox(width: 6),
+            for (final TabGroup grp in groups) ...<Widget>[
+              InputChip(
+                showCheckmark: false,
+                avatar: CircleAvatar(
+                  backgroundColor: grp.color,
+                  radius: 5,
+                ),
+                label: Text(
+                  '${grp.name} (${widget.tabManager.normalTabs.where((BrowserTab t) => t.groupId == grp.id).length})',
+                ),
+                selected: _selectedGroupId == grp.id,
+                onSelected: (_) => setState(() => _selectedGroupId = grp.id),
+                onDeleted: () {
+                  if (_selectedGroupId == grp.id) {
+                    setState(() => _selectedGroupId = null);
+                  }
+                  widget.tabManager.deleteGroup(grp.id);
+                },
+                visualDensity: VisualDensity.compact,
+              ),
+              const SizedBox(width: 6),
+            ],
+            ActionChip(
+              avatar: const Icon(Icons.create_new_folder_outlined, size: 16),
+              label: const Text('New Group'),
+              visualDensity: VisualDensity.compact,
+              onPressed: () => TabsScreen.showCreateGroupDialog(
+                context,
+                tabManager: widget.tabManager,
+                tabId: widget.tabManager.activeTab.id,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Future<void> _showGroupSheetForTab(
+    BuildContext context,
+    BrowserTab tab,
+  ) async {
+    await showModalBottomSheet<void>(
+      context: context,
+      showDragHandle: true,
+      builder: (BuildContext sheetContext) {
+        return SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(16, 4, 16, 20),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: <Widget>[
+                Text(
+                  'Tab Group • ${tab.displayTitle}',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    fontSize: 16,
+                    fontWeight: FontWeight.w800,
+                  ),
+                ),
+                const SizedBox(height: 10),
+                for (final TabGroup grp in widget.tabManager.groups)
+                  ListTile(
+                    dense: true,
+                    leading: CircleAvatar(
+                      backgroundColor: grp.color,
+                      radius: 8,
+                    ),
+                    title: Text(grp.name),
+                    trailing: tab.groupId == grp.id
+                        ? const Icon(Icons.check_circle_rounded)
+                        : null,
+                    onTap: () {
+                      widget.tabManager.assignTabToGroup(tab.id, grp.id);
+                      Navigator.pop(sheetContext);
+                    },
+                  ),
+                if (tab.groupId != null)
+                  ListTile(
+                    dense: true,
+                    leading: const Icon(Icons.remove_circle_outline_rounded),
+                    title: const Text('Remove from group'),
+                    onTap: () {
+                      widget.tabManager.assignTabToGroup(tab.id, null);
+                      Navigator.pop(sheetContext);
+                    },
+                  ),
+                const SizedBox(height: 8),
+                FilledButton.icon(
+                  onPressed: () async {
+                    Navigator.pop(sheetContext);
+                    await TabsScreen.showCreateGroupDialog(
+                      context,
+                      tabManager: widget.tabManager,
+                      tabId: tab.id,
+                    );
+                  },
+                  icon: const Icon(Icons.add_rounded),
+                  label: const Text('Add tab to new group'),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
     );
   }
 }
