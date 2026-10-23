@@ -9,6 +9,7 @@ import 'package:webview_flutter_android/webview_flutter_android.dart';
 
 import '../../../core/constants/app_constants.dart';
 import '../../../core/utils/omnibox_parser.dart';
+import '../../devtools/devtools_models.dart';
 import '../../extensions/extensions_controller.dart';
 import '../../settings/browser_settings.dart';
 import '../../shield/heaven_shield.dart';
@@ -44,6 +45,7 @@ class BrowserEngine extends ChangeNotifier {
   final BrowserSettingsController settings;
   final ExtensionsController? extensions;
   final ValueChanged<String>? onOpenNewTabFromExtension;
+  ValueChanged<String>? onWebStoreInstallMessage;
   final bool isIncognito;
   final bool enablePlatformWebView;
 
@@ -67,10 +69,26 @@ class BrowserEngine extends ChangeNotifier {
   String? _lastCompletedWebUrl;
   int _lastDownloadInterceptMs = 0;
 
+  // Desktop Inspect / DevTools runtime state
+  final List<DevToolsConsoleEntry> _consoleEntries = <DevToolsConsoleEntry>[];
+  final List<DevToolsNetworkEntry> _networkEntries = <DevToolsNetworkEntry>[];
+  DevToolsInspectedElement? _inspectedElement;
+  bool _elementPickerActive = false;
+  bool _pageDesignMode = false;
+
   WebViewController? get controller => _controller;
   int? get androidWebViewId => _androidWebViewId;
   String? get pageIconUrl => _pageIconUrl;
   String? get currentUrl => _currentUrl;
+  List<DevToolsConsoleEntry> get consoleEntries =>
+      List<DevToolsConsoleEntry>.unmodifiable(_consoleEntries);
+  List<DevToolsNetworkEntry> get networkEntries =>
+      List<DevToolsNetworkEntry>.unmodifiable(_networkEntries);
+  DevToolsInspectedElement? get inspectedElement => _inspectedElement;
+  bool get isElementPickerActive => _elementPickerActive;
+  bool get isPageDesignMode => _pageDesignMode;
+  int get consoleErrorCount =>
+      _consoleEntries.where((DevToolsConsoleEntry e) => e.isError).length;
   String get pageTitle => _pageTitle;
   double get progress => _progress;
   double get pullProgress => _pullProgress;
@@ -105,17 +123,32 @@ class BrowserEngine extends ChangeNotifier {
     return (parsed != null && parsed.host.isNotEmpty) ? parsed.host : null;
   }
 
-  Map<String, String> get _clientHintHeaders => settings.desktopMode
-      ? <String, String>{
-          'Sec-CH-UA-Mobile': '?0',
-          'Sec-CH-UA-Platform': '"Linux"',
-          'Accept-Language': settings.language.acceptLanguageHeader,
-        }
-      : <String, String>{
-          'Sec-CH-UA-Mobile': '?1',
-          'Sec-CH-UA-Platform': '"Android"',
-          'Accept-Language': settings.language.acceptLanguageHeader,
-        };
+  static bool _isChromeWebStoreHostOrUrl(String? host, String? fullUrl) {
+    final String h = (host ?? '').toLowerCase();
+    return h == 'chromewebstore.google.com' ||
+        (h == 'chrome.google.com' &&
+            (fullUrl?.toLowerCase().contains('/webstore') ?? false)) ||
+        ExtensionsController.isChromeWebStoreUrl(fullUrl);
+  }
+
+  Map<String, String> _headersForTarget({String? host, String? fullUrl}) {
+    final bool desktop =
+        settings.desktopMode || _isChromeWebStoreHostOrUrl(host, fullUrl);
+    if (desktop) {
+      return <String, String>{
+        'Sec-CH-UA':
+            '"Chromium";v="134", "Not:A-Brand";v="24", "Google Chrome";v="134"',
+        'Sec-CH-UA-Mobile': '?0',
+        'Sec-CH-UA-Platform': '"Windows"',
+        'Accept-Language': settings.language.acceptLanguageHeader,
+      };
+    }
+    return <String, String>{
+      'Sec-CH-UA-Mobile': '?1',
+      'Sec-CH-UA-Platform': '"Android"',
+      'Accept-Language': settings.language.acceptLanguageHeader,
+    };
+  }
 
   void _initializeController() {
     final WebViewController webController = WebViewController();
@@ -128,7 +161,20 @@ class BrowserEngine extends ChangeNotifier {
       webController.addJavaScriptChannel(
         'HeavenShieldChannel',
         onMessageReceived: (JavaScriptMessage msg) {
-          _recordBlockedResource(msg.message.trim());
+          final String payload = msg.message.trim();
+          if (payload.startsWith('ALLOW_NAV:')) {
+            final String allowedHost = payload.substring('ALLOW_NAV:'.length);
+            if (_androidWebViewId != null && allowedHost.isNotEmpty) {
+              unawaited(
+                NativeShieldBridge.instance.approveExternalNavigation(
+                  webViewId: _androidWebViewId!,
+                  host: allowedHost,
+                ),
+              );
+            }
+            return;
+          }
+          _recordBlockedResource(payload);
         },
       ),
     );
@@ -138,6 +184,15 @@ class BrowserEngine extends ChangeNotifier {
         'HeavenChromeExtChannel',
         onMessageReceived: (JavaScriptMessage msg) {
           _handleChromeExtChannelMessage(msg.message);
+        },
+      ),
+    );
+
+    unawaited(
+      webController.addJavaScriptChannel(
+        'HeavenDevToolsChannel',
+        onMessageReceived: (JavaScriptMessage msg) {
+          _handleDevToolsChannelMessage(msg.message);
         },
       ),
     );
@@ -153,6 +208,9 @@ class BrowserEngine extends ChangeNotifier {
             }
             _currentUrl = url;
             _pageIconUrl = null;
+            _elementPickerActive = false;
+            _pageDesignMode = false;
+            _networkEntries.clear();
             _isLoading = true;
             _progress = 0.1;
             _pullProgress = 0;
@@ -273,6 +331,19 @@ class BrowserEngine extends ChangeNotifier {
             }
             notifyListeners();
           },
+          onConsoleMessage:
+              (String level, String message, String sourceId, int line) {
+                if (message.startsWith('__hb_')) return;
+                _appendConsoleEntry(
+                  DevToolsConsoleEntry(
+                    timestamp: DateTime.now(),
+                    level: level,
+                    message: message,
+                    source: sourceId,
+                    line: line,
+                  ),
+                );
+              },
         ),
       );
     }
@@ -316,6 +387,19 @@ class BrowserEngine extends ChangeNotifier {
     _pageBlockedCount += 1;
     if (domainOrTag.isNotEmpty) {
       _pageBlockedDomains.add(domainOrTag);
+      if (_networkEntries.length < 250) {
+        _networkEntries.insert(
+          0,
+          DevToolsNetworkEntry(
+            url: 'https://$domainOrTag',
+            method: 'BLOCKED',
+            type: 'shield',
+            status: 0,
+            durationMs: 0,
+            blocked: true,
+          ),
+        );
+      }
     }
     unawaited(settings.incrementBlockedCount(1));
     notifyListeners();
@@ -334,6 +418,14 @@ class BrowserEngine extends ChangeNotifier {
     }
 
     if (uri.scheme != 'http' && uri.scheme != 'https') {
+      final bool shieldBlocksExternalIntent =
+          settings.shieldEnabled && !settings.isHostTrusted(currentHost);
+      if (shieldBlocksExternalIntent &&
+          uri.scheme != 'mailto' &&
+          uri.scheme != 'tel') {
+        _recordBlockedResource('${uri.scheme}-redirect');
+        return NavigationDecision.prevent;
+      }
       if (await canLaunchUrl(uri)) {
         await launchUrl(uri, mode: LaunchMode.externalApplication);
       }
@@ -344,9 +436,13 @@ class BrowserEngine extends ChangeNotifier {
     if (request.isMainFrame) {
       final Uri? unwrappedGoogle = OmniboxParser.unwrapGoogleRedirectUri(uri);
       if (unwrappedGoogle != null && unwrappedGoogle != uri) {
+        await _applyControllerSettings(forHost: unwrappedGoogle.host);
         await _controller?.loadRequest(
           unwrappedGoogle,
-          headers: _clientHintHeaders,
+          headers: _headersForTarget(
+            host: unwrappedGoogle.host,
+            fullUrl: unwrappedGoogle.toString(),
+          ),
         );
         return NavigationDecision.prevent;
       }
@@ -356,7 +452,13 @@ class BrowserEngine extends ChangeNotifier {
     if (request.isMainFrame && settings.desktopMode) {
       final Uri desktopUri = rewriteMobileToDesktopUri(uri);
       if (desktopUri != uri) {
-        await _controller?.loadRequest(desktopUri, headers: _clientHintHeaders);
+        await _controller?.loadRequest(
+          desktopUri,
+          headers: _headersForTarget(
+            host: desktopUri.host,
+            fullUrl: desktopUri.toString(),
+          ),
+        );
         return NavigationDecision.prevent;
       }
     }
@@ -364,7 +466,8 @@ class BrowserEngine extends ChangeNotifier {
     final bool shieldActiveForSite =
         settings.shieldEnabled && !settings.isHostTrusted(currentHost);
 
-    if (shieldActiveForSite && HeavenShield.shouldBlockUri(uri)) {
+    if (shieldActiveForSite &&
+        HeavenShield.shouldBlockUri(uri, pageHost: currentHost)) {
       _recordBlockedResource(
         HeavenShield.matchBlockedDomain(uri.host) ?? uri.host,
       );
@@ -379,7 +482,10 @@ class BrowserEngine extends ChangeNotifier {
         await settings.incrementBlockedCount(stripped.removedCount);
         await _controller?.loadRequest(
           stripped.uri,
-          headers: _clientHintHeaders,
+          headers: _headersForTarget(
+            host: stripped.uri.host,
+            fullUrl: stripped.uri.toString(),
+          ),
         );
         notifyListeners();
         return NavigationDecision.prevent;
@@ -390,9 +496,13 @@ class BrowserEngine extends ChangeNotifier {
         settings.httpsUpgrade &&
         uri.scheme == 'http' &&
         !OmniboxParser.isLocalOrPrivateHost(uri.host)) {
+      final Uri httpsUri = uri.replace(scheme: 'https');
       await _controller?.loadRequest(
-        uri.replace(scheme: 'https'),
-        headers: _clientHintHeaders,
+        httpsUri,
+        headers: _headersForTarget(
+          host: httpsUri.host,
+          fullUrl: httpsUri.toString(),
+        ),
       );
       return NavigationDecision.prevent;
     }
@@ -455,13 +565,19 @@ class BrowserEngine extends ChangeNotifier {
     }
 
     final String? host = forHost ?? currentHost;
+    final bool forceDesktopStore = _isChromeWebStoreHostOrUrl(
+      host,
+      _currentUrl,
+    );
+    final bool effectiveDesktop = settings.desktopMode || forceDesktopStore;
+
     final bool allowJs = settings.isJavaScriptAllowedForHost(host);
     await webController.setJavaScriptMode(
       allowJs ? JavaScriptMode.unrestricted : JavaScriptMode.disabled,
     );
 
     await webController.setUserAgent(
-      settings.desktopMode
+      effectiveDesktop
           ? AppConstants.desktopUserAgent
           : AppConstants.mobileUserAgent,
     );
@@ -471,10 +587,16 @@ class BrowserEngine extends ChangeNotifier {
       await androidCtrl.setMediaPlaybackRequiresUserGesture(false);
       await androidCtrl.setTextZoom(settings.textScalePercent);
       await androidCtrl.enableZoom(true);
-      await NativeShieldBridge.instance.applyDesktopViewport(
-        webViewId: androidCtrl.webViewIdentifier,
-        desktopMode: settings.desktopMode,
-      );
+      if (forceDesktopStore) {
+        await NativeShieldBridge.instance.prepareChromeWebStoreView(
+          androidCtrl.webViewIdentifier,
+        );
+      } else {
+        await NativeShieldBridge.instance.applyDesktopViewport(
+          webViewId: androidCtrl.webViewIdentifier,
+          desktopMode: effectiveDesktop,
+        );
+      }
 
       final WebViewCookieManager cookieManager = WebViewCookieManager();
       if (cookieManager.platform
@@ -505,7 +627,13 @@ class BrowserEngine extends ChangeNotifier {
         _isLoading = true;
         _errorMessage = null;
         notifyListeners();
-        await _controller!.loadRequest(parsed, headers: _clientHintHeaders);
+        await _controller!.loadRequest(
+          parsed,
+          headers: _headersForTarget(
+            host: parsed.host,
+            fullUrl: parsed.toString(),
+          ),
+        );
       }
     }
   }
@@ -529,6 +657,21 @@ class BrowserEngine extends ChangeNotifier {
         if (target.isNotEmpty) {
           onOpenNewTabFromExtension?.call(target);
         }
+      } else if (op == 'install_cws' && extensions != null) {
+        final String cwsUrl = (data is Map<Object?, Object?>)
+            ? (data['url']?.toString() ?? extId)
+            : extId;
+        unawaited(() async {
+          final String? err = await extensions!.installFromWebStore(cwsUrl);
+          if (err == null) {
+            await _controller?.runJavaScript(
+              '(function(){var bs=document.querySelectorAll("button");for(var i=0;i<bs.length;i++){if(bs[i].textContent&&bs[i].textContent.indexOf("Installing in Heaven")!==-1){bs[i].textContent="Added to Heaven";}}})();',
+            );
+          }
+          onWebStoreInstallMessage?.call(
+            err ?? 'Chrome Extension (.crx) installed in Heaven Browser!',
+          );
+        }());
       }
     } catch (_) {
       // Ignore malformed messages.
@@ -559,6 +702,7 @@ class BrowserEngine extends ChangeNotifier {
 
     try {
       await webController.runJavaScript(combined.toString());
+      await webController.runJavaScript(_buildDevToolsAgentScript());
     } catch (_) {
       // Ignore JS errors on non-HTML responses.
     }
@@ -687,7 +831,13 @@ class BrowserEngine extends ChangeNotifier {
     }
 
     await _applyControllerSettings(forHost: finalUri.host);
-    await _controller?.loadRequest(finalUri, headers: _clientHintHeaders);
+    await _controller?.loadRequest(
+      finalUri,
+      headers: _headersForTarget(
+        host: finalUri.host,
+        fullUrl: finalUri.toString(),
+      ),
+    );
     if (_controller == null) {
       _isLoading = false;
       if (!isIncognito &&
@@ -777,9 +927,11 @@ class BrowserEngine extends ChangeNotifier {
     _pageTitle = OmniboxParser.formatDisplayUrl(target);
     _isLoading = _controller != null;
     notifyListeners();
+    final Uri parsedTarget = Uri.parse(target);
+    await _applyControllerSettings(forHost: parsedTarget.host);
     await _controller?.loadRequest(
-      Uri.parse(target),
-      headers: _clientHintHeaders,
+      parsedTarget,
+      headers: _headersForTarget(host: parsedTarget.host, fullUrl: target),
     );
   }
 
@@ -913,6 +1065,538 @@ class BrowserEngine extends ChangeNotifier {
       ..add('');
     _virtualIndex = 0;
     await goHome();
+  }
+
+  // ---------------------------------------------------------------------------
+  // Desktop Browser Inspect / DevTools Engine
+  // ---------------------------------------------------------------------------
+
+  void _appendConsoleEntry(DevToolsConsoleEntry entry) {
+    if (_consoleEntries.length >= 250) {
+      _consoleEntries.removeAt(0);
+    }
+    _consoleEntries.add(entry);
+    notifyListeners();
+  }
+
+  void clearConsoleLogs() {
+    _consoleEntries.clear();
+    notifyListeners();
+  }
+
+  void clearNetworkLogs() {
+    _networkEntries.clear();
+    notifyListeners();
+  }
+
+  void _handleDevToolsChannelMessage(String raw) {
+    try {
+      final Object? decoded = jsonDecode(raw);
+      if (decoded is! Map<Object?, Object?>) return;
+      final String kind = decoded['kind']?.toString() ?? '';
+      if (kind == 'picked_element' &&
+          decoded['element'] is Map<Object?, Object?>) {
+        _inspectedElement = DevToolsInspectedElement.fromMap(
+          decoded['element']! as Map<Object?, Object?>,
+        );
+        _elementPickerActive = false;
+        notifyListeners();
+      } else if (kind == 'net' && decoded['entry'] is Map<Object?, Object?>) {
+        final Map<Object?, Object?> e =
+            decoded['entry']! as Map<Object?, Object?>;
+        if (_networkEntries.length < 250) {
+          _networkEntries.insert(
+            0,
+            DevToolsNetworkEntry(
+              url: e['url']?.toString() ?? '',
+              method: e['method']?.toString() ?? 'GET',
+              type: e['type']?.toString() ?? 'xhr',
+              status: (e['status'] as num?)?.toInt() ?? 200,
+              durationMs: (e['dur'] as num?)?.toInt() ?? 0,
+              transferBytes: (e['size'] as num?)?.toInt() ?? 0,
+            ),
+          );
+          notifyListeners();
+        }
+      }
+    } catch (_) {
+      // Ignore malformed DevTools event payloads.
+    }
+  }
+
+  static String _buildDevToolsAgentScript() {
+    return r'''
+(function() {
+  if (window.__heavenDevToolsV10) return;
+  window.__heavenDevToolsV10 = {
+    nextId: 1,
+    nodeMap: new Map(),
+    pickerOn: false,
+    send(payload) {
+      try {
+        if (window.HeavenDevToolsChannel) {
+          window.HeavenDevToolsChannel.postMessage(JSON.stringify(payload));
+        }
+      } catch (_) {}
+    },
+    ensureId(el) {
+      if (!el || el.nodeType !== 1) return 0;
+      let id = el.__hbNodeId;
+      if (!id) {
+        id = this.nextId++;
+        el.__hbNodeId = id;
+        this.nodeMap.set(id, el);
+      }
+      return id;
+    },
+    cssPath(el) {
+      if (!el || el.nodeType !== 1) return '';
+      if (el.id) return el.tagName.toLowerCase() + '#' + el.id;
+      const cls = (typeof el.className === 'string' ? el.className.trim().split(/\s+/).slice(0, 2).join('.') : '');
+      return el.tagName.toLowerCase() + (cls ? '.' + cls : '');
+    },
+    highlight(el) {
+      let box = document.getElementById('__hb_devtools_hl');
+      if (!el || !el.getBoundingClientRect) {
+        if (box) box.style.display = 'none';
+        return;
+      }
+      if (!box) {
+        box = document.createElement('div');
+        box.id = '__hb_devtools_hl';
+        box.style.cssText = 'position:fixed;pointer-events:none;z-index:2147483646;border:2px solid #2563EB;background:rgba(37,99,235,0.18);box-sizing:border-box;transition:all 80ms ease;';
+        const badge = document.createElement('div');
+        badge.id = '__hb_devtools_hl_lbl';
+        badge.style.cssText = 'position:absolute;left:0;top:-22px;background:#0F172A;color:#F8FAFC;font:700 10px monospace;padding:2px 6px;border-radius:4px;white-space:nowrap;';
+        box.appendChild(badge);
+        document.documentElement.appendChild(box);
+      }
+      const r = el.getBoundingClientRect();
+      box.style.display = 'block';
+      box.style.left = r.left + 'px';
+      box.style.top = r.top + 'px';
+      box.style.width = Math.max(2, r.width) + 'px';
+      box.style.height = Math.max(2, r.height) + 'px';
+      const lbl = document.getElementById('__hb_devtools_hl_lbl');
+      if (lbl) {
+        lbl.textContent = this.cssPath(el) + ' (' + Math.round(r.width) + 'x' + Math.round(r.height) + ')';
+        lbl.style.top = r.top < 24 ? '2px' : '-22px';
+      }
+    },
+    serializeElement(el) {
+      if (!el || el.nodeType !== 1) return null;
+      const id = this.ensureId(el);
+      const r = el.getBoundingClientRect();
+      const attrs = {};
+      if (el.attributes) {
+        for (let i = 0; i < el.attributes.length; i++) {
+          const a = el.attributes[i];
+          attrs[a.name] = String(a.value || '').slice(0, 300);
+        }
+      }
+      const cs = window.getComputedStyle(el);
+      const keys = ['display', 'position', 'width', 'height', 'margin', 'padding', 'color', 'background-color', 'font-size', 'font-weight', 'z-index', 'opacity'];
+      const comp = {};
+      for (const k of keys) comp[k] = cs.getPropertyValue(k) || '';
+      const rawHtml = el.outerHTML || '';
+      return {
+        nodeId: id,
+        tag: el.tagName.toLowerCase(),
+        selector: this.cssPath(el),
+        outerHtml: rawHtml.length > 2400 ? rawHtml.slice(0, 2400) + '...' : rawHtml,
+        inlineStyle: el.getAttribute('style') || '',
+        dimensions: Math.round(r.width) + ' x ' + Math.round(r.height) + ' px',
+        attributes: attrs,
+        computedStyles: comp
+      };
+    }
+  };
+
+  // Capture live fetch() and XMLHttpRequest for Network tab
+  if (window.fetch) {
+    const origFetch = window.fetch;
+    window.fetch = function(input, init) {
+      const t0 = performance.now();
+      const url = typeof input === 'string' ? input : (input && input.url ? input.url : '');
+      const method = (init && init.method) ? String(init.method).toUpperCase() : 'GET';
+      return origFetch.apply(this, arguments).then(function(res) {
+        window.__heavenDevToolsV10.send({
+          kind: 'net',
+          entry: { url: String(url), method: method, type: 'fetch', status: res.status || 200, dur: Math.round(performance.now() - t0), size: 0 }
+        });
+        return res;
+      }).catch(function(err) {
+        window.__heavenDevToolsV10.send({
+          kind: 'net',
+          entry: { url: String(url), method: method, type: 'fetch', status: 0, dur: Math.round(performance.now() - t0), size: 0 }
+        });
+        throw err;
+      });
+    };
+  }
+  const origOpen = XMLHttpRequest.prototype.open;
+  const origSend = XMLHttpRequest.prototype.send;
+  XMLHttpRequest.prototype.open = function(m, u) {
+    this.__hbMethod = String(m || 'GET').toUpperCase();
+    this.__hbUrl = String(u || '');
+    return origOpen.apply(this, arguments);
+  };
+  XMLHttpRequest.prototype.send = function() {
+    const t0 = performance.now();
+    this.addEventListener('loadend', () => {
+      window.__heavenDevToolsV10.send({
+        kind: 'net',
+        entry: { url: this.__hbUrl || '', method: this.__hbMethod || 'GET', type: 'xhr', status: this.status || 0, dur: Math.round(performance.now() - t0), size: (this.responseText ? this.responseText.length : 0) }
+      });
+    });
+    return origSend.apply(this, arguments);
+  };
+
+  // Element Picker tap listener
+  document.addEventListener('click', function(ev) {
+    const dt = window.__heavenDevToolsV10;
+    if (!dt || !dt.pickerOn) return;
+    const t = ev.target;
+    if (!t || (t.id && t.id.indexOf('__hb_devtools') === 0)) return;
+    ev.preventDefault();
+    ev.stopPropagation();
+    dt.pickerOn = false;
+    dt.highlight(t);
+    dt.send({ kind: 'picked_element', element: dt.serializeElement(t) });
+  }, true);
+})();
+''';
+  }
+
+  Future<Map<String, Object?>?> _evalJsonMap(String jsExpression) async {
+    final WebViewController? ctrl = _controller;
+    if (ctrl == null) return null;
+    try {
+      await ctrl.runJavaScript(_buildDevToolsAgentScript());
+      final Object raw = await ctrl.runJavaScriptReturningResult(jsExpression);
+      String text = raw.toString();
+      if (text.startsWith('"') && text.endsWith('"')) {
+        text = jsonDecode(text).toString();
+      }
+      final Object? parsed = jsonDecode(text);
+      if (parsed is Map<Object?, Object?>) {
+        return <String, Object?>{
+          for (final MapEntry<Object?, Object?> e in parsed.entries)
+            if (e.key != null) e.key.toString(): e.value,
+        };
+      }
+    } catch (_) {
+      // Non-fatal in headless tests or about:blank.
+    }
+    return null;
+  }
+
+  Future<void> setElementPickerActive(bool active) async {
+    _elementPickerActive = active;
+    notifyListeners();
+    final WebViewController? ctrl = _controller;
+    if (ctrl == null) return;
+    try {
+      await ctrl.runJavaScript(_buildDevToolsAgentScript());
+      await ctrl.runJavaScript(
+        'if(window.__heavenDevToolsV10){window.__heavenDevToolsV10.pickerOn=${active ? "true" : "false"};}',
+      );
+    } catch (_) {}
+  }
+
+  Future<void> clearInspectorHighlight({bool notify = true}) async {
+    _elementPickerActive = false;
+    if (notify) {
+      notifyListeners();
+    }
+    try {
+      await _controller?.runJavaScript(
+        'if(window.__heavenDevToolsV10){window.__heavenDevToolsV10.pickerOn=false;window.__heavenDevToolsV10.highlight(null);}',
+      );
+    } catch (_) {}
+  }
+
+  Future<List<DevToolsDomNode>> fetchDomTreeNodes() async {
+    final Map<String, Object?>? res = await _evalJsonMap('''
+(function(){
+  const dt = window.__heavenDevToolsV10;
+  const out = [];
+  function walk(el, depth) {
+    if (!el || el.nodeType !== 1 || out.length >= 160 || depth > 7) return;
+    if (el.id && el.id.indexOf('__hb_devtools') === 0) return;
+    const id = dt.ensureId(el);
+    let directText = '';
+    for (let i = 0; i < el.childNodes.length; i++) {
+      if (el.childNodes[i].nodeType === 3) {
+        directText += el.childNodes[i].nodeValue || '';
+      }
+    }
+    directText = directText.replace(/\\s+/g, ' ').trim().slice(0, 60);
+    out.push({
+      nodeId: id,
+      tag: el.tagName.toLowerCase(),
+      id: el.id || '',
+      cls: typeof el.className === 'string' ? el.className.trim().slice(0, 50) : '',
+      txt: directText,
+      depth: depth,
+      children: el.children ? el.children.length : 0
+    });
+    if (el.children) {
+      for (let c = 0; c < el.children.length && out.length < 160; c++) {
+        walk(el.children[c], depth + 1);
+      }
+    }
+  }
+  walk(document.documentElement, 0);
+  return JSON.stringify({ nodes: out });
+})()
+''');
+    if (res == null || res['nodes'] is! List<Object?>) {
+      return const <DevToolsDomNode>[];
+    }
+    return (res['nodes']! as List<Object?>)
+        .whereType<Map<Object?, Object?>>()
+        .map(DevToolsDomNode.fromMap)
+        .toList(growable: false);
+  }
+
+  Future<DevToolsInspectedElement?> inspectDomNode(int nodeId) async {
+    final Map<String, Object?>? res = await _evalJsonMap('''
+(function(){
+  const dt = window.__heavenDevToolsV10;
+  const el = dt.nodeMap.get($nodeId);
+  if (!el) return JSON.stringify({});
+  el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  dt.highlight(el);
+  return JSON.stringify({ element: dt.serializeElement(el) });
+})()
+''');
+    if (res != null && res['element'] is Map<Object?, Object?>) {
+      _inspectedElement = DevToolsInspectedElement.fromMap(
+        res['element']! as Map<Object?, Object?>,
+      );
+      notifyListeners();
+      return _inspectedElement;
+    }
+    return null;
+  }
+
+  Future<void> mutateDomNode({
+    required int nodeId,
+    required String action,
+    String value = '',
+  }) async {
+    final WebViewController? ctrl = _controller;
+    if (ctrl == null) return;
+    final String encodedVal = jsonEncode(value);
+    try {
+      await ctrl.runJavaScript('''
+(function(){
+  const dt = window.__heavenDevToolsV10;
+  const el = dt && dt.nodeMap ? dt.nodeMap.get($nodeId) : null;
+  if (!el) return;
+  if ('$action' === 'style') el.setAttribute('style', $encodedVal);
+  else if ('$action' === 'html') el.outerHTML = $encodedVal;
+  else if ('$action' === 'hide') el.style.setProperty('display', 'none', 'important');
+  else if ('$action' === 'remove') { dt.highlight(null); el.remove(); }
+})()
+''');
+      if (action == 'remove') {
+        _inspectedElement = null;
+        notifyListeners();
+      } else if (action != 'html') {
+        await inspectDomNode(nodeId);
+      }
+    } catch (_) {}
+  }
+
+  Future<String> evaluateDevToolsJs(String code) async {
+    final String clean = code.trim();
+    if (clean.isEmpty) return '';
+    _appendConsoleEntry(
+      DevToolsConsoleEntry(
+        timestamp: DateTime.now(),
+        level: 'input',
+        message: '> $clean',
+      ),
+    );
+    final WebViewController? ctrl = _controller;
+    if (ctrl == null) {
+      const String fallback = 'undefined (no active web document)';
+      _appendConsoleEntry(
+        DevToolsConsoleEntry(
+          timestamp: DateTime.now(),
+          level: 'result',
+          message: '< $fallback',
+        ),
+      );
+      return fallback;
+    }
+
+    final String encodedExpr = jsonEncode(clean);
+    try {
+      final Object raw = await ctrl.runJavaScriptReturningResult('''
+(function(){
+  try {
+    const val = (0, eval)($encodedExpr);
+    if (val === undefined) return 'undefined';
+    if (val === null) return 'null';
+    if (typeof val === 'object') {
+      try { return JSON.stringify(val, null, 2); } catch (_) { return String(val); }
+    }
+    return String(val);
+  } catch (err) {
+    return 'Uncaught ' + String(err);
+  }
+})()
+''');
+      String formatted = raw.toString();
+      if (formatted.startsWith('"') && formatted.endsWith('"')) {
+        try {
+          formatted = jsonDecode(formatted).toString();
+        } catch (_) {}
+      }
+      final bool isErr = formatted.startsWith('Uncaught ');
+      _appendConsoleEntry(
+        DevToolsConsoleEntry(
+          timestamp: DateTime.now(),
+          level: isErr ? 'error' : 'result',
+          message: isErr ? formatted : '< $formatted',
+        ),
+      );
+      return formatted;
+    } catch (e) {
+      final String errStr = e.toString();
+      _appendConsoleEntry(
+        DevToolsConsoleEntry(
+          timestamp: DateTime.now(),
+          level: 'error',
+          message: errStr,
+        ),
+      );
+      return errStr;
+    }
+  }
+
+  Future<List<DevToolsNetworkEntry>> refreshNetworkResourceTimings() async {
+    final Map<String, Object?>? res = await _evalJsonMap('''
+(function(){
+  const entries = (performance.getEntriesByType ? performance.getEntriesByType('resource') : []).slice(-90).reverse();
+  const list = entries.map(e => ({
+    url: e.name || '',
+    type: e.initiatorType || 'other',
+    dur: Math.round(e.duration || 0),
+    size: e.transferSize || e.encodedBodySize || 0,
+    status: e.responseStatus || 200
+  }));
+  return JSON.stringify({ list: list });
+})()
+''');
+    final List<DevToolsNetworkEntry> combined = <DevToolsNetworkEntry>[
+      ..._networkEntries.where((DevToolsNetworkEntry e) => e.blocked),
+      ..._networkEntries.where((DevToolsNetworkEntry e) => !e.blocked),
+    ];
+    final Set<String> seenUrls = <String>{
+      for (final DevToolsNetworkEntry e in combined) e.url,
+    };
+    if (res != null && res['list'] is List<Object?>) {
+      for (final Object? item in res['list']! as List<Object?>) {
+        if (item is Map<Object?, Object?>) {
+          final String u = item['url']?.toString() ?? '';
+          if (u.isEmpty || !seenUrls.add(u)) continue;
+          combined.add(
+            DevToolsNetworkEntry(
+              url: u,
+              method: 'GET',
+              type: item['type']?.toString() ?? 'other',
+              status: (item['status'] as num?)?.toInt() ?? 200,
+              durationMs: (item['dur'] as num?)?.toInt() ?? 0,
+              transferBytes: (item['size'] as num?)?.toInt() ?? 0,
+            ),
+          );
+        }
+      }
+    }
+    return combined;
+  }
+
+  Future<Map<String, Object?>> fetchStorageAndMetrics() async {
+    final Map<String, Object?>? res = await _evalJsonMap('''
+(function(){
+  const ls = {};
+  try {
+    for (let i = 0; i < localStorage.length && i < 60; i++) {
+      const k = localStorage.key(i);
+      if (k !== null) ls[k] = String(localStorage.getItem(k) || '').slice(0, 300);
+    }
+  } catch (_) {}
+  const ss = {};
+  try {
+    for (let i = 0; i < sessionStorage.length && i < 60; i++) {
+      const k = sessionStorage.key(i);
+      if (k !== null) ss[k] = String(sessionStorage.getItem(k) || '').slice(0, 300);
+    }
+  } catch (_) {}
+  const navEntry = (performance.getEntriesByType && performance.getEntriesByType('navigation')[0]) || null;
+  const loadMs = navEntry ? Math.round(navEntry.loadEventEnd || navEntry.duration || 0) : 0;
+  return JSON.stringify({
+    localStorage: ls,
+    sessionStorage: ss,
+    cookies: document.cookie || '',
+    userAgent: navigator.userAgent || '',
+    platform: navigator.platform || '',
+    viewport: window.innerWidth + ' x ' + window.innerHeight + ' (@' + (window.devicePixelRatio || 1).toFixed(2) + 'x)',
+    domNodes: document.getElementsByTagName('*').length,
+    loadMs: loadMs,
+    designMode: document.designMode === 'on'
+  });
+})()
+''');
+    return res ??
+        <String, Object?>{
+          'localStorage': const <String, Object?>{},
+          'sessionStorage': const <String, Object?>{},
+          'cookies': '',
+          'userAgent': settings.desktopMode
+              ? AppConstants.desktopUserAgent
+              : AppConstants.mobileUserAgent,
+          'platform': settings.desktopMode ? 'Win32' : 'Android',
+          'viewport': 'Headless / Start Page',
+          'domNodes': 0,
+          'loadMs': 0,
+          'designMode': _pageDesignMode,
+        };
+  }
+
+  Future<void> updateWebStorageItem({
+    required bool session,
+    required String key,
+    String? value,
+  }) async {
+    final WebViewController? ctrl = _controller;
+    if (ctrl == null) return;
+    final String target = session ? 'sessionStorage' : 'localStorage';
+    final String kJson = jsonEncode(key);
+    try {
+      if (value == null) {
+        await ctrl.runJavaScript('try{$target.removeItem($kJson);}catch(_){}');
+      } else {
+        final String vJson = jsonEncode(value);
+        await ctrl.runJavaScript(
+          'try{$target.setItem($kJson,$vJson);}catch(_){}',
+        );
+      }
+    } catch (_) {}
+  }
+
+  Future<void> setPageDesignMode(bool enabled) async {
+    _pageDesignMode = enabled;
+    notifyListeners();
+    try {
+      await _controller?.runJavaScript(
+        'document.designMode=${enabled ? '"on"' : '"off"'};',
+      );
+    } catch (_) {}
   }
 
   @override

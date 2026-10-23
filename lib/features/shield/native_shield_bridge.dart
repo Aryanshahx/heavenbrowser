@@ -9,6 +9,8 @@ typedef NativeDownloadStartedCallback =
     void Function(Map<String, Object?> downloadInfo);
 typedef NativeWebViewDownloadInterceptedCallback =
     void Function(bool wasEmptyPage);
+typedef NativeConsoleMessageCallback =
+    void Function(String level, String message, String sourceId, int line);
 
 class NativeShieldBridge {
   NativeShieldBridge._() {
@@ -30,6 +32,8 @@ class NativeShieldBridge {
   final Map<int, NativeWebViewDownloadInterceptedCallback>
   _downloadInterceptListeners =
       <int, NativeWebViewDownloadInterceptedCallback>{};
+  final Map<int, NativeConsoleMessageCallback> _consoleListeners =
+      <int, NativeConsoleMessageCallback>{};
 
   NativeDownloadStartedCallback? onDownloadStarted;
 
@@ -55,6 +59,15 @@ class NativeShieldBridge {
       final Object? idVal = rawArgs['webViewId'];
       final int webViewId = idVal is num ? idVal.toInt() : -1;
       _pullRefreshListeners[webViewId]?.call();
+    } else if (call.method == 'onConsoleMessage' &&
+        rawArgs is Map<Object?, Object?>) {
+      final Object? idVal = rawArgs['webViewId'];
+      final int webViewId = idVal is num ? idVal.toInt() : -1;
+      final String level = rawArgs['level']?.toString() ?? 'log';
+      final String msg = rawArgs['message']?.toString() ?? '';
+      final String src = rawArgs['sourceId']?.toString() ?? '';
+      final int ln = (rawArgs['lineNumber'] as num?)?.toInt() ?? 0;
+      _consoleListeners[webViewId]?.call(level, msg, src, ln);
     } else if (call.method == 'onDownloadStarted' &&
         rawArgs is Map<Object?, Object?>) {
       final Map<String, Object?> normalized = <String, Object?>{
@@ -106,12 +119,16 @@ class NativeShieldBridge {
     required NativePullProgressCallback onPullProgress,
     required NativePullRefreshCallback onPullRefresh,
     NativeWebViewDownloadInterceptedCallback? onDownloadIntercepted,
+    NativeConsoleMessageCallback? onConsoleMessage,
   }) async {
     _blockedListeners[webViewId] = onBlocked;
     _pullProgressListeners[webViewId] = onPullProgress;
     _pullRefreshListeners[webViewId] = onPullRefresh;
     if (onDownloadIntercepted != null) {
       _downloadInterceptListeners[webViewId] = onDownloadIntercepted;
+    }
+    if (onConsoleMessage != null) {
+      _consoleListeners[webViewId] = onConsoleMessage;
     }
     try {
       await _channel.invokeMethod<bool>('attachToWebView', <String, Object?>{
@@ -177,6 +194,36 @@ class NativeShieldBridge {
     _pullProgressListeners.remove(webViewId);
     _pullRefreshListeners.remove(webViewId);
     _downloadInterceptListeners.remove(webViewId);
+    _consoleListeners.remove(webViewId);
+  }
+
+  Future<void> approveExternalNavigation({
+    required int webViewId,
+    required String host,
+  }) async {
+    try {
+      await _channel.invokeMethod<bool>(
+        'approveExternalNavigation',
+        <String, Object>{'webViewId': webViewId, 'host': host},
+      );
+    } on MissingPluginException {
+      // Expected in widget tests.
+    } on PlatformException {
+      // Ignore platform channel errors.
+    }
+  }
+
+  Future<void> prepareChromeWebStoreView(int webViewId) async {
+    try {
+      await _channel.invokeMethod<bool>(
+        'prepareChromeWebStoreView',
+        <String, Object>{'webViewId': webViewId},
+      );
+    } on MissingPluginException {
+      // Expected in widget tests.
+    } on PlatformException {
+      // Ignore platform channel errors.
+    }
   }
 
   Future<bool> openDefaultBrowserSettings() async {

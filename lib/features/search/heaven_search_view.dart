@@ -276,7 +276,7 @@ class _HeavenSearchViewState extends State<HeavenSearchView> {
                           Padding(
                             padding: const EdgeInsets.only(bottom: 8, left: 4),
                             child: Text(
-                              'About ${activeResults.length} results (${(data.elapsedMs / 1000).toStringAsFixed(2)}s) • ${_filters.region.label}',
+                              '${data.fromGoogleEngine ? "Google live results • " : ""}About ${activeResults.length} results (${(data.elapsedMs / 1000).toStringAsFixed(2)}s) • Ads blocked',
                               style: theme.textTheme.labelSmall?.copyWith(
                                 color: colors.onSurfaceVariant,
                               ),

@@ -3,10 +3,12 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:heavenbrowser/core/constants/app_constants.dart';
 import 'package:heavenbrowser/core/l10n/app_strings.dart';
 import 'package:heavenbrowser/core/theme/app_theme.dart';
 import 'package:heavenbrowser/core/utils/omnibox_parser.dart';
 import 'package:heavenbrowser/features/browser/engine/browser_engine.dart';
+import 'package:heavenbrowser/features/devtools/desktop_inspector_panel.dart';
 import 'package:heavenbrowser/features/downloads/downloads_controller.dart';
 import 'package:heavenbrowser/features/extensions/extensions_controller.dart';
 import 'package:heavenbrowser/features/news/interest_news_service.dart';
@@ -14,6 +16,7 @@ import 'package:heavenbrowser/features/search/heaven_search_service.dart';
 import 'package:heavenbrowser/features/search/heaven_search_view.dart';
 import 'package:heavenbrowser/features/settings/browser_settings.dart';
 import 'package:heavenbrowser/features/settings/help_screen.dart';
+import 'package:heavenbrowser/features/shield/heaven_shield.dart';
 import 'package:heavenbrowser/features/tabs/tab_manager.dart';
 import 'package:heavenbrowser/features/vpn/vpn_controller.dart';
 import 'package:heavenbrowser/main.dart';
@@ -794,4 +797,304 @@ void main() {
       downloads.dispose();
     },
   );
+
+  group('Step 10: Shield v10, Desktop Chrome Web Store, Fast Google Search & Inspect DevTools', () {
+    test(
+      'HeavenShield v10 blocks Google Ads, YouTube Ads, and Pirated/Porn Redirect networks',
+      () {
+        // Google & YouTube ad domains & ad telemetry paths
+        expect(HeavenShield.matchBlockedDomain('pagead2.googlesyndication.com'), isNotNull);
+        expect(HeavenShield.matchBlockedDomain('googleads.g.doubleclick.net'), isNotNull);
+        expect(HeavenShield.matchBlockedDomain('adtrafficquality.google'), isNotNull);
+        expect(HeavenShield.matchBlockedDomain('ads.youtube.com'), isNotNull);
+        expect(
+          HeavenShield.shouldBlockUri(
+            Uri.parse('https://www.youtube.com/api/stats/ads?v=123'),
+          ),
+          isTrue,
+        );
+
+        // Pirated streaming & adult/porn redirect / popunder / cam / casino domains
+        expect(HeavenShield.matchBlockedDomain('syndication.exoclick.com'), isNotNull);
+        expect(HeavenShield.matchBlockedDomain('ads.trafficjunky.net'), isNotNull);
+        expect(HeavenShield.matchBlockedDomain('juicyads.com'), isNotNull);
+        expect(HeavenShield.matchBlockedDomain('c1.popads.net'), isNotNull);
+        expect(HeavenShield.matchBlockedDomain('popcash.net'), isNotNull);
+        expect(HeavenShield.matchBlockedDomain('clickadu.com'), isNotNull);
+        expect(HeavenShield.matchBlockedDomain('hilltopads.net'), isNotNull);
+        expect(HeavenShield.matchBlockedDomain('adsterra.com'), isNotNull);
+        expect(HeavenShield.matchBlockedDomain('go.stripchat.com'), isNotNull);
+        expect(HeavenShield.matchBlockedDomain('jerkmate.com'), isNotNull);
+        expect(
+          HeavenShield.shouldBlockUri(
+            Uri.parse('https://chaturbate.com/in/?tour=abc'),
+            pageHost: 'watchmovies-free.to',
+          ),
+          isTrue,
+        );
+        expect(HeavenShield.matchBlockedDomain('1xbet.com'), isNotNull);
+        expect(
+          HeavenShield.shouldBlockUri(
+            Uri.parse('https://stream-example.org/afu.php?zoneid=999'),
+          ),
+          isTrue,
+        );
+
+        // Normal websites & Chrome Web Store remain unblocked
+        expect(HeavenShield.matchBlockedDomain('chromewebstore.google.com'), isNull);
+        expect(HeavenShield.matchBlockedDomain('www.youtube.com'), isNull);
+        expect(HeavenShield.matchBlockedDomain('docs.flutter.dev'), isNull);
+
+        final String script = HeavenShield.buildProtectionScript(
+          shieldEnabled: true,
+          sendDntAndGpc: true,
+        );
+        expect(script, contains('__heavenShieldV10Active'));
+        expect(script, contains('adPlacements'));
+        expect(script, contains('ALLOW_NAV:'));
+      },
+    );
+
+    test(
+      'Chrome Web Store uses Desktop Windows Chrome 134 UA & searches live Web Store extensions',
+      () async {
+        expect(
+          AppConstants.desktopUserAgent,
+          contains('Windows NT 10.0; Win64; x64'),
+        );
+        expect(AppConstants.desktopUserAgent, contains('Chrome/134.0.0.0'));
+        expect(
+          ExtensionsController.chromeWebStoreHomeUrl,
+          equals('https://chromewebstore.google.com/?hl=en'),
+        );
+        expect(
+          ExtensionsController.isChromeWebStoreUrl(
+            'https://chromewebstore.google.com/detail/ublock-origin-lite/ddkjiahejlhfcafbddmgiahcphecmpfh',
+          ),
+          isTrue,
+        );
+        expect(
+          ExtensionsController.isChromeWebStoreUrl(
+            'https://chrome.google.com/webstore/category/extensions',
+          ),
+          isTrue,
+        );
+
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+            .setMockMethodCallHandler(
+              const MethodChannel('com.hypertechlabs.heavenbrowser/native_shield'),
+              (MethodCall call) async {
+                if (call.method == 'searchGoogleInBackground') {
+                  final Map<Object?, Object?> args =
+                      call.arguments as Map<Object?, Object?>;
+                  if (args['tab'] == 'cws') {
+                    return <String, Object>{
+                      'ok': true,
+                      'webResults': <Map<String, String>>[
+                        <String, String>{
+                          'title': 'JSON Viewer - Chrome Web Store',
+                          'url':
+                              'https://chromewebstore.google.com/detail/json-viewer/gbmdgpbipfallnflgajpaliibnhdgobh',
+                          'snippet': 'Pretty print JSON documents in Chrome.',
+                        },
+                      ],
+                    };
+                  }
+                }
+                return null;
+              },
+            );
+
+        SharedPreferences.setMockInitialValues(<String, Object>{});
+        final SharedPreferences prefs = await SharedPreferences.getInstance();
+        final ExtensionsController ctrl = ExtensionsController(
+          prefs,
+          syncNativeOnInit: false,
+        );
+        final List<ChromeWebStoreCatalogItem> found =
+            await ctrl.searchWebStoreExtensions('json viewer');
+        expect(found, isNotEmpty);
+        expect(
+          found.first.extensionId,
+          equals('gbmdgpbipfallnflgajpaliibnhdgobh'),
+        );
+        expect(found.first.name, equals('JSON Viewer'));
+        ctrl.dispose();
+
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+            .setMockMethodCallHandler(
+              const MethodChannel('com.hypertechlabs.heavenbrowser/native_shield'),
+              null,
+            );
+      },
+    );
+
+    testWidgets(
+      'Desktop Inspect (DevTools) panel opens from Browser Menu & works across Elements, Console, Network, Storage & Info on 320px screen',
+      (WidgetTester tester) async {
+        tester.view.physicalSize = const Size(320, 640);
+        tester.view.devicePixelRatio = 1.0;
+        addTearDown(() {
+          tester.view.resetPhysicalSize();
+          tester.view.resetDevicePixelRatio();
+          TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+              .setMockMethodCallHandler(
+                const MethodChannel('com.hypertechlabs.heavenbrowser/native_shield'),
+                null,
+              );
+        });
+
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+            .setMockMethodCallHandler(
+              const MethodChannel('com.hypertechlabs.heavenbrowser/native_shield'),
+              (MethodCall call) async {
+                switch (call.method) {
+                  case 'searchGoogleInBackground':
+                    return <String, Object>{
+                      'ok': true,
+                      'webResults': <Map<String, String>>[
+                        <String, String>{
+                          'title': 'Dart DevTools Guide',
+                          'url': 'https://dart.dev/tools/dart-devtools',
+                          'snippet': 'Official Dart & Flutter developer tools.',
+                          'sourceLabel': 'dart.dev',
+                        },
+                      ],
+                      'relatedSearches': <String>['flutter inspector'],
+                    };
+                  case 'listChromeExtensions':
+                    return const <Map<String, Object>>[];
+                  default:
+                    return true;
+                }
+              },
+            );
+
+        SharedPreferences.setMockInitialValues(<String, Object>{});
+        final SharedPreferences prefs = await SharedPreferences.getInstance();
+        final BrowserSettingsController settings = BrowserSettingsController(
+          prefs,
+        );
+        final HeavenSearchService searchService = _createMockSearchService();
+        final DownloadsController downloads = DownloadsController(
+          prefs,
+          enableNativePolling: false,
+        );
+        final InterestProfileController interests = InterestProfileController(
+          prefs,
+        );
+        final HeavenNewsFeedService newsService = _createMockNewsService(
+          prefs,
+          interests,
+        );
+        final VpnController vpn = VpnController(
+          prefs,
+          enableNativePolling: false,
+          client: MockClient(
+            (_) async => http.Response('ip=198.51.100.7\nloc=US\nwarp=on\n', 200),
+          ),
+        );
+        final ExtensionsController extensions = ExtensionsController(
+          prefs,
+          syncNativeOnInit: false,
+        );
+
+        await tester.pumpWidget(
+          HeavenBrowserApp(
+            settings: settings,
+            searchService: searchService,
+            downloads: downloads,
+            newsService: newsService,
+            interests: interests,
+            vpn: vpn,
+            extensions: extensions,
+            enablePlatformWebView: false,
+          ),
+        );
+        await tester.pumpAndSettle();
+
+        // 1. Verify Fast Background Google Search displays 'Google live results' badge!
+        await tester.enterText(
+          find.byKey(const Key('home_search_textfield')),
+          'dart devtools',
+        );
+        await tester.pump();
+        await tester.tap(find.byKey(const Key('home_search_icon_button')));
+        await tester.pumpAndSettle();
+        expect(find.text('Dart DevTools Guide'), findsOneWidget);
+        expect(find.textContaining('Google live results'), findsOneWidget);
+
+        // 2. Open Browser Menu -> Tap 'Inspect (DevTools)'!
+        await tester.tap(find.byTooltip('Browser Menu'));
+        await tester.pumpAndSettle();
+        expect(
+          find.byKey(const Key('browser_menu_inspect_tile')),
+          findsOneWidget,
+        );
+        await tester.tap(find.byKey(const Key('browser_menu_inspect_tile')));
+        await tester.pumpAndSettle();
+        expect(tester.takeException(), isNull);
+        expect(
+          find.byKey(const Key('desktop_inspector_panel')),
+          findsOneWidget,
+        );
+        expect(find.byType(DesktopInspectorPanel), findsOneWidget);
+
+        // 3. Toggle Element Picker inside Inspect panel
+        await tester.tap(
+          find.byKey(const Key('devtools_element_picker_button')),
+        );
+        await tester.pumpAndSettle();
+        expect(
+          find.textContaining('Tap any element on the webpage above'),
+          findsOneWidget,
+        );
+
+        // 4. Switch to Console tab & evaluate JavaScript
+        await tester.tap(find.text('Console'));
+        await tester.pumpAndSettle();
+        expect(tester.takeException(), isNull);
+        await tester.enterText(
+          find.byKey(const Key('devtools_console_input')),
+          'document.title',
+        );
+        await tester.tap(find.byKey(const Key('devtools_console_run_button')));
+        await tester.pumpAndSettle();
+        expect(find.text('> document.title'), findsOneWidget);
+
+        // 5. Switch to Network, Storage & Info tabs cleanly with zero overflow
+        await tester.ensureVisible(find.text('Network'));
+        await tester.pumpAndSettle();
+        await tester.tap(find.text('Network'));
+        await tester.pumpAndSettle();
+        expect(tester.takeException(), isNull);
+
+        await tester.ensureVisible(find.text('Storage'));
+        await tester.pumpAndSettle();
+        await tester.tap(find.text('Storage'));
+        await tester.pumpAndSettle();
+        expect(tester.takeException(), isNull);
+
+        await tester.ensureVisible(find.text('Info'));
+        await tester.pumpAndSettle();
+        await tester.tap(find.text('Info'));
+        await tester.pumpAndSettle();
+        expect(tester.takeException(), isNull);
+        expect(
+          find.text('Live Edit Page Text (document.designMode)'),
+          findsOneWidget,
+        );
+
+        // 6. Close DevTools panel cleanly
+        await tester.tap(find.byKey(const Key('devtools_close_button')));
+        await tester.pumpAndSettle();
+        expect(find.byKey(const Key('desktop_inspector_panel')), findsNothing);
+
+        vpn.dispose();
+        extensions.dispose();
+        newsService.dispose();
+        downloads.dispose();
+      },
+    );
+  });
 }

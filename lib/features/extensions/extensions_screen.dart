@@ -24,12 +24,40 @@ class ExtensionsScreen extends StatefulWidget {
 }
 
 class _ExtensionsScreenState extends State<ExtensionsScreen> {
-  final TextEditingController _storeLinkController = TextEditingController();
+  final TextEditingController _storeInputController = TextEditingController();
+  bool _searchingStore = false;
+  String _lastSearchQuery = '';
+  List<ChromeWebStoreCatalogItem> _searchResults =
+      <ChromeWebStoreCatalogItem>[];
 
   @override
   void dispose() {
-    _storeLinkController.dispose();
+    _storeInputController.dispose();
     super.dispose();
+  }
+
+  Future<void> _handleSearchOrInstall(String raw) async {
+    final String trimmed = raw.trim();
+    if (trimmed.isEmpty) return;
+
+    // If user pasted a Chrome Web Store link or 32-char ID -> install .crx directly!
+    if (ExtensionsController.extractChromeWebStoreId(trimmed) != null) {
+      await _installFromLinkOrId(trimmed);
+      return;
+    }
+
+    // Otherwise search Chrome Web Store directly inside Heaven Browser!
+    setState(() {
+      _searchingStore = true;
+      _lastSearchQuery = trimmed;
+    });
+    final List<ChromeWebStoreCatalogItem> found = await widget.extensions
+        .searchWebStoreExtensions(trimmed);
+    if (!mounted) return;
+    setState(() {
+      _searchingStore = false;
+      _searchResults = found;
+    });
   }
 
   Future<void> _installFromLinkOrId(String raw) async {
@@ -38,7 +66,12 @@ class _ExtensionsScreenState extends State<ExtensionsScreen> {
     final String? err = await widget.extensions.installFromWebStore(trimmed);
     if (!mounted) return;
     if (err == null) {
-      _storeLinkController.clear();
+      if (ExtensionsController.extractChromeWebStoreId(
+            _storeInputController.text,
+          ) !=
+          null) {
+        _storeInputController.clear();
+      }
       await widget.activeEngine?.reloadFullPage();
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -82,7 +115,9 @@ class _ExtensionsScreenState extends State<ExtensionsScreen> {
         actions: <Widget>[
           IconButton(
             tooltip: 'Import .crx or .zip Package',
-            onPressed: widget.extensions.isInstalling ? null : _pickLocalCrxFile,
+            onPressed: widget.extensions.isInstalling
+                ? null
+                : _pickLocalCrxFile,
             icon: const Icon(Icons.upload_file_rounded),
           ),
         ],
@@ -95,10 +130,58 @@ class _ExtensionsScreenState extends State<ExtensionsScreen> {
                 widget.extensions.chromeExtensions;
 
             return ListView(
-              padding: const EdgeInsets.fromLTRB(16, 10, 16, 28),
+              padding: const EdgeInsets.fromLTRB(14, 8, 14, 24),
               children: <Widget>[
                 _buildWebStoreHeroCard(context, colors, isDark),
-                const SizedBox(height: 18),
+                const SizedBox(height: 10),
+                if (_searchingStore)
+                  const Padding(
+                    padding: EdgeInsets.symmetric(vertical: 18),
+                    child: Center(child: CircularProgressIndicator()),
+                  )
+                else if (_lastSearchQuery.isNotEmpty) ...<Widget>[
+                  Row(
+                    children: <Widget>[
+                      Expanded(
+                        child: Text(
+                          'Web Store Results for "$_lastSearchQuery" (${_searchResults.length})',
+                          style: const TextStyle(
+                            fontSize: 14.5,
+                            fontWeight: FontWeight.w800,
+                          ),
+                        ),
+                      ),
+                      TextButton(
+                        onPressed: () {
+                          setState(() {
+                            _lastSearchQuery = '';
+                            _searchResults = <ChromeWebStoreCatalogItem>[];
+                            _storeInputController.clear();
+                          });
+                        },
+                        child: const Text('Clear'),
+                      ),
+                    ],
+                  ),
+                  if (_searchResults.isEmpty)
+                    Padding(
+                      padding: const EdgeInsets.only(bottom: 12),
+                      child: Text(
+                        'No direct matches found. Tap "Browse Chrome Web Store (Desktop)" above to browse all extensions.',
+                        style: TextStyle(
+                          fontSize: 12.5,
+                          color: colors.onSurfaceVariant,
+                        ),
+                      ),
+                    )
+                  else
+                    for (final ChromeWebStoreCatalogItem item
+                        in _searchResults) ...<Widget>[
+                      _buildFeaturedCatalogTile(context, colors, isDark, item),
+                      const SizedBox(height: 8),
+                    ],
+                  const SizedBox(height: 10),
+                ],
                 if (installed.isNotEmpty) ...<Widget>[
                   Text(
                     'Installed Desktop Extensions (${installed.length})',
@@ -108,7 +191,8 @@ class _ExtensionsScreenState extends State<ExtensionsScreen> {
                     ),
                   ),
                   const SizedBox(height: 8),
-                  for (final InstalledChromeExtension ext in installed) ...<Widget>[
+                  for (final InstalledChromeExtension ext
+                      in installed) ...<Widget>[
                     _buildInstalledExtensionCard(context, colors, isDark, ext),
                     const SizedBox(height: 10),
                   ],
@@ -116,20 +200,20 @@ class _ExtensionsScreenState extends State<ExtensionsScreen> {
                 ],
                 const Text(
                   'Chrome Web Store — 1-Tap Install (.crx)',
-                  style: TextStyle(fontSize: 15, fontWeight: FontWeight.w800),
+                  style: TextStyle(fontSize: 14.5, fontWeight: FontWeight.w800),
                 ),
-                const SizedBox(height: 4),
+                const SizedBox(height: 2),
                 Text(
-                  'Downloads the official Desktop Chrome .crx bundle directly from Google Chrome Web Store and runs its manifest.json in Heaven Browser.',
+                  'Official Desktop Chrome .crx bundles with manifest.json.',
                   style: TextStyle(
-                    fontSize: 12,
+                    fontSize: 11.5,
                     color: colors.onSurfaceVariant,
-                    height: 1.35,
                   ),
                 ),
-                const SizedBox(height: 10),
+                const SizedBox(height: 8),
                 for (final ChromeWebStoreCatalogItem item
-                    in ExtensionsController.featuredWebStoreCatalog) ...<Widget>[
+                    in ExtensionsController
+                        .featuredWebStoreCatalog) ...<Widget>[
                   _buildFeaturedCatalogTile(context, colors, isDark, item),
                   const SizedBox(height: 8),
                 ],
@@ -147,10 +231,10 @@ class _ExtensionsScreenState extends State<ExtensionsScreen> {
     bool isDark,
   ) {
     return Container(
-      padding: const EdgeInsets.all(16),
+      padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
         color: isDark ? AppTheme.navySurface : Colors.white,
-        borderRadius: BorderRadius.circular(20),
+        borderRadius: BorderRadius.circular(18),
         border: Border.all(color: colors.primary.withValues(alpha: 0.38)),
       ),
       child: Column(
@@ -159,15 +243,19 @@ class _ExtensionsScreenState extends State<ExtensionsScreen> {
           Row(
             children: <Widget>[
               Container(
-                width: 42,
-                height: 42,
+                width: 36,
+                height: 36,
                 decoration: BoxDecoration(
                   color: colors.primary.withValues(alpha: 0.14),
-                  borderRadius: BorderRadius.circular(13),
+                  borderRadius: BorderRadius.circular(11),
                 ),
-                child: Icon(Icons.extension_rounded, color: colors.primary),
+                child: Icon(
+                  Icons.extension_rounded,
+                  size: 20,
+                  color: colors.primary,
+                ),
               ),
-              const SizedBox(width: 12),
+              const SizedBox(width: 10),
               Expanded(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
@@ -175,14 +263,16 @@ class _ExtensionsScreenState extends State<ExtensionsScreen> {
                     const Text(
                       'Desktop Chrome Extensions',
                       style: TextStyle(
-                        fontSize: 15.5,
+                        fontSize: 14.5,
                         fontWeight: FontWeight.w800,
                       ),
                     ),
                     Text(
-                      'Supports Chrome Web Store (.crx v2/v3) & unpacked .zip MV2/MV3 bundles',
+                      'Desktop Chrome Web Store (.crx MV2/MV3) unlocked',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
                       style: TextStyle(
-                        fontSize: 11.5,
+                        fontSize: 11,
                         color: colors.onSurfaceVariant,
                       ),
                     ),
@@ -191,13 +281,17 @@ class _ExtensionsScreenState extends State<ExtensionsScreen> {
               ),
             ],
           ),
-          const SizedBox(height: 12),
+          const SizedBox(height: 8),
           Wrap(
-            spacing: 8,
-            runSpacing: 8,
+            spacing: 6,
+            runSpacing: 6,
             children: <Widget>[
               FilledButton.icon(
                 key: const Key('open_chrome_web_store_button'),
+                style: FilledButton.styleFrom(
+                  visualDensity: VisualDensity.compact,
+                  padding: const EdgeInsets.symmetric(horizontal: 10),
+                ),
                 onPressed: () {
                   if (widget.onOpenWebStoreInBrowser != null) {
                     Navigator.pop(context);
@@ -208,32 +302,42 @@ class _ExtensionsScreenState extends State<ExtensionsScreen> {
                     );
                   }
                 },
-                icon: const Icon(Icons.storefront_rounded, size: 18),
-                label: const Text('Browse Chrome Web Store'),
+                icon: const Icon(Icons.desktop_windows_rounded, size: 16),
+                label: const Text(
+                  'Chrome Web Store',
+                  style: TextStyle(fontSize: 12.5),
+                ),
               ),
               OutlinedButton.icon(
                 key: const Key('import_crx_file_button'),
+                style: OutlinedButton.styleFrom(
+                  visualDensity: VisualDensity.compact,
+                  padding: const EdgeInsets.symmetric(horizontal: 10),
+                ),
                 onPressed: widget.extensions.isInstalling
                     ? null
                     : _pickLocalCrxFile,
-                icon: const Icon(Icons.folder_zip_outlined, size: 18),
-                label: const Text('Import .crx / .zip'),
+                icon: const Icon(Icons.folder_zip_outlined, size: 16),
+                label: const Text(
+                  'Import .crx',
+                  style: TextStyle(fontSize: 12.5),
+                ),
               ),
             ],
           ),
-          const SizedBox(height: 12),
+          const SizedBox(height: 8),
           Row(
             children: <Widget>[
               Expanded(
                 child: TextField(
                   key: const Key('webstore_url_textfield'),
-                  controller: _storeLinkController,
-                  textInputAction: TextInputAction.go,
-                  onSubmitted: _installFromLinkOrId,
+                  controller: _storeInputController,
+                  textInputAction: TextInputAction.search,
+                  onSubmitted: _handleSearchOrInstall,
                   style: const TextStyle(fontSize: 13),
                   decoration: const InputDecoration(
-                    hintText:
-                        'Paste chromewebstore.google.com link or 32-char ID',
+                    hintText: 'Search extensions or paste Web Store link / ID',
+                    prefixIcon: Icon(Icons.search_rounded, size: 19),
                     border: OutlineInputBorder(),
                     isDense: true,
                   ),
@@ -241,17 +345,18 @@ class _ExtensionsScreenState extends State<ExtensionsScreen> {
               ),
               const SizedBox(width: 8),
               FilledButton.tonal(
-                onPressed: widget.extensions.isInstalling
+                onPressed: (widget.extensions.isInstalling || _searchingStore)
                     ? null
-                    : () => _installFromLinkOrId(_storeLinkController.text),
-                child: widget.extensions.isInstalling &&
-                        widget.extensions.installingId != null
+                    : () => _handleSearchOrInstall(_storeInputController.text),
+                child: (widget.extensions.isInstalling &&
+                            widget.extensions.installingId != null) ||
+                        _searchingStore
                     ? const SizedBox(
                         width: 16,
                         height: 16,
                         child: CircularProgressIndicator(strokeWidth: 2),
                       )
-                    : const Text('Install'),
+                    : const Text('Go'),
               ),
             ],
           ),
@@ -287,7 +392,9 @@ class _ExtensionsScreenState extends State<ExtensionsScreen> {
                   width: 40,
                   height: 40,
                   decoration: BoxDecoration(
-                    color: colors.surfaceContainerHighest.withValues(alpha: 0.5),
+                    color: colors.surfaceContainerHighest.withValues(
+                      alpha: 0.5,
+                    ),
                     borderRadius: BorderRadius.circular(10),
                   ),
                   clipBehavior: Clip.antiAlias,
@@ -298,8 +405,10 @@ class _ExtensionsScreenState extends State<ExtensionsScreen> {
                           width: 32,
                           height: 32,
                           fit: BoxFit.contain,
-                          errorBuilder: (_, _, _) =>
-                              Icon(Icons.extension_rounded, color: colors.primary),
+                          errorBuilder: (_, _, _) => Icon(
+                            Icons.extension_rounded,
+                            color: colors.primary,
+                          ),
                         )
                       : Icon(Icons.extension_rounded, color: colors.primary),
                 ),
@@ -424,9 +533,7 @@ class _ExtensionsScreenState extends State<ExtensionsScreen> {
       color: isDark ? AppTheme.navySurface : Colors.white,
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(16),
-        side: BorderSide(
-          color: colors.outlineVariant.withValues(alpha: 0.35),
-        ),
+        side: BorderSide(color: colors.outlineVariant.withValues(alpha: 0.35)),
       ),
       child: Padding(
         padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 11),

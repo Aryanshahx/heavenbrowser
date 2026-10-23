@@ -11,6 +11,7 @@ import '../../../core/theme/app_theme.dart';
 import '../../../core/utils/omnibox_parser.dart';
 import '../../../core/widgets/search_engine_chip_button.dart';
 import '../../../core/widgets/site_logo.dart';
+import '../../devtools/desktop_inspector_panel.dart';
 import '../../downloads/downloads_controller.dart';
 import '../../downloads/downloads_screen.dart';
 import '../../extensions/extensions_controller.dart';
@@ -72,6 +73,7 @@ class _BrowserScreenState extends State<BrowserScreen>
   bool _isEditingOmnibox = false;
   bool _showLinkActionsCard = false;
   bool _showFindBar = false;
+  bool _showInspectorPanel = false;
   int _findMatches = 0;
 
   BrowserEngine get _activeEngine => widget.tabManager.activeEngine;
@@ -100,6 +102,9 @@ class _BrowserScreenState extends State<BrowserScreen>
     _suggestDebounce?.cancel();
     if (widget.downloads.onDownloadToast != null) {
       widget.downloads.onDownloadToast = null;
+    }
+    for (final BrowserTab tab in widget.tabManager.allTabs) {
+      tab.engine.onWebStoreInstallMessage = null;
     }
     WidgetsBinding.instance.removeObserver(this);
     _omniboxController.dispose();
@@ -260,6 +265,15 @@ class _BrowserScreenState extends State<BrowserScreen>
         final ColorScheme colors = effectiveTheme.colorScheme;
         final bool bottomBar = widget.settings.bottomOmnibox;
         final BrowserEngine engine = _activeEngine;
+        engine.onWebStoreInstallMessage ??= (String msg) {
+          if (!mounted) return;
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text(msg),
+              behavior: SnackBarBehavior.floating,
+            ),
+          );
+        };
         final bool showLinkActions =
             _isEditingOmnibox &&
             _showLinkActionsCard &&
@@ -282,7 +296,8 @@ class _BrowserScreenState extends State<BrowserScreen>
                 !engine.canGoBack &&
                 !_isEditingOmnibox &&
                 !_showLinkActionsCard &&
-                !_showFindBar,
+                !_showFindBar &&
+                !_showInspectorPanel,
             onPopInvokedWithResult: (bool didPop, void _) async {
               if (didPop) {
                 return;
@@ -293,6 +308,11 @@ class _BrowserScreenState extends State<BrowserScreen>
               }
               if (_showFindBar) {
                 setState(() => _showFindBar = false);
+                return;
+              }
+              if (_showInspectorPanel) {
+                setState(() => _showInspectorPanel = false);
+                unawaited(engine.clearInspectorHighlight());
                 return;
               }
               if (engine.canGoBack) {
@@ -410,6 +430,14 @@ class _BrowserScreenState extends State<BrowserScreen>
                         ],
                       ),
                     ),
+                    if (_showInspectorPanel)
+                      DesktopInspectorPanel(
+                        engine: engine,
+                        onClose: () {
+                          setState(() => _showInspectorPanel = false);
+                          unawaited(engine.clearInspectorHighlight());
+                        },
+                      ),
                     if (bottomBar) _buildCommandCapsuleBar(context, colors),
                   ],
                 ),
@@ -1581,6 +1609,41 @@ class _BrowserScreenState extends State<BrowserScreen>
                   ),
                   const SizedBox(height: 8),
                   const Divider(height: 1),
+                  ListTile(
+                    key: const Key('browser_menu_inspect_tile'),
+                    dense: true,
+                    contentPadding: const EdgeInsets.symmetric(horizontal: 8),
+                    leading: Icon(
+                      Icons.developer_mode_rounded,
+                      size: 20,
+                      color: _showInspectorPanel
+                          ? AppTheme.shieldEmerald
+                          : colors.primary,
+                    ),
+                    title: const Text('Inspect (DevTools)'),
+                    subtitle: const Text(
+                      'Desktop DOM Elements, Console, Network & Storage',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(fontSize: 11),
+                    ),
+                    trailing: Text(
+                      _showInspectorPanel ? 'OPEN' : 'F12',
+                      style: TextStyle(
+                        fontSize: 11,
+                        fontWeight: FontWeight.w800,
+                        color: _showInspectorPanel
+                            ? AppTheme.shieldEmerald
+                            : colors.onSurfaceVariant,
+                      ),
+                    ),
+                    onTap: () {
+                      Navigator.pop(sheetContext);
+                      setState(
+                        () => _showInspectorPanel = !_showInspectorPanel,
+                      );
+                    },
+                  ),
                   ListTile(
                     dense: true,
                     contentPadding: const EdgeInsets.symmetric(horizontal: 8),

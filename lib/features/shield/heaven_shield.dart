@@ -3,18 +3,24 @@ import 'dart:convert';
 class HeavenShield {
   const HeavenShield._();
 
-  /// Comprehensive 170+ root domain list covering ad networks, video ad SDKs,
-  /// popunders, malvertising, behavioral trackers, and telemetry beacons.
+  /// Comprehensive 260+ root domain list covering Google Ads, YouTube Ad servers,
+  /// pirated streaming & adult/porn popunder/redirect networks, casino/cam spam,
+  /// malvertising, and behavioral trackers.
   static const Set<String> blockedRootDomains = <String>{
-    // Google Ads / DoubleClick / IMA Video Ads
+    // Google Ads / DoubleClick / IMA Video Ads / FundingChoices
     'doubleclick.net',
     'googlesyndication.com',
     'googleadservices.com',
     'adservice.google.com',
     'adsense.com',
+    'adsensecustomsearchads.com',
+    'adtrafficquality.google',
+    'ads.youtube.com',
+    'fundingchoicesmessages.google.com',
     'admeld.com',
     '2mdn.net',
     'imasdk.googleapis.com',
+    'ima3vpaid.appspot.com',
     'pagead2.googlesyndication.com',
     'tpc.googlesyndication.com',
     'google-analytics.com',
@@ -64,6 +70,7 @@ class HeavenShield {
     'connatix.com',
     'primis.tech',
     'aniview.com',
+    'bidgear.com',
 
     // Native Content Chumboxes & Sponsored Widgets
     'taboola.com',
@@ -79,35 +86,75 @@ class HeavenShield {
     'nativo.com',
     'dianomi.com',
 
-    // Aggressive Popunders, Redirects & Malvertising Networks
+    // Pirated Streaming & Adult/Porn Popunders, Click-Hijacks & Redirect Traps
     'popads.net',
     'popcash.net',
     'propellerads.com',
+    'propellerclick.com',
     'onclickads.net',
+    'onclickalgo.com',
+    'onclkds.com',
+    'onclasrv.com',
     'adsterra.com',
     'adsterratech.com',
     'highperformanceformat.com',
     'profitabledisplaynetwork.com',
+    'profitablecpmrate.com',
+    'effectivegatecpm.com',
+    'topcreativeformat.com',
+    'agacelebir.com',
+    'alwingulla.com',
     'exoclick.com',
     'exosrv.com',
     'syndication.exdynsrv.com',
     'exdynsrv.com',
+    'realsrv.com',
+    'tsyndicate.com',
+    'tsyn-b.com',
+    'magsrv.com',
+    'pemsrv.com',
     'juicyads.com',
     'trafficjunky.net',
+    'trafficjunky.com',
     'trafficstars.com',
+    'twinrdsyn.com',
+    'twinrdengine.com',
     'hilltopads.net',
+    'hilltopads.com',
+    'bet365.com',
+    'go.stripchat.com',
+    'jerkmate.com',
     'clickadu.com',
+    'clickaine.com',
     'adcash.com',
+    'ufpcdn.com',
+    'acscdn.com',
     'bidvertiser.com',
     'ero-advertising.com',
     'plugrush.com',
     'admaven.com',
+    'ad-maven.com',
+    'dolohen.com',
     'richads.com',
+    'richpush.co',
     'evadav.com',
     'galaksion.com',
+    'mondiad.com',
     'monetag.com',
     'a-ads.com',
     'coinzilla.com',
+    'xlivrdr.com',
+    'prmtracking.com',
+    'crakrevenue.com',
+    'awempire.com',
+    'irtyc.com',
+    '1xbet.com',
+    '1xstavka.ru',
+    'betwinner.com',
+    'mostbet.com',
+    'melbet.com',
+    'parimatch.com',
+    '4rabet.com',
 
     // Mobile & In-Web Ad SDKs
     'adcolony.com',
@@ -118,7 +165,7 @@ class HeavenShield {
     'chartboost.com',
     'inmobi.com',
     'ironsrc.com',
-    'SupersonicAds.com',
+    'supersonicads.com',
     'startappservice.com',
     'tapjoy.com',
     'smaato.net',
@@ -187,8 +234,6 @@ class HeavenShield {
     'analytics.tiktok.com',
     'ads-twitter.com',
     'static.ads-twitter.com',
-    't.co/i/adsct',
-    'sc-static.net/scevent.min.js',
     'snap.licdn.com',
     'px.ads.linkedin.com',
     'ct.pinterest.com',
@@ -248,11 +293,42 @@ class HeavenShield {
     if (matchBlockedDomain(uri.host) != null) {
       return true;
     }
+    final String lowerHost = uri.host.toLowerCase();
+    final String lowerPage = (pageHost ?? '').toLowerCase().trim();
+    if (lowerPage.isNotEmpty &&
+        lowerHost != lowerPage &&
+        !lowerHost.endsWith('.$lowerPage') &&
+        !lowerPage.endsWith('.$lowerHost')) {
+      const List<String> crossSiteRedirectTraps = <String>[
+        'chaturbate.com',
+        'stripchat.com',
+        'livejasmin.com',
+        'bongacams.com',
+        'jerkmate.com',
+        'cam4.com',
+        'myfreecams.com',
+        '1xbet',
+        'betwinner',
+        'mostbet',
+        'melbet',
+        'parimatch',
+        '4rabet',
+      ];
+      for (final String trap in crossSiteRedirectTraps) {
+        if (lowerHost.contains(trap)) {
+          return true;
+        }
+      }
+    }
     final String pathAndQuery = '${uri.path}?${uri.query}'.toLowerCase();
     if (pathAndQuery.contains('/adsbygoogle') ||
         pathAndQuery.contains('/pagead/') ||
+        pathAndQuery.contains('/api/stats/ads') ||
+        pathAndQuery.contains('/get_midroll_') ||
         pathAndQuery.contains('/gpt.js') ||
-        pathAndQuery.contains('/popunder')) {
+        pathAndQuery.contains('/afu.php') ||
+        pathAndQuery.contains('/popunder') ||
+        pathAndQuery.contains('google_vignette')) {
       return true;
     }
     return false;
@@ -295,7 +371,7 @@ class HeavenShield {
     );
   }
 
-  /// Cosmetic DOM filter + popup blocker + YouTube video-ad auto-skipper.
+  /// Cosmetic DOM filter + strict popup/redirect/overlay firewall + YouTube zero-ad engine.
   static String buildProtectionScript({
     required bool shieldEnabled,
     required bool sendDntAndGpc,
@@ -304,8 +380,8 @@ class HeavenShield {
 
     return '''
 (function() {
-  if (window.__heavenShieldV3Active) return;
-  window.__heavenShieldV3Active = true;
+  if (window.__heavenShieldV10Active) return;
+  window.__heavenShieldV10Active = true;
 
   if ($sendDntAndGpc) {
     try {
@@ -324,20 +400,6 @@ class HeavenShield {
 
   const blockedDomains = new Set($encodedDomains);
 
-  function matchBlocked(rawUrl) {
-    try {
-      const parsed = new URL(rawUrl, window.location.href);
-      let h = (parsed.hostname || '').toLowerCase();
-      while (h) {
-        if (blockedDomains.has(h)) return h;
-        const dot = h.indexOf('.');
-        if (dot < 0) break;
-        h = h.slice(dot + 1);
-      }
-    } catch (_) {}
-    return null;
-  }
-
   function notifyShield(domain) {
     try {
       if (window.HeavenShieldChannel && window.HeavenShieldChannel.postMessage) {
@@ -346,30 +408,79 @@ class HeavenShield {
     } catch (_) {}
   }
 
-  // Block popup hijacks (window.open to ad networks or blank popunders)
-  const origOpen = window.open;
-  window.open = function(url, target, features) {
-    const matched = url ? matchBlocked(String(url)) : 'popup';
-    if (matched || !url || String(url) === 'about:blank') {
-      notifyShield(matched || 'popup');
-      return null;
-    }
-    return origOpen ? origOpen.call(this, url, target, features) : null;
+  // 1. Unconditional popup/popunder lock (blocks rotating pirated/adult ad domains too!)
+  const deadWindowProxy = new Proxy(
+    { closed: false, close() {}, focus() {}, blur() {}, postMessage() {} },
+    { get: (t, p) => (p in t ? t[p] : () => {}), set: () => true }
+  );
+  window.open = function(url) {
+    notifyShield('popup-blocked');
+    return deadWindowProxy;
   };
 
-  // Cosmetic CSS rules (collapses ad slots cleanly so zero blank boxes remain)
+  // 2. Block synthetic detached <a href="https://ad-redirect..."> click() tricks
+  const origAnchorClick = HTMLAnchorElement.prototype.click;
+  HTMLAnchorElement.prototype.click = function() {
+    try {
+      const href = this.href || '';
+      if (!this.isConnected || (this.offsetWidth === 0 && this.offsetHeight === 0)) {
+        if (href && !href.includes(location.hostname)) {
+          notifyShield('redirect-blocked');
+          return;
+        }
+      }
+    } catch (_) {}
+    return origAnchorClick.apply(this, arguments);
+  };
+
+  // 3. Approve ONLY real visible <a href> taps & strip invisible click-jacking overlays
+  document.addEventListener('pointerdown', function(ev) {
+    try {
+      const a = ev.target && ev.target.closest ? ev.target.closest('a[href]') : null;
+      if (!a) return;
+      const r = a.getBoundingClientRect();
+      const cs = window.getComputedStyle(a);
+      const op = parseFloat(cs.opacity || '1');
+      const isTransparentCover =
+        (cs.position === 'fixed' || cs.position === 'absolute') &&
+        r.width > window.innerWidth * 0.6 &&
+        r.height > window.innerHeight * 0.4 &&
+        !(a.textContent || '').trim();
+      if (isTransparentCover || op < 0.12 || r.width < 10 || r.height < 10) {
+        a.style.setProperty('pointer-events', 'none', 'important');
+        a.removeAttribute('href');
+        notifyShield('overlay-ad');
+        return;
+      }
+      const parsed = new URL(a.href, location.href);
+      if ((parsed.protocol === 'http:' || parsed.protocol === 'https:') &&
+          parsed.hostname && parsed.hostname !== location.hostname) {
+        notifyShield('ALLOW_NAV:' + parsed.hostname.toLowerCase());
+      }
+    } catch (_) {}
+  }, true);
+
+  // 4. Cosmetic CSS rules for Google Ads, YouTube Ads, & Pirated/Adult Banner Slots
   const adCss = `
     ins.adsbygoogle,
     .adsbygoogle,
+    #google_vignette,
     [id^="div-gpt-ad"],
     [id^="google_ads_iframe"],
     iframe[src*="doubleclick.net"],
     iframe[src*="googlesyndication.com"],
+    iframe[src*="googleadservices.com"],
     iframe[src*="adnxs.com"],
     iframe[src*="taboola.com"],
     iframe[src*="outbrain.com"],
-    iframe[src*="exoclick.com"],
+    iframe[src*="exoclick"],
+    iframe[src*="realsrv"],
+    iframe[src*="tsyndicate"],
+    iframe[src*="juicyads"],
+    iframe[src*="trafficjunky"],
     iframe[src*="adsterra"],
+    iframe[src*="propeller"],
+    iframe[src*="magsrv"],
     [data-ad-slot],
     [data-ad-client],
     #tads,
@@ -391,14 +502,22 @@ class HeavenShield {
     .OUTBRAIN,
     div[id*="taboola-"],
     div[id*="outbrain_widget"],
+    #masthead-ad,
     ytd-ad-slot-renderer,
     ytd-promoted-sparkles-web-renderer,
+    ytd-promoted-video-renderer,
+    ytd-compact-promoted-video-renderer,
     ytd-in-feed-ad-layout-renderer,
     ytd-banner-promo-renderer,
+    ytd-statement-banner-renderer,
     ytm-promoted-sparkles-web-renderer,
+    ytm-promoted-video-renderer,
     ytm-companion-ad-renderer,
+    ytm-rich-item-renderer:has(ytm-ad-slot-renderer),
+    ytm-ad-slot-renderer,
     .ytp-ad-overlay-container,
-    .ytp-ad-message-container {
+    .ytp-ad-message-container,
+    .ytp-ad-image-overlay {
       display: none !important;
       height: 0 !important;
       min-height: 0 !important;
@@ -419,10 +538,41 @@ class HeavenShield {
   }
   ensureStyle();
 
-  // Auto-skip video pre-rolls on YouTube mobile/desktop web & unwrap Google redirect links
+  // 5. Remove invisible high-z-index click-jacking divs placed over video players
+  function neutralizeClickjackOverlays() {
+    try {
+      const candidates = document.querySelectorAll('body > div, body > a, body > iframe');
+      const vw = window.innerWidth || 360;
+      const vh = window.innerHeight || 640;
+      for (let i = 0; i < candidates.length; i++) {
+        const el = candidates[i];
+        if (el.id && el.id.startsWith('heaven-')) continue;
+        if (el.querySelector && el.querySelector('video, input, button, nav')) continue;
+        const cs = window.getComputedStyle(el);
+        const z = parseInt(cs.zIndex || '0', 10);
+        if ((cs.position === 'fixed' || cs.position === 'absolute') && z >= 9999) {
+          const r = el.getBoundingClientRect();
+          const coversScreen = r.width >= vw * 0.7 && r.height >= vh * 0.55;
+          const isInvisible = parseFloat(cs.opacity || '1') < 0.15 ||
+            ((cs.backgroundColor === 'rgba(0, 0, 0, 0)' || cs.backgroundColor === 'transparent') &&
+             !(el.textContent || '').trim() && el.tagName !== 'IFRAME');
+          if (coversScreen && isInvisible) {
+            el.remove();
+            notifyShield('clickjack-overlay');
+          }
+        }
+      }
+    } catch (_) {}
+  }
+
+  // 6. Sweep Google tracking wrappers + YouTube pre-roll / mid-roll ads
   function sweepAds() {
     ensureStyle();
+    neutralizeClickjackOverlays();
     try {
+      if (location.hash === '#google_vignette') {
+        history.replaceState(null, '', location.pathname + location.search);
+      }
       const host = (location.hostname || '').toLowerCase();
       if (host.includes('google.')) {
         const anchors = document.querySelectorAll('a[href], a[ping], a[data-ping-url]');
@@ -443,24 +593,37 @@ class HeavenShield {
           }
         }
       }
-      const skipSelectors = [
-        '.ytp-ad-skip-button',
-        '.ytp-ad-skip-button-modern',
-        '.ytp-skip-ad-button',
-        '.videoAdUiSkipButton'
-      ];
-      for (const sel of skipSelectors) {
-        const btn = document.querySelector(sel);
-        if (btn) {
-          btn.click();
-          notifyShield('video-ad');
+      if (host.includes('youtube.com')) {
+        try {
+          if (window.ytInitialPlayerResponse && typeof window.ytInitialPlayerResponse === 'object') {
+            delete window.ytInitialPlayerResponse.adPlacements;
+            delete window.ytInitialPlayerResponse.playerAds;
+            delete window.ytInitialPlayerResponse.adSlots;
+          }
+        } catch (_) {}
+        const skipSelectors = [
+          '.ytp-skip-ad-button',
+          '.ytp-ad-skip-button',
+          '.ytp-ad-skip-button-modern',
+          '.ytp-ad-overlay-close-button',
+          '.videoAdUiSkipButton'
+        ];
+        for (const sel of skipSelectors) {
+          const btn = document.querySelector(sel);
+          if (btn) {
+            btn.click();
+            notifyShield('youtube-ad');
+          }
         }
-      }
-      const adPlayer = document.querySelector('.ad-showing video');
-      if (adPlayer && isFinite(adPlayer.duration) && adPlayer.duration > 0) {
-        adPlayer.muted = true;
-        adPlayer.currentTime = adPlayer.duration;
-        notifyShield('video-ad');
+        const adPlayer = document.querySelector('.html5-video-player.ad-showing video, .html5-video-player.ad-interrupting video, #movie_player.ad-showing video');
+        if (adPlayer) {
+          adPlayer.muted = true;
+          adPlayer.playbackRate = 16;
+          if (isFinite(adPlayer.duration) && adPlayer.duration > 0.3) {
+            adPlayer.currentTime = Math.max(0, adPlayer.duration - 0.05);
+          }
+          notifyShield('youtube-ad');
+        }
       }
     } catch (_) {}
   }

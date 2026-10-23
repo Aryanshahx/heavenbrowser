@@ -192,7 +192,7 @@ class ExtensionsController extends ChangeNotifier {
   }
 
   static const String chromeWebStoreHomeUrl =
-      'https://chromewebstore.google.com';
+      'https://chromewebstore.google.com/?hl=en';
   static const String _keyCustomScripts = 'hb.ext.customScripts.v9';
 
   static final RegExp _extIdPattern = RegExp(r'([a-p]{32})');
@@ -289,6 +289,17 @@ class ExtensionsController extends ChangeNotifier {
     );
   }
 
+  /// Returns true if [rawUrl] belongs to Google's Chrome Web Store.
+  static bool isChromeWebStoreUrl(String? rawUrl) {
+    if (rawUrl == null || rawUrl.trim().isEmpty) return false;
+    final Uri? u = Uri.tryParse(rawUrl.trim());
+    if (u == null) return false;
+    final String h = u.host.toLowerCase();
+    final String p = u.path.toLowerCase();
+    return h == 'chromewebstore.google.com' ||
+        (h == 'chrome.google.com' && p.startsWith('/webstore'));
+  }
+
   /// Extracts a 32-character Chrome Extension ID if [urlOrId] is a Chrome Web Store
   /// detail page URL or direct extension ID; returns null otherwise.
   static String? extractChromeWebStoreId(String? urlOrId) {
@@ -307,6 +318,61 @@ class ExtensionsController extends ChangeNotifier {
       }
     }
     return null;
+  }
+
+  /// Searches Chrome Web Store extensions directly in the background without opening
+  /// any mobile-restricted page, returning 1-tap installable CRX catalog items.
+  Future<List<ChromeWebStoreCatalogItem>> searchWebStoreExtensions(
+    String rawQuery,
+  ) async {
+    final String q = rawQuery.trim();
+    if (q.isEmpty) return const <ChromeWebStoreCatalogItem>[];
+
+    final List<ChromeWebStoreCatalogItem> localMatches =
+        featuredWebStoreCatalog
+            .where(
+              (ChromeWebStoreCatalogItem item) =>
+                  item.name.toLowerCase().contains(q.toLowerCase()) ||
+                  item.description.toLowerCase().contains(q.toLowerCase()) ||
+                  item.category.toLowerCase().contains(q.toLowerCase()),
+            )
+            .toList();
+
+    final Map<String, Object?> bg = await NativeShieldBridge.instance
+        .searchGoogleInBackground(query: q, tab: 'cws');
+    final Object? rawWeb = bg['webResults'];
+    final Set<String> seenIds = <String>{
+      for (final ChromeWebStoreCatalogItem m in localMatches) m.extensionId,
+    };
+    final List<ChromeWebStoreCatalogItem> out = <ChromeWebStoreCatalogItem>[
+      ...localMatches,
+    ];
+
+    if (rawWeb is List<Object?>) {
+      for (final Object? entry in rawWeb) {
+        if (entry is! Map<Object?, Object?>) continue;
+        final String url = entry['url']?.toString().trim() ?? '';
+        final String? extId = extractChromeWebStoreId(url);
+        if (extId == null || !seenIds.add(extId)) continue;
+        String title = entry['title']?.toString().trim() ?? 'Chrome Extension';
+        title = title
+            .replaceAll(RegExp(r'\s*[-–|]\s*Chrome Web Store.*$', caseSensitive: false), '')
+            .trim();
+        final String snippet = entry['snippet']?.toString().trim() ?? '';
+        out.add(
+          ChromeWebStoreCatalogItem(
+            extensionId: extId,
+            name: title.isEmpty ? 'Chrome Extension' : title,
+            category: 'Web Store',
+            description: snippet.isEmpty
+                ? 'Official Desktop Chrome Web Store (.crx) extension'
+                : snippet,
+            storeUrl: url,
+          ),
+        );
+      }
+    }
+    return out;
   }
 
   void _loadLocalScripts() {
