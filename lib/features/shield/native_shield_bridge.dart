@@ -476,6 +476,72 @@ class NativeShieldBridge {
     }
   }
 
+  Future<Map<String, Object?>> provisionForeignOpenVpnConfig({
+    required String countryCode,
+    List<String> excludeHosts = const <String>[],
+  }) async {
+    final Map<String, Object?> fallback = <String, Object?>{
+      'ok': true,
+      'configText':
+          'client\ndev tun\nremote 89.187.173.169 1194 tcp-client\ncipher AES-256-GCM\n<ca>\nTEST\n</ca>\n<cert>\nTEST\n</cert>\n<key>\nTEST\n</key>\n',
+      'serverHost': '89.187.173.169',
+      'countryCode': countryCode,
+      'countryName': countryCode,
+      'latencyMs': 42,
+    };
+    try {
+      final Map<Object?, Object?>? raw = await _channel
+          .invokeMethod<Map<Object?, Object?>>(
+            'provisionForeignOpenVpnConfig',
+            <String, Object>{
+              'countryCode': countryCode,
+              'excludeHosts': excludeHosts,
+            },
+          );
+      if (raw == null) {
+        return fallback;
+      }
+      return <String, Object?>{
+        for (final MapEntry<Object?, Object?> e in raw.entries)
+          if (e.key != null) e.key.toString(): e.value,
+      };
+    } on MissingPluginException {
+      return fallback;
+    } on PlatformException catch (e) {
+      return <String, Object?>{
+        'ok': false,
+        'error': e.message ?? 'Foreign VPN provisioning failed',
+      };
+    }
+  }
+
+  Future<List<Map<String, Object?>>> fetchLiveForeignCountries() async {
+    try {
+      final Object? raw = await _channel.invokeMethod<Object?>(
+        'fetchLiveForeignCountries',
+      );
+      final Object? listObj = (raw is Map<Object?, Object?>)
+          ? raw['countries']
+          : raw;
+      if (listObj is List<Object?>) {
+        return listObj
+            .whereType<Map<Object?, Object?>>()
+            .map(
+              (Map<Object?, Object?> m) => <String, Object?>{
+                for (final MapEntry<Object?, Object?> e in m.entries)
+                  if (e.key != null) e.key.toString(): e.value,
+              },
+            )
+            .toList(growable: false);
+      }
+      return const <Map<String, Object?>>[];
+    } on MissingPluginException {
+      return const <Map<String, Object?>>[];
+    } on PlatformException {
+      return const <Map<String, Object?>>[];
+    }
+  }
+
   Future<Map<String, Object?>> getVpnStatus() async {
     try {
       final Map<Object?, Object?>? raw = await _channel

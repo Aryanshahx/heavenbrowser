@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 import 'package:url_launcher/url_launcher.dart';
@@ -58,6 +59,7 @@ class BrowserEngine extends ChangeNotifier {
   String? _errorMessage;
   String? _lastCompletedWebUrl;
   int _lastDownloadInterceptMs = 0;
+  bool _controllerSettingsDirty = true;
 
   WebViewController? get controller => _controller;
   String? get currentUrl => _currentUrl;
@@ -110,6 +112,7 @@ class BrowserEngine extends ChangeNotifier {
     _controller = webController;
 
     unawaited(_applyControllerSettings());
+    unawaited(_prewarmGoogleSearchConnection());
 
     unawaited(
       webController.addJavaScriptChannel(
@@ -317,6 +320,18 @@ class BrowserEngine extends ChangeNotifier {
       return NavigationDecision.prevent;
     }
 
+    // Bypass Google's /url?q=... redirect wrapper directly to the destination
+    if (request.isMainFrame) {
+      final Uri? unwrappedGoogle = OmniboxParser.unwrapGoogleRedirectUri(uri);
+      if (unwrappedGoogle != null && unwrappedGoogle != uri) {
+        await _controller?.loadRequest(
+          unwrappedGoogle,
+          headers: _clientHintHeaders,
+        );
+        return NavigationDecision.prevent;
+      }
+    }
+
     // If Desktop Mode is enabled and a site redirects to m.example.com, rewrite to desktop host
     if (request.isMainFrame && settings.desktopMode) {
       final Uri desktopUri = rewriteMobileToDesktopUri(uri);
@@ -385,7 +400,26 @@ class BrowserEngine extends ChangeNotifier {
   }
 
   void _onSettingsChanged() {
+    _controllerSettingsDirty = true;
     unawaited(_applyControllerSettings());
+  }
+
+  Future<void> _prewarmGoogleSearchConnection() async {
+    final HttpClient client = HttpClient()
+      ..connectionTimeout = const Duration(seconds: 3);
+    try {
+      final HttpClientRequest req = await client.getUrl(
+        Uri.parse('https://www.google.com/generate_204'),
+      );
+      final HttpClientResponse res = await req.close().timeout(
+        const Duration(seconds: 3),
+      );
+      await res.drain<void>();
+    } catch (_) {
+      // Best-effort DNS + TLS pre-warm.
+    } finally {
+      client.close(force: true);
+    }
   }
 
   Future<void> _applyControllerSettings() async {
@@ -393,6 +427,7 @@ class BrowserEngine extends ChangeNotifier {
     if (webController == null) {
       return;
     }
+    _controllerSettingsDirty = false;
 
     await webController.setJavaScriptMode(
       settings.javascriptEnabled
@@ -501,7 +536,19 @@ class BrowserEngine extends ChangeNotifier {
     _pageBlockedDomains.clear();
     _pullProgress = 0;
 
-    final String targetUrl = uri.toString();
+    // On real Android WebView, Heaven Search uses Google Search Engine directly
+    // at native Chromium HTTP/3 speed with Heaven Shield ad & redirect stripping.
+    Uri effectiveUri = uri;
+    if (enablePlatformWebView &&
+        uri.scheme == 'heaven' &&
+        uri.host == 'search') {
+      final String q = OmniboxParser.extractHeavenQuery(uri.toString());
+      effectiveUri = q.isEmpty
+          ? Uri.parse('https://www.google.com')
+          : OmniboxParser.buildGoogleEngineUri(q);
+    }
+
+    final String targetUrl = effectiveUri.toString();
     _pushVirtualLocation(targetUrl);
 
     if (OmniboxParser.isHeavenSearchUrl(targetUrl)) {
@@ -516,7 +563,9 @@ class BrowserEngine extends ChangeNotifier {
       return;
     }
 
-    Uri finalUri = settings.desktopMode ? rewriteMobileToDesktopUri(uri) : uri;
+    Uri finalUri = settings.desktopMode
+        ? rewriteMobileToDesktopUri(effectiveUri)
+        : effectiveUri;
     final bool shieldActive =
         settings.shieldEnabled && !settings.isHostTrusted(finalUri.host);
     if (shieldActive) {
@@ -544,7 +593,9 @@ class BrowserEngine extends ChangeNotifier {
       );
     }
 
-    await _applyControllerSettings();
+    if (_controllerSettingsDirty) {
+      await _applyControllerSettings();
+    }
     await _controller?.loadRequest(finalUri, headers: _clientHintHeaders);
     if (_controller == null) {
       _isLoading = false;

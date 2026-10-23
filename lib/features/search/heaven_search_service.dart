@@ -372,29 +372,39 @@ class HeavenSearchService {
     if (q.length < 2) {
       return const <String>[];
     }
-    try {
-      final Uri uri = Uri.parse(
+    final List<Uri> endpoints = <Uri>[
+      Uri.parse(
+        'https://suggestqueries.google.com/complete/search?client=firefox&hl=en&q=${Uri.encodeQueryComponent(q)}',
+      ),
+      Uri.parse(
         'https://duckduckgo.com/ac/?q=${Uri.encodeQueryComponent(q)}&type=list',
-      );
-      final http.Response res = await _client
-          .get(uri, headers: _browserHeaders)
-          .timeout(const Duration(seconds: 3));
-      if (res.statusCode != 200) {
-        return const <String>[];
+      ),
+    ];
+    for (final Uri uri in endpoints) {
+      try {
+        final http.Response res = await _client
+            .get(uri, headers: _browserHeaders)
+            .timeout(const Duration(milliseconds: 1800));
+        if (res.statusCode != 200) {
+          continue;
+        }
+        final Object? decoded = jsonDecode(res.body);
+        if (decoded is List<Object?> &&
+            decoded.length >= 2 &&
+            decoded[1] is List<Object?>) {
+          final List<Object?> rawItems = decoded[1] as List<Object?>;
+          final List<String> suggestions = rawItems
+              .map((Object? e) => e?.toString().trim() ?? '')
+              .where((String s) => s.isNotEmpty)
+              .take(7)
+              .toList(growable: false);
+          if (suggestions.isNotEmpty) {
+            return suggestions;
+          }
+        }
+      } catch (_) {
+        // Try next autocomplete provider.
       }
-      final Object? decoded = jsonDecode(res.body);
-      if (decoded is List<Object?> &&
-          decoded.length >= 2 &&
-          decoded[1] is List<Object?>) {
-        final List<Object?> rawItems = decoded[1] as List<Object?>;
-        return rawItems
-            .map((Object? e) => e?.toString().trim() ?? '')
-            .where((String s) => s.isNotEmpty)
-            .take(6)
-            .toList(growable: false);
-      }
-    } catch (_) {
-      // Fail silently on offline/autocomplete timeout.
     }
     return const <String>[];
   }

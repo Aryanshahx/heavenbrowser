@@ -535,6 +535,25 @@ public class HeavenShieldPlugin
         }
         break;
 
+      case "provisionForeignOpenVpnConfig":
+        if (vpnManager != null) {
+          String countryCode = call.argument("countryCode");
+          List<String> excludeHosts = call.argument("excludeHosts");
+          vpnManager.provisionForeignOpenVpnConfig(
+              countryCode != null ? countryCode : "AUTO_FOREIGN", excludeHosts, result);
+        } else {
+          result.success(Collections.singletonMap("ok", false));
+        }
+        break;
+
+      case "fetchLiveForeignCountries":
+        if (vpnManager != null) {
+          vpnManager.fetchLiveForeignCountries(result);
+        } else {
+          result.success(Collections.singletonMap("ok", false));
+        }
+        break;
+
       case "validateWireGuardConfig":
         if (vpnManager != null) {
           String rawCfg = call.argument("configText");

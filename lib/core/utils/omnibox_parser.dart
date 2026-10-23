@@ -1,15 +1,27 @@
 enum SearchEngine {
   heaven(
-    label: 'Heaven Search',
+    label: 'Heaven Search (Google Engine)',
     shortLabel: 'Heaven',
     homeUrl: 'heaven://search',
     queryPrefix: 'heaven://search?q=',
+  ),
+  google(
+    label: 'Google Search',
+    shortLabel: 'Google',
+    homeUrl: 'https://www.google.com',
+    queryPrefix: 'https://www.google.com/search?safe=off&q=',
+  ),
+  heavenLite(
+    label: 'Heaven Lite (Multi-Source)',
+    shortLabel: 'Heaven Lite',
+    homeUrl: 'heaven://lite',
+    queryPrefix: 'heaven://lite?q=',
   ),
   duckDuckGo(
     label: 'DuckDuckGo',
     shortLabel: 'DDG',
     homeUrl: 'https://duckduckgo.com',
-    queryPrefix: 'https://duckduckgo.com/?q=',
+    queryPrefix: 'https://duckduckgo.com/?kp=-2&q=',
   ),
   brave(
     label: 'Brave Search',
@@ -22,12 +34,6 @@ enum SearchEngine {
     shortLabel: 'Startpage',
     homeUrl: 'https://www.startpage.com',
     queryPrefix: 'https://www.startpage.com/sp/search?query=',
-  ),
-  google(
-    label: 'Google',
-    shortLabel: 'Google',
-    homeUrl: 'https://www.google.com',
-    queryPrefix: 'https://www.google.com/search?q=',
   );
 
   const SearchEngine({
@@ -42,7 +48,8 @@ enum SearchEngine {
   final String homeUrl;
   final String queryPrefix;
 
-  bool get isNativeHeaven => this == SearchEngine.heaven;
+  bool get isNativeHeaven =>
+      this == SearchEngine.heaven || this == SearchEngine.heavenLite;
 
   String buildSearchUrl(String rawQuery) {
     return '$queryPrefix${Uri.encodeQueryComponent(rawQuery.trim())}';
@@ -79,7 +86,17 @@ class OmniboxParser {
       return false;
     }
     final Uri? uri = Uri.tryParse(url);
-    return uri != null && uri.scheme == 'heaven' && uri.host == 'search';
+    return uri != null &&
+        uri.scheme == 'heaven' &&
+        (uri.host == 'search' || uri.host == 'lite');
+  }
+
+  static bool isHeavenLiteUrl(String? url) {
+    if (url == null || url.isEmpty) {
+      return false;
+    }
+    final Uri? uri = Uri.tryParse(url);
+    return uri != null && uri.scheme == 'heaven' && uri.host == 'lite';
   }
 
   static String extractHeavenQuery(String? url) {
@@ -91,6 +108,53 @@ class OmniboxParser {
       return '';
     }
     return (uri.queryParameters['q'] ?? '').trim();
+  }
+
+  /// Extracts the search query if [url] is a Google Search results URL.
+  static String extractGoogleSearchQuery(String? url) {
+    if (url == null || url.isEmpty) {
+      return '';
+    }
+    final Uri? uri = Uri.tryParse(url);
+    if (uri == null) {
+      return '';
+    }
+    final String host = uri.host.toLowerCase();
+    final bool isGoogleHost =
+        host == 'www.google.com' ||
+        host == 'google.com' ||
+        host == 'www.google.co.in' ||
+        host == 'google.co.in';
+    if (!isGoogleHost || uri.path != '/search') {
+      return '';
+    }
+    return (uri.queryParameters['q'] ?? '').trim();
+  }
+
+  /// Builds a clean, fast, unrestricted Google Search Engine URI.
+  static Uri buildGoogleEngineUri(String query) {
+    return Uri.https('www.google.com', '/search', <String, String>{
+      'q': query.trim(),
+      'safe': 'off',
+      'pws': '0',
+    });
+  }
+
+  /// Unwraps `https://www.google.com/url?q=https://...` tracking redirects to direct URLs.
+  static Uri? unwrapGoogleRedirectUri(Uri uri) {
+    final String host = uri.host.toLowerCase();
+    if ((host == 'www.google.com' ||
+            host == 'google.com' ||
+            host == 'www.google.co.in') &&
+        uri.path == '/url') {
+      final String? target =
+          uri.queryParameters['q'] ?? uri.queryParameters['url'];
+      if (target != null &&
+          (target.startsWith('https://') || target.startsWith('http://'))) {
+        return Uri.tryParse(target);
+      }
+    }
+    return null;
   }
 
   static Uri resolveInput(
@@ -178,6 +242,10 @@ class OmniboxParser {
     if (isHeavenSearchUrl(url)) {
       final String q = extractHeavenQuery(url);
       return q.isEmpty ? 'Heaven Search' : 'Heaven Search • $q';
+    }
+    final String googleQ = extractGoogleSearchQuery(url);
+    if (googleQ.isNotEmpty) {
+      return 'Google • $googleQ';
     }
     final Uri? uri = Uri.tryParse(url);
     if (uri == null || uri.host.isEmpty) {

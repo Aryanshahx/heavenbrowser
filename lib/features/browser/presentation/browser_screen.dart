@@ -111,6 +111,10 @@ class _BrowserScreenState extends State<BrowserScreen>
     if (OmniboxParser.isHeavenSearchUrl(url)) {
       return OmniboxParser.extractHeavenQuery(url);
     }
+    final String googleQ = OmniboxParser.extractGoogleSearchQuery(url);
+    if (googleQ.isNotEmpty) {
+      return googleQ;
+    }
     return url ?? '';
   }
 
@@ -184,7 +188,7 @@ class _BrowserScreenState extends State<BrowserScreen>
       }
       return;
     }
-    _suggestDebounce = Timer(const Duration(milliseconds: 180), () async {
+    _suggestDebounce = Timer(const Duration(milliseconds: 90), () async {
       final List<String> fetched = await widget.searchService.fetchSuggestions(
         trimmed,
       );

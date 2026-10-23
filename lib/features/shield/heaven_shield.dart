@@ -372,9 +372,15 @@ class HeavenShield {
     iframe[src*="adsterra"],
     [data-ad-slot],
     [data-ad-client],
-    [data-google-query-id],
+    #tads,
+    #bottomads,
+    #tvcap,
+    [data-text-ad],
+    [aria-label="Ads"],
     [aria-label="Advertisement"],
     [aria-label="Sponsored"],
+    mobile-promo,
+    .SwDSGe,
     .ad-banner,
     .ad-container,
     .ad-slot,
@@ -413,10 +419,30 @@ class HeavenShield {
   }
   ensureStyle();
 
-  // Auto-skip video pre-rolls on YouTube mobile/desktop web
+  // Auto-skip video pre-rolls on YouTube mobile/desktop web & unwrap Google redirect links
   function sweepAds() {
     ensureStyle();
     try {
+      const host = (location.hostname || '').toLowerCase();
+      if (host.includes('google.')) {
+        const anchors = document.querySelectorAll('a[href], a[ping], a[data-ping-url]');
+        for (let i = 0; i < anchors.length; i++) {
+          const a = anchors[i];
+          if (a.hasAttribute('ping')) a.removeAttribute('ping');
+          if (a.hasAttribute('data-ping-url')) a.removeAttribute('data-ping-url');
+          if (a.hasAttribute('onmousedown')) a.removeAttribute('onmousedown');
+          const href = a.getAttribute('href') || '';
+          if (href.startsWith('/url?') || href.includes('google.com/url?')) {
+            try {
+              const u = new URL(href, location.origin);
+              const target = u.searchParams.get('q') || u.searchParams.get('url');
+              if (target && (target.startsWith('https://') || target.startsWith('http://'))) {
+                a.setAttribute('href', target);
+              }
+            } catch (_) {}
+          }
+        }
+      }
       const skipSelectors = [
         '.ytp-ad-skip-button',
         '.ytp-ad-skip-button-modern',

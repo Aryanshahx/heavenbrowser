@@ -31,7 +31,20 @@ class HeavenVpnScreen extends StatelessWidget {
             ),
             actions: <Widget>[
               IconButton(
-                tooltip: 'Add Country .conf Profile',
+                tooltip: 'Refresh Live Foreign Servers',
+                icon: vpn.isRefreshingServers
+                    ? const SizedBox(
+                        width: 18,
+                        height: 18,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Icon(Icons.public_rounded),
+                onPressed: vpn.isRefreshingServers
+                    ? null
+                    : vpn.refreshLiveForeignServers,
+              ),
+              IconButton(
+                tooltip: 'Import Custom .conf / .ovpn',
                 icon: const Icon(Icons.add_moderator_outlined),
                 onPressed: () => _showAddProfileSheet(context),
               ),
@@ -78,7 +91,7 @@ class HeavenVpnScreen extends StatelessWidget {
                   children: <Widget>[
                     const Expanded(
                       child: Text(
-                        'VPN Servers & Country Profiles',
+                        'Foreign Country Servers (Free)',
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
                         style: TextStyle(
@@ -88,19 +101,61 @@ class HeavenVpnScreen extends StatelessWidget {
                       ),
                     ),
                     TextButton.icon(
-                      onPressed: () => _showAddProfileSheet(context),
-                      icon: const Icon(Icons.add_rounded, size: 17),
-                      label: const Text('Import .conf'),
+                      onPressed: vpn.isRefreshingServers
+                          ? null
+                          : vpn.refreshLiveForeignServers,
+                      icon: const Icon(Icons.sync_rounded, size: 16),
+                      label: const Text('More'),
                     ),
                   ],
                 ),
                 const SizedBox(height: 6),
-                for (final VpnProfile profile in vpn.allProfiles) ...<Widget>[
+                for (final VpnProfile profile in vpn.foreignProfiles) ...<Widget>[
                   _buildProfileTile(context, colors, isDark, profile),
                   const SizedBox(height: 8),
                 ],
+                const SizedBox(height: 12),
+                const Text(
+                  'Low-Ping Local Unblocker',
+                  style: TextStyle(fontSize: 15, fontWeight: FontWeight.w800),
+                ),
                 const SizedBox(height: 8),
-                _buildFreeCountriesTipCard(colors, isDark),
+                _buildProfileTile(context, colors, isDark, vpn.builtInWarpProfile),
+                if (vpn.customProfiles.isNotEmpty) ...<Widget>[
+                  const SizedBox(height: 16),
+                  Row(
+                    children: <Widget>[
+                      const Expanded(
+                        child: Text(
+                          'Custom Imported Configs',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            fontSize: 15,
+                            fontWeight: FontWeight.w800,
+                          ),
+                        ),
+                      ),
+                      TextButton.icon(
+                        onPressed: () => _showAddProfileSheet(context),
+                        icon: const Icon(Icons.add_rounded, size: 16),
+                        label: const Text('Add'),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 6),
+                  for (final VpnProfile profile in vpn.customProfiles) ...<Widget>[
+                    _buildProfileTile(context, colors, isDark, profile),
+                    const SizedBox(height: 8),
+                  ],
+                ] else ...<Widget>[
+                  const SizedBox(height: 12),
+                  OutlinedButton.icon(
+                    onPressed: () => _showAddProfileSheet(context),
+                    icon: const Icon(Icons.upload_file_rounded, size: 18),
+                    label: const Text('Import Custom WireGuard / OpenVPN'),
+                  ),
+                ],
               ],
             ),
           ),
@@ -195,7 +250,7 @@ class HeavenVpnScreen extends StatelessWidget {
           ),
           const SizedBox(height: 4),
           Text(
-            '${activeProfile.name} • ${activeProfile.countryLabel}',
+            '${activeProfile.flagEmoji} ${activeProfile.name} • ${activeProfile.countryLabel}',
             textAlign: TextAlign.center,
             maxLines: 2,
             overflow: TextOverflow.ellipsis,
@@ -258,7 +313,7 @@ class HeavenVpnScreen extends StatelessWidget {
         ),
         subtitle: Text(
           vpn.browserOnly
-              ? 'Only Heaven Browser uses the VPN. Other phone apps stay on normal Wi-Fi/5G.'
+              ? 'Only Heaven Browser uses the foreign VPN. WhatsApp, UPI & phone apps stay on local Wi-Fi/5G.'
               : 'Entire device traffic is routed through Heaven VPN.',
           style: const TextStyle(fontSize: 12),
         ),
@@ -281,7 +336,7 @@ class HeavenVpnScreen extends StatelessWidget {
       borderRadius: BorderRadius.circular(16),
       child: InkWell(
         borderRadius: BorderRadius.circular(16),
-        onTap: () => vpn.selectProfile(profile.id),
+        onTap: vpn.isBusy ? null : () => vpn.selectProfile(profile.id),
         child: Container(
           padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 11),
           decoration: BoxDecoration(
@@ -295,13 +350,7 @@ class HeavenVpnScreen extends StatelessWidget {
           ),
           child: Row(
             children: <Widget>[
-              Icon(
-                profile.isBuiltInWarp
-                    ? Icons.bolt_rounded
-                    : Icons.flag_circle_rounded,
-                color: selected ? colors.primary : colors.onSurfaceVariant,
-                size: 24,
-              ),
+              Text(profile.flagEmoji, style: const TextStyle(fontSize: 22)),
               const SizedBox(width: 10),
               Expanded(
                 child: Column(
@@ -321,7 +370,7 @@ class HeavenVpnScreen extends StatelessWidget {
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                       style: TextStyle(
-                        fontSize: 12,
+                        fontSize: 11.5,
                         color: colors.onSurfaceVariant,
                       ),
                     ),
@@ -335,7 +384,7 @@ class HeavenVpnScreen extends StatelessWidget {
                   onPressed: vpn.isBusy ? null : vpn.rotateFreeWarpIdentity,
                   icon: const Icon(Icons.key_rounded, size: 18),
                 )
-              else
+              else if (!profile.isBuiltIn)
                 IconButton(
                   tooltip: 'Remove profile',
                   visualDensity: VisualDensity.compact,
@@ -356,44 +405,6 @@ class HeavenVpnScreen extends StatelessWidget {
             ],
           ),
         ),
-      ),
-    );
-  }
-
-  Widget _buildFreeCountriesTipCard(ColorScheme colors, bool isDark) {
-    return Container(
-      padding: const EdgeInsets.all(14),
-      decoration: BoxDecoration(
-        color: colors.primary.withValues(alpha: isDark ? 0.10 : 0.06),
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: colors.primary.withValues(alpha: 0.25)),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: <Widget>[
-          Row(
-            children: <Widget>[
-              Icon(Icons.language_rounded, size: 18, color: colors.primary),
-              const SizedBox(width: 8),
-              const Expanded(
-                child: Text(
-                  'Want USA, Japan, or Netherlands for Free?',
-                  style: TextStyle(fontWeight: FontWeight.w800, fontSize: 13),
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 6),
-          Text(
-            '1. Instant Free VPN uses Cloudflare WARP WireGuard (unlimited speed, zero signup).\n'
-            '2. To pick a specific country (USA, NL, JP, RO, PL), download a free WireGuard .conf from ProtonVPN Free (no credit card needed) and tap "Import .conf" above.',
-            style: TextStyle(
-              fontSize: 12,
-              height: 1.4,
-              color: colors.onSurfaceVariant,
-            ),
-          ),
-        ],
       ),
     );
   }
@@ -423,7 +434,7 @@ class HeavenVpnScreen extends StatelessWidget {
                           children: <Widget>[
                             const Expanded(
                               child: Text(
-                                'Import Country WireGuard .conf',
+                                'Import Custom .conf / .ovpn',
                                 style: TextStyle(
                                   fontSize: 16,
                                   fontWeight: FontWeight.w800,
@@ -452,7 +463,7 @@ class HeavenVpnScreen extends StatelessWidget {
                         TextField(
                           controller: nameCtrl,
                           decoration: const InputDecoration(
-                            labelText: 'Profile Name (e.g. Proton USA Free)',
+                            labelText: 'Profile Name (e.g. UK London VPN)',
                             border: OutlineInputBorder(),
                             isDense: true,
                           ),
@@ -461,7 +472,7 @@ class HeavenVpnScreen extends StatelessWidget {
                         TextField(
                           controller: countryCtrl,
                           decoration: const InputDecoration(
-                            labelText: 'Country (e.g. United States / Japan)',
+                            labelText: 'Country (e.g. United Kingdom)',
                             border: OutlineInputBorder(),
                             isDense: true,
                           ),
@@ -476,9 +487,9 @@ class HeavenVpnScreen extends StatelessWidget {
                             fontFamily: 'monospace',
                           ),
                           decoration: const InputDecoration(
-                            labelText: 'WireGuard .conf contents',
+                            labelText: 'WireGuard (.conf) or OpenVPN (.ovpn)',
                             hintText:
-                                '[Interface]\nPrivateKey = ...\nAddress = ...\n\n[Peer]\nPublicKey = ...\nEndpoint = ...',
+                                'Paste [Interface]...[Peer]... OR client\\ndev tun\\nremote ...',
                             border: OutlineInputBorder(),
                           ),
                         ),

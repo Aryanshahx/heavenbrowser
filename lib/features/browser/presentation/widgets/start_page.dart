@@ -500,23 +500,7 @@ class _StartPageState extends State<StartPage> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: <Widget>[
-              // 16:9 Google Discover Cover Image
-              ClipRRect(
-                borderRadius: const BorderRadius.vertical(
-                  top: Radius.circular(19),
-                ),
-                child: AspectRatio(
-                  aspectRatio: 16 / 9,
-                  child: hasImage
-                      ? Image.network(
-                          item.imageUrl!,
-                          fit: BoxFit.cover,
-                          errorBuilder: (_, _, _) =>
-                              _buildFallbackHeroBanner(colors, item),
-                        )
-                      : _buildFallbackHeroBanner(colors, item),
-                ),
-              ),
+              if (hasImage) _DiscoverCoverImage(imageUrl: item.imageUrl!),
               Padding(
                 padding: const EdgeInsets.fromLTRB(14, 12, 14, 14),
                 child: Column(
@@ -599,49 +583,6 @@ class _StartPageState extends State<StartPage> {
             ],
           ),
         ),
-      ),
-    );
-  }
-
-  Widget _buildFallbackHeroBanner(
-    ColorScheme colors,
-    PersonalizedNewsItem item,
-  ) {
-    return Container(
-      decoration: BoxDecoration(
-        gradient: LinearGradient(
-          begin: Alignment.topLeft,
-          end: Alignment.bottomRight,
-          colors: <Color>[
-            AppTheme.navyElevated,
-            colors.primary.withValues(alpha: 0.35),
-          ],
-        ),
-      ),
-      alignment: Alignment.center,
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: <Widget>[
-          SiteLogo(
-            urlOrDomain: item.sourceUrl,
-            fallbackLabel: item.sourceName,
-            size: 32,
-            borderRadius: 9,
-          ),
-          const SizedBox(width: 10),
-          Flexible(
-            child: Text(
-              item.sourceName,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: const TextStyle(
-                color: Colors.white,
-                fontWeight: FontWeight.w800,
-                fontSize: 15,
-              ),
-            ),
-          ),
-        ],
       ),
     );
   }
@@ -886,6 +827,66 @@ class _QuickSiteTile extends StatelessWidget {
             ),
           ),
         ],
+      ),
+    );
+  }
+}
+
+class _DiscoverCoverImage extends StatefulWidget {
+  const _DiscoverCoverImage({required this.imageUrl});
+
+  final String imageUrl;
+
+  @override
+  State<_DiscoverCoverImage> createState() => _DiscoverCoverImageState();
+}
+
+class _DiscoverCoverImageState extends State<_DiscoverCoverImage> {
+  bool _failed = false;
+
+  @override
+  void didUpdateWidget(covariant _DiscoverCoverImage oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.imageUrl != widget.imageUrl) {
+      _failed = false;
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (_failed) {
+      return const SizedBox.shrink();
+    }
+    final ColorScheme colors = Theme.of(context).colorScheme;
+    return ClipRRect(
+      borderRadius: const BorderRadius.vertical(top: Radius.circular(19)),
+      child: AspectRatio(
+        aspectRatio: 16 / 9,
+        child: Image.network(
+          widget.imageUrl,
+          fit: BoxFit.cover,
+          loadingBuilder:
+              (
+                BuildContext context,
+                Widget child,
+                ImageChunkEvent? loadingProgress,
+              ) {
+                if (loadingProgress == null) {
+                  return child;
+                }
+                return Container(
+                  color: colors.surfaceContainerHighest.withValues(alpha: 0.35),
+                );
+              },
+          errorBuilder: (_, _, _) {
+            WidgetsBinding.instance.addPostFrameCallback((_) {
+              if (mounted && !_failed) {
+                setState(() => _failed = true);
+              }
+            });
+            return const SizedBox.shrink();
+          },
+        ),
       ),
     );
   }

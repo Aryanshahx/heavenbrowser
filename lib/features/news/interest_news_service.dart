@@ -5,27 +5,37 @@ import 'dart:math' as math;
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
-
-import '../../core/constants/app_constants.dart';
 import '../../core/utils/omnibox_parser.dart';
 
 enum NewsCategoryTab {
   forYou(
     label: 'For You',
-    query: 'India world technology science entertainment',
+    query: 'India technology science world',
     directRssUrls: <({String source, String url})>[
+      (
+        source: 'Times of India',
+        url: 'https://timesofindia.indiatimes.com/rssfeedstopstories.cms',
+      ),
       (
         source: 'NDTV',
         url: 'https://feeds.feedburner.com/ndtvnews-top-stories',
       ),
       (source: 'BBC News', url: 'https://feeds.bbci.co.uk/news/world/rss.xml'),
       (source: 'The Verge', url: 'https://www.theverge.com/rss/index.xml'),
+      (
+        source: 'Ars Technica',
+        url: 'https://feeds.arstechnica.com/arstechnica/index',
+      ),
     ],
   ),
   india(
     label: 'India',
-    query: 'India latest news headlines',
+    query: 'India breaking news',
     directRssUrls: <({String source, String url})>[
+      (
+        source: 'Times of India',
+        url: 'https://timesofindia.indiatimes.com/rssfeedstopstories.cms',
+      ),
       (
         source: 'NDTV',
         url: 'https://feeds.feedburner.com/ndtvnews-top-stories',
@@ -38,9 +48,15 @@ enum NewsCategoryTab {
   ),
   tech(
     label: 'Tech & AI',
-    query: 'Technology AI smartphones software',
+    query: 'AI smartphones technology',
     directRssUrls: <({String source, String url})>[
       (source: 'The Verge', url: 'https://www.theverge.com/rss/index.xml'),
+      (
+        source: 'Ars Technica',
+        url: 'https://feeds.arstechnica.com/arstechnica/index',
+      ),
+      (source: 'Wired', url: 'https://www.wired.com/feed/rss'),
+      (source: 'Engadget', url: 'https://www.engadget.com/rss.xml'),
       (
         source: 'BBC Tech',
         url: 'https://feeds.bbci.co.uk/news/technology/rss.xml',
@@ -49,7 +65,7 @@ enum NewsCategoryTab {
   ),
   entertainment(
     label: 'Movies & Showbiz',
-    query: 'Movies Bollywood Hollywood OTT',
+    query: 'Bollywood Hollywood movies',
     directRssUrls: <({String source, String url})>[
       (
         source: 'BBC Entertainment',
@@ -60,7 +76,7 @@ enum NewsCategoryTab {
   ),
   sports(
     label: 'Sports',
-    query: 'Cricket IPL Football sports',
+    query: 'India Cricket IPL sports',
     directRssUrls: <({String source, String url})>[
       (source: 'BBC Sport', url: 'https://feeds.bbci.co.uk/sport/rss.xml'),
       (
@@ -71,14 +87,14 @@ enum NewsCategoryTab {
   ),
   gaming(
     label: 'Gaming',
-    query: 'Video games esports PC mobile gaming',
+    query: 'PlayStation PC video games',
     directRssUrls: <({String source, String url})>[
       (source: 'IGN', url: 'https://feeds.feedburner.com/ign/all'),
     ],
   ),
   business(
     label: 'Business',
-    query: 'Business markets startups crypto',
+    query: 'India stock market startups',
     directRssUrls: <({String source, String url})>[
       (
         source: 'BBC Business',
@@ -88,11 +104,15 @@ enum NewsCategoryTab {
         source: 'NDTV Profit',
         url: 'https://feeds.feedburner.com/ndtvprofit-latest',
       ),
+      (
+        source: 'CoinDesk',
+        url: 'https://www.coindesk.com/arc/outboundfeeds/rss/',
+      ),
     ],
   ),
   science(
     label: 'Science',
-    query: 'Space science discoveries ISRO NASA',
+    query: 'ISRO NASA space astronomy',
     directRssUrls: <({String source, String url})>[
       (source: 'Space.com', url: 'https://www.space.com/feeds/all'),
       (
@@ -135,6 +155,9 @@ class PersonalizedNewsItem {
   final String? imageUrl;
   final String? matchedTopic;
   final double affinityScore;
+
+  bool get hasValidImage =>
+      imageUrl != null && imageUrl!.trim().startsWith('http');
 
   Map<String, Object?> toJson() => <String, Object?>{
     'title': title,
@@ -184,11 +207,11 @@ class InterestEntry {
   final int updatedAtMs;
 
   double decayedScore(int nowMs) {
-    final double days = math.max(0.0, (nowMs - updatedAtMs) / 86400000.0);
-    return score * math.pow(0.88, days);
+    final double elapsedDays = math.max(0.0, (nowMs - updatedAtMs) / 86400000);
+    return score * math.pow(0.84, elapsedDays);
   }
 
-  Map<String, Object> toJson() => <String, Object>{
+  Map<String, Object?> toJson() => <String, Object?>{
     'key': key,
     'label': label,
     'query': query,
@@ -216,41 +239,34 @@ class InterestProfileController extends ChangeNotifier {
 
   static const String _storageKey = 'hb.interestProfile.v5';
 
-  static const Map<
-    String,
-    ({String label, String query, List<String> keywords})
-  >
+  static const Map<String, ({String label, String query, List<String> keywords})>
   _curatedBuckets =
       <String, ({String label, String query, List<String> keywords})>{
         'tech': (
           label: 'Tech & AI',
-          query: 'AI Android smartphones technology coding',
+          query: 'AI smartphones technology',
           keywords: <String>[
             'android',
-            'iphone',
             'apple',
+            'iphone',
             'google',
             'openai',
             'chatgpt',
             'gemini',
-            'claude',
-            'linux',
-            'ubuntu',
             'flutter',
-            'python',
+            'linux',
+            'coding',
             'github',
             'laptop',
             'gpu',
             'nvidia',
             'tech',
             'software',
-            'cyber',
-            'vpn',
           ],
         ),
         'entertainment': (
           label: 'Movies & OTT',
-          query: 'Movies web series Bollywood Hollywood anime',
+          query: 'Bollywood Hollywood movies',
           keywords: <String>[
             'movie',
             'movies',
@@ -272,7 +288,7 @@ class InterestProfileController extends ChangeNotifier {
         ),
         'sports': (
           label: 'Sports & Cricket',
-          query: 'Cricket IPL India football Champions League',
+          query: 'India Cricket IPL football',
           keywords: <String>[
             'cricket',
             'ipl',
@@ -292,7 +308,7 @@ class InterestProfileController extends ChangeNotifier {
         ),
         'gaming': (
           label: 'Gaming',
-          query: 'Gaming GTA PlayStation PC mobile games esports',
+          query: 'PlayStation GTA video games',
           keywords: <String>[
             'game',
             'gaming',
@@ -311,7 +327,7 @@ class InterestProfileController extends ChangeNotifier {
         ),
         'finance': (
           label: 'Markets & Crypto',
-          query: 'Stock market Sensex Nifty Bitcoin startups',
+          query: 'Sensex Nifty Bitcoin markets',
           keywords: <String>[
             'stock',
             'nifty',
@@ -329,7 +345,7 @@ class InterestProfileController extends ChangeNotifier {
         ),
         'science': (
           label: 'Science & Space',
-          query: 'Space ISRO NASA astronomy physics science',
+          query: 'ISRO SpaceX NASA astronomy',
           keywords: <String>[
             'space',
             'isro',
@@ -418,7 +434,7 @@ class InterestProfileController extends ChangeNotifier {
         for (final Object? item in decoded) {
           if (item is Map<String, Object?>) {
             final InterestEntry parsed = InterestEntry.fromJson(item);
-            if (parsed.key.isNotEmpty) {
+            if (parsed.key.isNotEmpty && parsed.query.isNotEmpty) {
               _entries[parsed.key] = parsed;
             }
           }
@@ -430,67 +446,83 @@ class InterestProfileController extends ChangeNotifier {
   }
 
   Future<void> _persist() async {
-    final List<InterestEntry> top = rankedInterests;
-    await _prefs.setString(
-      _storageKey,
-      jsonEncode(top.map((InterestEntry e) => e.toJson()).toList()),
+    final int now = DateTime.now().millisecondsSinceEpoch;
+    final List<InterestEntry> active =
+        _entries.values
+            .where((InterestEntry e) => e.decayedScore(now) >= 0.25)
+            .toList()
+          ..sort(
+            (InterestEntry a, InterestEntry b) =>
+                b.decayedScore(now).compareTo(a.decayedScore(now)),
+          );
+    final String encoded = jsonEncode(
+      active.take(30).map((InterestEntry e) => e.toJson()).toList(),
     );
+    await _prefs.setString(_storageKey, encoded);
   }
 
   Future<void> recordActivity({
     required String text,
     double weight = 1.5,
   }) async {
-    final String lower = text.toLowerCase();
-    final List<String> tokens = lower
+    String normalized = text.trim().toLowerCase();
+    if (normalized.isEmpty) {
+      return;
+    }
+    if (normalized.startsWith('http://') || normalized.startsWith('https://')) {
+      final Uri? uri = Uri.tryParse(normalized);
+      if (uri != null) {
+        final String hostPart = uri.host
+            .replaceFirst(RegExp(r'^www\.'), '')
+            .split('.')
+            .first;
+        final String pathPart = uri.pathSegments.join(' ');
+        final String qPart = uri.queryParameters['q'] ?? '';
+        normalized = '$hostPart $pathPart $qPart'.toLowerCase();
+      }
+    }
+
+    final List<String> tokens = normalized
         .split(RegExp(r'[^a-z0-9]+'))
         .where((String w) => w.length >= 3 && !_stopWords.contains(w))
-        .toList(growable: false);
+        .toList();
     if (tokens.isEmpty) {
       return;
     }
 
     final int now = DateTime.now().millisecondsSinceEpoch;
-    bool matchedBucket = false;
 
-    for (final MapEntry<
-          String,
-          ({String label, String query, List<String> keywords})
-        >
-        bucket
-        in _curatedBuckets.entries) {
-      final int hits = tokens
-          .where((String t) => bucket.value.keywords.contains(t))
-          .length;
-      if (hits > 0) {
-        matchedBucket = true;
+    _curatedBuckets.forEach((
+      String bucketKey,
+      ({String label, String query, List<String> keywords}) info,
+    ) {
+      if (tokens.any((String t) => info.keywords.contains(t))) {
         _bumpEntry(
-          key: 'cat:${bucket.key}',
-          label: bucket.value.label,
-          query: bucket.value.query,
-          delta: weight * math.min(2.5, hits.toDouble()),
+          key: 'cat:$bucketKey',
+          label: info.label,
+          query: info.query,
+          delta: weight * 1.4,
           nowMs: now,
         );
       }
-    }
+    });
 
-    final String primaryTerm = tokens.firstWhere(
-      (String t) => t.length >= 4 && int.tryParse(t) == null,
-      orElse: () => '',
-    );
-    if (primaryTerm.isNotEmpty) {
-      final String titleCase =
-          primaryTerm[0].toUpperCase() + primaryTerm.substring(1);
+    final List<String> meaningful = tokens
+        .where((String t) => t.length >= 4 && !RegExp(r'^\d+$').hasMatch(t))
+        .take(2)
+        .toList();
+    for (final String token in meaningful) {
+      final String pretty = token[0].toUpperCase() + token.substring(1);
       _bumpEntry(
-        key: 'kw:$primaryTerm',
-        label: titleCase,
-        query: primaryTerm,
-        delta: matchedBucket ? weight * 0.75 : weight * 1.15,
+        key: 'kw:$token',
+        label: pretty,
+        query: pretty,
+        delta: weight,
         nowMs: now,
       );
     }
 
-    await _persist();
+    unawaited(_persist());
     notifyListeners();
   }
 
@@ -555,7 +587,7 @@ class HeavenNewsFeedService {
     http.Client? client,
   }) : _client = client ?? http.Client();
 
-  static const String _cachePrefix = 'hb.newsFeedCache.v6.';
+  static const String _cachePrefix = 'hb.newsFeedCache.v7.';
 
   final SharedPreferences prefs;
   final InterestProfileController interests;
@@ -590,10 +622,15 @@ class HeavenNewsFeedService {
     }
 
     if (fetched.isNotEmpty) {
-      await prefs.setString(
-        '$_cachePrefix${tab.name}',
-        jsonEncode(
-          fetched.take(24).map((PersonalizedNewsItem e) => e.toJson()).toList(),
+      unawaited(
+        prefs.setString(
+          '$_cachePrefix${tab.name}',
+          jsonEncode(
+            fetched
+                .take(24)
+                .map((PersonalizedNewsItem e) => e.toJson())
+                .toList(),
+          ),
         ),
       );
       return fetched;
@@ -612,13 +649,14 @@ class HeavenNewsFeedService {
               in NewsCategoryTab.forYou.directRssUrls)
             _fetchDirectPublisherRss(feed.url, defaultSource: feed.source),
           for (final InterestEntry entry in topInterests)
-            _fetchBingRichNewsByQuery(entry.query, topicBadge: entry.label),
-          if (topInterests.isEmpty)
-            _fetchBingRichNewsByQuery(
-              'India technology science entertainment sports',
-              topicBadge: 'Discover',
+            _fetchBingMediaNewsRss(
+              _focusedNewsQuery(entry.query),
+              topicBadge: entry.label,
             ),
-          _fetchTopHeadlinesRss(),
+          if (topInterests.isEmpty) ...<Future<List<PersonalizedNewsItem>>>[
+            _fetchBingMediaNewsRss('India cricket technology', topicBadge: null),
+            _fetchBingMediaNewsRss('World science entertainment', topicBadge: null),
+          ],
         ];
 
     return _mergeAndRankBatches(await Future.wait(tasks));
@@ -635,11 +673,20 @@ class HeavenNewsFeedService {
               defaultSource: feed.source,
               topicBadge: tab.label,
             ),
-          _fetchBingRichNewsByQuery(tab.query, topicBadge: tab.label),
-          _fetchRssByQuery(tab.query, topicBadge: tab.label),
+          _fetchBingMediaNewsRss(tab.query, topicBadge: tab.label),
         ];
 
     return _mergeAndRankBatches(await Future.wait(tasks));
+  }
+
+  static String _focusedNewsQuery(String raw) {
+    final List<String> words = raw
+        .trim()
+        .split(RegExp(r'\s+'))
+        .where((String w) => w.length >= 2)
+        .take(3)
+        .toList();
+    return words.isEmpty ? 'India news' : words.join(' ');
   }
 
   List<PersonalizedNewsItem> _mergeAndRankBatches(
@@ -666,9 +713,8 @@ class HeavenNewsFeedService {
             ? math.max(0.0, (nowMs - item.publishedAtMs) / 3600000.0)
             : 12.0;
         final double recencyBoost = math.max(0.0, 12.0 - (hoursOld * 0.45));
-        final double topicBonus = item.matchedTopic != null ? 4.0 : 0.0;
-        final double imageBonus =
-            (item.imageUrl != null && item.imageUrl!.isNotEmpty) ? 16.0 : 0.0;
+        final double topicBonus = item.matchedTopic != null ? 5.0 : 0.0;
+        final double imageBonus = item.hasValidImage ? 40.0 : 0.0;
 
         merged.add(
           PersonalizedNewsItem(
@@ -690,6 +736,14 @@ class HeavenNewsFeedService {
       (PersonalizedNewsItem a, PersonalizedNewsItem b) =>
           b.affinityScore.compareTo(a.affinityScore),
     );
+
+    // Ensure Google Discover cards always display real cover photos whenever image items exist!
+    final List<PersonalizedNewsItem> withImages = merged
+        .where((PersonalizedNewsItem e) => e.hasValidImage)
+        .toList(growable: false);
+    if (withImages.isNotEmpty) {
+      return withImages.take(24).toList(growable: false);
+    }
     return merged.take(24).toList(growable: false);
   }
 
@@ -703,12 +757,12 @@ class HeavenNewsFeedService {
           .get(
             Uri.parse(feedUrl),
             headers: const <String, String>{
-              'User-Agent': AppConstants.mobileUserAgent,
+              'User-Agent': 'Mozilla/5.0 (compatible; HeavenBrowser/1.0)',
               'Accept':
                   'application/rss+xml, application/atom+xml, application/xml, text/xml',
             },
           )
-          .timeout(const Duration(seconds: 7));
+          .timeout(const Duration(seconds: 6));
       if (response.statusCode != 200 || response.body.isEmpty) {
         return const <PersonalizedNewsItem>[];
       }
@@ -722,28 +776,33 @@ class HeavenNewsFeedService {
     }
   }
 
-  Future<List<PersonalizedNewsItem>> _fetchBingRichNewsByQuery(
+  /// Fast Bing News RSS with `<News:Image>` 800x450 HD cover photos (~250ms)!
+  Future<List<PersonalizedNewsItem>> _fetchBingMediaNewsRss(
     String query, {
     required String? topicBadge,
   }) async {
     try {
       final Uri uri = Uri.parse(
-        'https://www.bing.com/news/infinitescrollajax?InfiniteScroll=1'
-        '&q=${Uri.encodeQueryComponent(query)}&IG=1&IID=news.1&sfx=1',
+        'https://www.bing.com/news/search?q=${Uri.encodeQueryComponent(query)}'
+        '&format=rss&setlang=en-in&cc=IN',
       );
       final http.Response response = await _client
           .get(
             uri,
             headers: const <String, String>{
-              'User-Agent': AppConstants.desktopUserAgent,
-              'Accept-Language': 'en-US,en;q=0.9',
+              'User-Agent': 'Mozilla/5.0 (compatible; HeavenBrowser/1.0)',
+              'Accept': 'application/rss+xml, application/xml, text/xml',
             },
           )
-          .timeout(const Duration(seconds: 7));
+          .timeout(const Duration(seconds: 6));
       if (response.statusCode != 200 || response.body.isEmpty) {
         return const <PersonalizedNewsItem>[];
       }
-      return parseBingDiscoverHtml(response.body, topicBadge: topicBadge);
+      return parseRichFeedXml(
+        response.body,
+        defaultSource: 'News',
+        topicBadge: topicBadge,
+      );
     } catch (_) {
       return const <PersonalizedNewsItem>[];
     }
@@ -759,7 +818,7 @@ class HeavenNewsFeedService {
     final RegExp titleReg = RegExp(r'data-title="([^"]+)"');
     final RegExp authorReg = RegExp(r'data-author="([^"]+)"');
     final RegExp imgReg = RegExp(
-      r'src="((?:https:\/\/www\.bing\.com)?\/th\?id=(?:ONUT|OVFT)\.[^"]+)"',
+      r'src="((?:https?:\/\/www\.bing\.com)?\/th\?id=[^"]+)"',
       caseSensitive: false,
     );
     final int nowMs = DateTime.now().millisecondsSinceEpoch;
@@ -781,13 +840,7 @@ class HeavenNewsFeedService {
       String? imageUrl;
       final RegExpMatch? im = imgReg.firstMatch(block);
       if (im != null) {
-        String rawImg = _unescapeXml(im.group(1) ?? '');
-        if (rawImg.startsWith('/')) {
-          rawImg = 'https://www.bing.com$rawImg';
-        }
-        imageUrl = rawImg
-            .replaceAll(RegExp(r'w=\d+'), 'w=640')
-            .replaceAll(RegExp(r'h=\d+'), 'h=360');
+        imageUrl = _normalizeCoverImageUrl(_unescapeXml(im.group(1) ?? ''));
       }
 
       out.add(
@@ -807,7 +860,7 @@ class HeavenNewsFeedService {
     return out;
   }
 
-  /// Parses both RSS `<item>` and Atom `<entry>` XML feeds along with real cover photos!
+  /// Parses RSS `<item>`, Atom `<entry>`, and Bing `<News:Image>` XML feeds with HD cover photos!
   static List<PersonalizedNewsItem> parseRichFeedXml(
     String xml, {
     String defaultSource = 'News',
@@ -826,6 +879,14 @@ class HeavenNewsFeedService {
     final RegExp sourceExp = RegExp(
       r'<source(?:\s+url="([^"]*)")?>([\s\S]*?)</source>',
     );
+    final RegExp bingSourceExp = RegExp(
+      r'<News:Source>([\s\S]*?)</News:Source>',
+      caseSensitive: false,
+    );
+    final RegExp bingImgExp = RegExp(
+      r'<News:Image>([\s\S]*?)</News:Image>',
+      caseSensitive: false,
+    );
     final RegExp mediaUrlExp = RegExp(
       r'<(?:media:content|media:thumbnail|enclosure)[^>]*\burl="([^"]+)"',
       caseSensitive: false,
@@ -835,7 +896,7 @@ class HeavenNewsFeedService {
       caseSensitive: false,
     );
     final RegExp inlineImgExp = RegExp(
-      r'<img[^>]*\bsrc="(https?:\/\/[^"]+)"',
+      r'<img[^>]*\bsrc="(https?:\/\/[^"\s>]+)"',
       caseSensitive: false,
     );
 
@@ -848,15 +909,25 @@ class HeavenNewsFeedService {
             linkHrefExp.firstMatch(block)?.group(1) ??
             '',
       ).trim();
+
+      // Unwrap Bing News RSS apiclick redirect URLs straight to the publisher article!
+      link = _unwrapBingNewsRedirect(link);
+
       final String rawPub = _unescapeXml(
         pubDateExp.firstMatch(block)?.group(1) ?? '',
       ).trim();
 
       final RegExpMatch? srcMatch = sourceExp.firstMatch(block);
       final String srcUrl = _unescapeXml(srcMatch?.group(1) ?? '').trim();
-      final String srcName = _stripHtml(
-        srcMatch?.group(2) ?? defaultSource,
+      final String bingSrc = _stripHtml(
+        bingSourceExp.firstMatch(block)?.group(1) ?? '',
+      );
+      String srcName = _stripHtml(
+        srcMatch?.group(2) ?? (bingSrc.isNotEmpty ? bingSrc : defaultSource),
       ).trim();
+      if (srcName.endsWith(' on MSN')) {
+        srcName = srcName.substring(0, srcName.length - 7).trim();
+      }
 
       if (srcName.isNotEmpty && title.endsWith(' - $srcName')) {
         title = title.substring(0, title.length - srcName.length - 3).trim();
@@ -865,22 +936,15 @@ class HeavenNewsFeedService {
         continue;
       }
 
-      String? img = _unescapeXml(
-        mediaUrlExp.firstMatch(block)?.group(1) ??
+      final String rawImgCandidate = _unescapeXml(
+        bingImgExp.firstMatch(block)?.group(1) ??
+            mediaUrlExp.firstMatch(block)?.group(1) ??
             storyImgExp.firstMatch(block)?.group(1) ??
             inlineImgExp.firstMatch(_unescapeXml(block))?.group(1) ??
             '',
       ).trim();
 
-      if (img.isNotEmpty) {
-        // Upgrade BBC 240px thumbnails to crisp 800px HD
-        img = img.replaceFirst('/standard/240/', '/standard/800/');
-        if (!img.startsWith('http') || img.endsWith('.svg')) {
-          img = null;
-        }
-      } else {
-        img = null;
-      }
+      final String? img = _normalizeCoverImageUrl(rawImgCandidate);
 
       final int pubMs = _parseDateMs(rawPub);
       items.add(
@@ -897,53 +961,63 @@ class HeavenNewsFeedService {
           matchedTopic: topicBadge,
         ),
       );
-      if (items.length >= 16) {
+      if (items.length >= 18) {
         break;
       }
     }
     return items;
   }
 
-  Future<List<PersonalizedNewsItem>> _fetchTopHeadlinesRss() async {
-    final Uri uri = Uri.parse(
-      'https://news.google.com/rss?hl=en-IN&gl=IN&ceid=IN:en',
-    );
-    return _fetchAndParseRss(uri, topicBadge: null);
-  }
-
-  Future<List<PersonalizedNewsItem>> _fetchRssByQuery(
-    String query, {
-    required String? topicBadge,
-  }) async {
-    final Uri uri = Uri.https(
-      'news.google.com',
-      '/rss/search',
-      <String, String>{'q': query, 'hl': 'en-IN', 'gl': 'IN', 'ceid': 'IN:en'},
-    );
-    return _fetchAndParseRss(uri, topicBadge: topicBadge);
-  }
-
-  Future<List<PersonalizedNewsItem>> _fetchAndParseRss(
-    Uri uri, {
-    required String? topicBadge,
-  }) async {
-    try {
-      final http.Response response = await _client
-          .get(
-            uri,
-            headers: const <String, String>{
-              'User-Agent': AppConstants.mobileUserAgent,
-              'Accept': 'application/rss+xml, application/xml, text/xml',
-            },
-          )
-          .timeout(const Duration(seconds: 7));
-      if (response.statusCode != 200) {
-        return const <PersonalizedNewsItem>[];
-      }
-      return parseGoogleNewsRss(response.body, topicBadge: topicBadge);
-    } on Exception {
-      return const <PersonalizedNewsItem>[];
+  static String _unwrapBingNewsRedirect(String rawLink) {
+    if (!rawLink.contains('bing.com/news/apiclick')) {
+      return rawLink;
     }
+    final Uri? parsed = Uri.tryParse(rawLink);
+    final String? realUrl = parsed?.queryParameters['url'];
+    if (realUrl != null && realUrl.startsWith('http')) {
+      return realUrl.trim();
+    }
+    return rawLink;
+  }
+
+  static String? _normalizeCoverImageUrl(String raw) {
+    if (raw.isEmpty) return null;
+    String url = raw.trim();
+    if (url.startsWith('//')) {
+      url = 'https:$url';
+    } else if (url.startsWith('/th?')) {
+      url = 'https://www.bing.com$url';
+    } else if (url.startsWith('http://www.bing.com/')) {
+      url = 'https://${url.substring(7)}';
+    } else if (url.startsWith('http://')) {
+      url = 'https://${url.substring(7)}';
+    }
+
+    if (!url.startsWith('https://')) {
+      return null;
+    }
+    final String lower = url.toLowerCase();
+    if (lower.endsWith('.svg') ||
+        lower.contains('1x1') ||
+        lower.contains('pixel') ||
+        lower.contains('feedburner.com/~ff')) {
+      return null;
+    }
+
+    // Upgrade BBC 240px thumbnails to 800px HD
+    url = url.replaceFirst('/standard/240/', '/standard/800/');
+
+    // Upgrade Bing News <News:Image> thumbnails to crisp 800x450 16:9 HD JPEG!
+    if (url.contains('bing.com/th?')) {
+      if (RegExp(r'[?&]w=\d+').hasMatch(url)) {
+        url = url
+            .replaceAll(RegExp(r'w=\d+'), 'w=800')
+            .replaceAll(RegExp(r'h=\d+'), 'h=450');
+      } else {
+        url = '$url&w=800&h=450&c=7';
+      }
+    }
+    return url;
   }
 
   static List<PersonalizedNewsItem> parseGoogleNewsRss(
@@ -1033,7 +1107,8 @@ class HeavenNewsFeedService {
   }
 
   static String _unescapeXml(String input) {
-    return input
+    if (input.isEmpty) return '';
+    String out = input
         .replaceAll('<![CDATA[', '')
         .replaceAll(']]>', '')
         .replaceAll('&amp;', '&')
@@ -1041,8 +1116,25 @@ class HeavenNewsFeedService {
         .replaceAll('&#39;', "'")
         .replaceAll('&apos;', "'")
         .replaceAll('&lt;', '<')
-        .replaceAll('&gt;', '>')
-        .trim();
+        .replaceAll('&gt;', '>');
+
+    // Decode decimal entities like &#038; -> & and &#8217; -> '
+    out = out.replaceAllMapped(RegExp(r'&#(\d+);'), (Match m) {
+      final int? code = int.tryParse(m.group(1)!);
+      return (code != null && code > 0 && code <= 0x10FFFF)
+          ? String.fromCharCode(code)
+          : m.group(0)!;
+    });
+
+    // Decode hex entities like &#x26; -> &
+    out = out.replaceAllMapped(RegExp(r'&#x([0-9a-fA-F]+);'), (Match m) {
+      final int? code = int.tryParse(m.group(1)!, radix: 16);
+      return (code != null && code > 0 && code <= 0x10FFFF)
+          ? String.fromCharCode(code)
+          : m.group(0)!;
+    });
+
+    return out.trim();
   }
 
   void dispose() {
