@@ -278,32 +278,140 @@ void main() {
     );
 
     test(
-      'ExtensionsController manages 6 built-in extensions, installs custom JS+CSS extensions & injects matching domain scripts',
+      'ExtensionsController installs Desktop Chrome Web Store (.crx) extensions, parses 32-char IDs & merges CRX content_scripts',
       () async {
+        const MethodChannel nativeChannel = MethodChannel(
+          'com.hypertechlabs.heavenbrowser/native_shield',
+        );
+        addTearDown(() {
+          TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+              .setMockMethodCallHandler(nativeChannel, null);
+        });
+
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+            .setMockMethodCallHandler(nativeChannel, (MethodCall call) async {
+              switch (call.method) {
+                case 'listChromeExtensions':
+                  return const <Map<String, Object>>[];
+                case 'installWebStoreExtension':
+                  return <String, Object>{
+                    'ok': true,
+                    'extension': <String, Object>{
+                      'id': 'eimadpbcbfnmbkopoojfekhnkhdbieeh',
+                      'name': 'Dark Reader',
+                      'description': 'Dark mode for every website',
+                      'version': '4.9.96',
+                      'manifestVersion': 3,
+                      'enabled': true,
+                      'source': 'webstore',
+                      'popupUrl':
+                          'https://chrome-ext.heaven.local/eimadpbcbfnmbkopoojfekhnkhdbieeh/ui/popup/index.html',
+                      'iconBase64': base64Encode(_kSamplePreviewPng),
+                      'permissions': <String>['storage', 'tabs'],
+                      'matches': <String>['<all_urls>'],
+                      'contentScriptCount': 1,
+                    },
+                  };
+                case 'getChromeExtensionScriptsForUrl':
+                  return 'window.__darkReaderCrxLoaded = true;';
+                case 'toggleChromeExtension':
+                case 'uninstallChromeExtension':
+                  return true;
+                default:
+                  return null;
+              }
+            });
+
         SharedPreferences.setMockInitialValues(<String, Object>{});
         final SharedPreferences prefs = await SharedPreferences.getInstance();
-        final ExtensionsController ext = ExtensionsController(prefs);
+        final ExtensionsController ext = ExtensionsController(
+          prefs,
+          syncNativeOnInit: false,
+        );
 
-        expect(ext.allExtensions.length, greaterThanOrEqualTo(6));
-        final String firstId = ext.allExtensions.first.id;
-        await ext.toggleExtension(firstId, true);
-        expect(ext.enabledCount, greaterThanOrEqualTo(1));
+        expect(
+          ExtensionsController.extractChromeWebStoreId(
+            'https://chromewebstore.google.com/detail/dark-reader/eimadpbcbfnmbkopoojfekhnkhdbieeh?hl=en',
+          ),
+          'eimadpbcbfnmbkopoojfekhnkhdbieeh',
+        );
+        expect(
+          ExtensionsController.featuredWebStoreCatalog.length,
+          greaterThanOrEqualTo(6),
+        );
 
-        final String? err = await ext.addCustomExtension(
+        final String? installErr = await ext.installFromWebStore(
+          'https://chromewebstore.google.com/detail/dark-reader/eimadpbcbfnmbkopoojfekhnkhdbieeh',
+        );
+        expect(installErr, isNull);
+        expect(ext.isInstalled('eimadpbcbfnmbkopoojfekhnkhdbieeh'), isTrue);
+        expect(ext.chromeExtensions.first.name, 'Dark Reader');
+        expect(ext.chromeExtensions.first.hasPopup, isTrue);
+        expect(ext.chromeExtensions.first.iconBytes, isNotNull);
+
+        final String? scriptErr = await ext.addCustomExtension(
           name: 'Custom Dark Boost',
           description: 'Adds custom border',
           matchPattern: 'example.com',
           jsCode: 'window.__heavenExtRan = true;',
           cssCode: 'body { outline: 1px solid blue; }',
         );
-        expect(err, isNull);
+        expect(scriptErr, isNull);
 
-        final String injected = ext.buildInjectionScriptForUrl(
+        final String fullInjected = await ext.buildFullInjectionForUrl(
           'https://sub.example.com/article',
         );
-        expect(injected, contains('__heavenExtRan'));
-        expect(injected, contains('outline: 1px solid blue'));
+        expect(fullInjected, contains('__darkReaderCrxLoaded'));
+        expect(fullInjected, contains('__heavenExtRan'));
+        expect(fullInjected, contains('outline: 1px solid blue'));
         ext.dispose();
+      },
+    );
+
+    test(
+      'HeavenSearchService copies live Background Google Search results directly into Heaven Search UI',
+      () async {
+        const MethodChannel nativeChannel = MethodChannel(
+          'com.hypertechlabs.heavenbrowser/native_shield',
+        );
+        addTearDown(() {
+          TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+              .setMockMethodCallHandler(nativeChannel, null);
+        });
+
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+            .setMockMethodCallHandler(nativeChannel, (MethodCall call) async {
+              if (call.method == 'searchGoogleInBackground') {
+                return <String, Object>{
+                  'ok': true,
+                  'webResults': <Map<String, Object>>[
+                    <String, Object>{
+                      'title': 'Google Live Result: Flutter SDK',
+                      'url': 'https://flutter.dev',
+                      'snippet': 'Copied from background Google Search DOM.',
+                      'sourceLabel': 'flutter.dev',
+                    },
+                  ],
+                  'knowledgeCard': <String, Object>{
+                    'heading': 'Flutter Framework',
+                    'summary': 'UI toolkit by Google.',
+                    'sourceUrl': 'https://flutter.dev',
+                    'sourceName': 'Google',
+                  },
+                  'relatedSearches': <String>[
+                    'flutter desktop extensions',
+                    'flutter android arm64',
+                  ],
+                };
+              }
+              return null;
+            });
+
+        final HeavenSearchService service = _createMockSearchService();
+        final HeavenSearchResponse res = await service.searchFastWeb('flutter');
+        expect(res.webResults.first.title, 'Google Live Result: Flutter SDK');
+        expect(res.knowledgeCard?.heading, 'Flutter Framework');
+        expect(res.relatedSearches, contains('flutter desktop extensions'));
       },
     );
 
@@ -350,7 +458,7 @@ void main() {
     );
   });
 
-  group('Silent Stealth WireGuard VPN & Download Location Control', () {
+  group('Restored Step 7 Foreign Country VPN & Download Location Control', () {
     const MethodChannel nativeChannel = MethodChannel(
       'com.hypertechlabs.heavenbrowser/native_shield',
     );
@@ -361,35 +469,34 @@ void main() {
     });
 
     test(
-      'VpnController defaults to Stealth UDP 4500 & Full Tunnel (browserOnly=false), connects silently with zero notification calls & reloads failed tabs',
+      'VpnController defaults to United States Foreign OpenVPN, connects Foreign & WARP profiles & reloads failed tabs',
       () async {
-        final List<String> invokedMethods = <String>[];
-        String? capturedRouteMode;
-        bool? capturedBrowserOnly;
-
         TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
             .setMockMethodCallHandler(nativeChannel, (MethodCall call) async {
-              invokedMethods.add(call.method);
               switch (call.method) {
+                case 'provisionForeignOpenVpnConfig':
+                  return <String, Object>{
+                    'ok': true,
+                    'configText':
+                        'client\ndev tun\nremote 89.187.173.169 443 tcp-client\ncipher AES-256-GCM\n<ca>\nCA\n</ca>\n<cert>\nCERT\n</cert>\n<key>\nKEY\n</key>\n',
+                    'serverHost': '89.187.173.169',
+                    'countryCode': 'US',
+                    'countryName': 'United States',
+                    'latencyMs': 38,
+                  };
                 case 'provisionFreeWarpConfig':
                   return <String, Object>{
                     'ok': true,
                     'configText':
-                        '[Interface]\nPrivateKey = AAAA\nAddress = 172.16.0.2/32, 2606:4700:110::2/128\nDNS = 1.1.1.1, 1.0.0.1\nMTU = 1280\n\n[Peer]\nPublicKey = BBBB\nAllowedIPs = 0.0.0.0/0, ::/0\nEndpoint = 162.159.193.1:4500\n',
+                        '[Interface]\nPrivateKey = AAAA\nAddress = 172.16.0.2/32\nDNS = 1.1.1.1\n\n[Peer]\nPublicKey = BBBB\nAllowedIPs = 0.0.0.0/0\nEndpoint = 162.159.193.1:2408\n',
                     'clientIpv4': '172.16.0.2',
-                    'endpoint': '162.159.193.1:4500',
+                    'endpoint': '162.159.193.1:2408',
                   };
                 case 'connectVpn':
-                  final Map<Object?, Object?> args =
-                      call.arguments as Map<Object?, Object?>;
-                  capturedRouteMode = args['routeMode']?.toString();
-                  capturedBrowserOnly = args['browserOnly'] as bool?;
                   return <String, Object>{
                     'ok': true,
                     'connected': true,
-                    'activeEndpoint': '162.159.193.1:4500',
-                    'exitIp': '104.28.19.44',
-                    'exitCountry': 'SG',
+                    'profileName': 'Fastest Nearby Edge (WARP)',
                   };
                 case 'validateWireGuardConfig':
                   return <String, Object>{
@@ -412,24 +519,24 @@ void main() {
           enableNativePolling: false,
           client: MockClient(
             (_) async =>
-                http.Response('ip=104.28.19.44\nloc=SG\nwarp=on\n', 200),
+                http.Response('ip=89.187.173.169\nloc=US\nwarp=off\n', 200),
           ),
         )..onTunnelConnected = () => callbackFired = true;
 
-        expect(vpn.selectedProfile.id, VpnController.defaultStealthId);
-        expect(vpn.browserOnly, isFalse);
+        expect(vpn.selectedProfile.id, VpnController.defaultForeignUsId);
+        expect(vpn.foreignProfiles.length, greaterThanOrEqualTo(9));
 
         await vpn.connect();
         expect(vpn.isConnected, isTrue);
-        expect(capturedRouteMode, 'stealth_4500');
-        expect(capturedBrowserOnly, isFalse);
+        expect(vpn.exitCountry, 'US');
         expect(callbackFired, isTrue);
-        // Zero OpenVPN notification calls!
-        expect(invokedMethods, isNot(contains('notifyOpenVpnConnected')));
+
+        await vpn.selectProfile(VpnController.builtInWarpId);
+        expect(vpn.isConnected, isTrue);
 
         final String? wgErr = await vpn.addCustomProfile(
           name: 'Proton Free NL',
-          countryLabel: '🇳🇱 Netherlands',
+          countryLabel: 'Netherlands',
           configText:
               '[Interface]\nPrivateKey = AAAA\nAddress = 10.2.0.2/32\n[Peer]\nPublicKey = BBBB\nEndpoint = 185.159.157.1:51820\nAllowedIPs = 0.0.0.0/0\n',
         );
@@ -479,29 +586,40 @@ void main() {
   });
 
   testWidgets(
-    'Step 8 UI: Tiny Search Engine Switcher, Recent Searches, Menu Items, Downloads Folder & Silent VPN on 320px screen',
+    'Step 9 UI: Background Google -> Heaven Search UI, Desktop Chrome Extensions (.crx), Website Logo Shortcut & Classic Foreign VPN on 320px screen',
     (WidgetTester tester) async {
       const MethodChannel nativeChannel = MethodChannel(
         'com.hypertechlabs.heavenbrowser/native_shield',
       );
+      Map<Object?, Object?>? capturedShortcutArgs;
       TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
           .setMockMethodCallHandler(nativeChannel, (MethodCall call) async {
             switch (call.method) {
-              case 'provisionFreeWarpConfig':
+              case 'searchGoogleInBackground':
+                return <String, Object>{
+                  'ok': true,
+                  'webResults': <Map<String, Object>>[
+                    <String, Object>{
+                      'title': 'Flutter Official Docs',
+                      'url': 'https://docs.flutter.dev',
+                      'snippet': 'Build apps for any screen.',
+                      'sourceLabel': 'docs.flutter.dev',
+                    },
+                  ],
+                  'relatedSearches': <String>['flutter sdk', 'dart pub'],
+                };
+              case 'listChromeExtensions':
+                return const <Map<String, Object>>[];
+              case 'createHomeScreenShortcut':
+                capturedShortcutArgs = call.arguments as Map<Object?, Object?>?;
+                return true;
+              case 'provisionForeignOpenVpnConfig':
                 return <String, Object>{
                   'ok': true,
                   'configText':
-                      '[Interface]\nPrivateKey = AAAA\nAddress = 172.16.0.2/32\nDNS = 1.1.1.1\n\n[Peer]\nPublicKey = BBBB\nAllowedIPs = 0.0.0.0/0\nEndpoint = 162.159.193.1:4500\n',
-                  'clientIpv4': '172.16.0.2',
-                  'endpoint': '162.159.193.1:4500',
-                };
-              case 'connectVpn':
-                return <String, Object>{
-                  'ok': true,
-                  'connected': true,
-                  'activeEndpoint': '162.159.193.1:4500',
-                  'exitIp': '104.28.19.44',
-                  'exitCountry': 'SG',
+                      'client\ndev tun\nremote 89.187.173.169 443 tcp-client\ncipher AES-256-GCM\n<ca>\nCA\n</ca>\n<cert>\nCERT\n</cert>\n<key>\nKEY\n</key>\n',
+                  'serverHost': '89.187.173.169',
+                  'countryCode': 'US',
                 };
               case 'disconnectVpn':
                 return <String, Object>{'ok': true, 'connected': false};
@@ -529,7 +647,10 @@ void main() {
         prefs,
         enableNativePolling: false,
       );
-      final ExtensionsController extensions = ExtensionsController(prefs);
+      final ExtensionsController extensions = ExtensionsController(
+        prefs,
+        syncNativeOnInit: false,
+      );
       final InterestProfileController interests = InterestProfileController(
         prefs,
       );
@@ -542,7 +663,7 @@ void main() {
         enableNativePolling: false,
         client: MockClient(
           (_) async =>
-              http.Response('ip=104.28.19.44\nloc=SG\nwarp=on\n', 200),
+              http.Response('ip=89.187.173.169\nloc=US\nwarp=off\n', 200),
         ),
       );
 
@@ -573,7 +694,7 @@ void main() {
       expect(find.text('Recent Searches'), findsOneWidget);
       expect(find.text('ubuntu raspberry pi'), findsOneWidget);
 
-      // 3. Submit query -> Opens native Google-inspired Heaven Search!
+      // 3. Submit query -> Background Google Search copied into Heaven Search UI!
       await tester.enterText(
         find.byKey(const Key('home_search_textfield')),
         'flutter',
@@ -597,40 +718,50 @@ void main() {
       expect(tester.takeException(), isNull);
       expect(find.text('People also search for'), findsOneWidget);
 
-      // 4. Open Browser Menu -> Verify all new menu items exist with zero overflow!
+      // 4. Open Browser Menu -> Verify Chrome Extensions & Create shortcut!
       await tester.tap(find.byTooltip('Browser Menu'));
       await tester.pumpAndSettle();
       expect(tester.takeException(), isNull);
       expect(find.text('Add tab to new group'), findsOneWidget);
-      expect(find.text('Extensions'), findsOneWidget);
+      expect(find.text('Chrome Extensions'), findsOneWidget);
       expect(find.text('Site controls'), findsOneWidget);
       expect(find.text('Create shortcut'), findsOneWidget);
 
-      // Scroll menu sheet to verify Notifications, Languages & Help!
-      await tester.drag(
-        find.byType(SingleChildScrollView).last,
-        const Offset(0, -180),
-      );
-      await tester.pumpAndSettle();
-      expect(find.text('Notifications'), findsOneWidget);
-      expect(find.text('Languages'), findsOneWidget);
-      expect(find.text('Help'), findsOneWidget);
-
-      // Open Help screen -> Verify support email techlabs.hyper@gmail.com!
-      await tester.tap(find.text('Help'));
+      // Open Desktop Chrome Extensions screen -> Verify Web Store + .crx UI!
+      await tester.tap(find.text('Chrome Extensions'));
       await tester.pumpAndSettle();
       expect(tester.takeException(), isNull);
-      expect(find.text('techlabs.hyper@gmail.com'), findsOneWidget);
+      expect(find.text('Desktop Chrome Extensions'), findsOneWidget);
+      expect(
+        find.byKey(const Key('open_chrome_web_store_button')),
+        findsOneWidget,
+      );
+      expect(find.byKey(const Key('import_crx_file_button')), findsOneWidget);
+      expect(find.text('Dark Reader'), findsOneWidget);
       await tester.pageBack();
       await tester.pumpAndSettle();
 
-      // Open Silent Stealth VPN screen -> Verify zero notification card & 1-tap Connect!
+      // Open Create Shortcut -> Verify Website Logo & shortcut creation!
+      await tester.tap(find.byTooltip('Browser Menu'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Create shortcut'));
+      await tester.pumpAndSettle();
+      expect(tester.takeException(), isNull);
+      expect(find.text('Create Shortcut'), findsOneWidget);
+      await tester.tap(find.text('Add Shortcut'));
+      await tester.pumpAndSettle();
+      expect(tester.takeException(), isNull);
+      expect(capturedShortcutArgs, isNotNull);
+      await tester.pump(const Duration(seconds: 5));
+      await tester.pumpAndSettle();
+
+      // Open Restored Foreign Country VPN screen -> Verify Foreign Countries & 1-tap Connect!
       await tester.tap(find.byTooltip('Browser Menu'));
       await tester.pumpAndSettle();
       await tester.tap(find.text('VPN'));
       await tester.pumpAndSettle();
       expect(tester.takeException(), isNull);
-      expect(find.textContaining('Silent Stealth Mode'), findsOneWidget);
+      expect(find.textContaining('Foreign Country Servers'), findsOneWidget);
       await tester.tap(find.byKey(const Key('vpn_power_button')));
       await tester.pumpAndSettle();
       expect(tester.takeException(), isNull);

@@ -2,308 +2,441 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
-import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../../core/utils/omnibox_parser.dart';
+import '../shield/native_shield_bridge.dart';
 
-class BrowserExtension {
-  const BrowserExtension({
+class ChromeWebStoreCatalogItem {
+  const ChromeWebStoreCatalogItem({
+    required this.extensionId,
+    required this.name,
+    required this.category,
+    required this.description,
+    required this.storeUrl,
+  });
+
+  final String extensionId;
+  final String name;
+  final String category;
+  final String description;
+  final String storeUrl;
+}
+
+class InstalledChromeExtension {
+  const InstalledChromeExtension({
     required this.id,
     required this.name,
     required this.description,
     required this.version,
-    required this.matchPattern,
-    required this.jsCode,
-    this.cssCode = '',
-    this.iconBadge = '🧩',
-    this.enabled = false,
-    this.isBuiltIn = false,
+    required this.manifestVersion,
+    required this.enabled,
+    required this.source,
+    required this.popupUrl,
+    required this.iconBase64,
+    this.iconBytes,
+    this.permissions = const <String>[],
+    this.matches = const <String>[],
+    this.contentScriptCount = 0,
   });
 
   final String id;
   final String name;
   final String description;
   final String version;
-  final String matchPattern; // '*' or domain suffix e.g. 'youtube.com'
-  final String jsCode;
-  final String cssCode;
-  final String iconBadge;
+  final int manifestVersion;
   final bool enabled;
-  final bool isBuiltIn;
+  final String source;
+  final String popupUrl;
+  final String iconBase64;
+  final Uint8List? iconBytes;
+  final List<String> permissions;
+  final List<String> matches;
+  final int contentScriptCount;
 
-  BrowserExtension copyWith({bool? enabled}) {
-    return BrowserExtension(
+  bool get hasPopup => popupUrl.isNotEmpty;
+
+  InstalledChromeExtension copyWith({bool? enabled}) {
+    return InstalledChromeExtension(
       id: id,
       name: name,
       description: description,
       version: version,
-      matchPattern: matchPattern,
-      jsCode: jsCode,
-      cssCode: cssCode,
-      iconBadge: iconBadge,
+      manifestVersion: manifestVersion,
       enabled: enabled ?? this.enabled,
-      isBuiltIn: isBuiltIn,
+      source: source,
+      popupUrl: popupUrl,
+      iconBase64: iconBase64,
+      iconBytes: iconBytes,
+      permissions: permissions,
+      matches: matches,
+      contentScriptCount: contentScriptCount,
     );
   }
 
-  bool matchesHost(String host) {
-    final String pattern = matchPattern.trim().toLowerCase();
-    if (pattern.isEmpty || pattern == '*' || pattern == '<all_urls>') {
-      return true;
+  factory InstalledChromeExtension.fromNativeMap(Map<String, Object?> map) {
+    final String rawIcon = map['iconBase64']?.toString().trim() ?? '';
+    Uint8List? decodedIcon;
+    if (rawIcon.isNotEmpty) {
+      try {
+        decodedIcon = base64Decode(rawIcon);
+      } catch (_) {
+        decodedIcon = null;
+      }
     }
-    final String cleanHost = OmniboxParser.cleanDomain(host);
-    String cleanPat = pattern
-        .replaceFirst(RegExp(r'^https?:\/\/'), '')
-        .replaceFirst(RegExp(r'^\*\.'), '');
-    final int slash = cleanPat.indexOf('/');
-    if (slash >= 0) {
-      cleanPat = cleanPat.substring(0, slash);
-    }
-    if (cleanPat.isEmpty || cleanPat == '*') {
-      return true;
-    }
-    return cleanHost == cleanPat || cleanHost.endsWith('.$cleanPat');
+    final List<String> perms = (map['permissions'] is List<Object?>)
+        ? (map['permissions']! as List<Object?>)
+              .map((Object? e) => e?.toString() ?? '')
+              .where((String s) => s.isNotEmpty)
+              .toList(growable: false)
+        : const <String>[];
+    final List<String> matchList = (map['matches'] is List<Object?>)
+        ? (map['matches']! as List<Object?>)
+              .map((Object? e) => e?.toString() ?? '')
+              .where((String s) => s.isNotEmpty)
+              .toList(growable: false)
+        : const <String>[];
+
+    return InstalledChromeExtension(
+      id: map['id']?.toString().trim() ?? '',
+      name: map['name']?.toString().trim() ?? 'Chrome Extension',
+      description: map['description']?.toString().trim() ?? '',
+      version: map['version']?.toString().trim() ?? '1.0',
+      manifestVersion: (map['manifestVersion'] as num?)?.toInt() ?? 3,
+      enabled: map['enabled'] != false,
+      source: map['source']?.toString() ?? 'webstore',
+      popupUrl: map['popupUrl']?.toString().trim() ?? '',
+      iconBase64: rawIcon,
+      iconBytes: decodedIcon,
+      permissions: perms,
+      matches: matchList,
+      contentScriptCount: (map['contentScriptCount'] as num?)?.toInt() ?? 0,
+    );
+  }
+}
+
+class CustomUserscriptExtension {
+  const CustomUserscriptExtension({
+    required this.id,
+    required this.name,
+    required this.description,
+    required this.matchPattern,
+    required this.jsCode,
+    this.cssCode = '',
+    this.enabled = true,
+  });
+
+  final String id;
+  final String name;
+  final String description;
+  final String matchPattern;
+  final String jsCode;
+  final String cssCode;
+  final bool enabled;
+
+  CustomUserscriptExtension copyWith({bool? enabled}) {
+    return CustomUserscriptExtension(
+      id: id,
+      name: name,
+      description: description,
+      matchPattern: matchPattern,
+      jsCode: jsCode,
+      cssCode: cssCode,
+      enabled: enabled ?? this.enabled,
+    );
   }
 
   Map<String, Object?> toJson() => <String, Object?>{
     'id': id,
     'name': name,
     'description': description,
-    'version': version,
     'matchPattern': matchPattern,
     'jsCode': jsCode,
     'cssCode': cssCode,
-    'iconBadge': iconBadge,
     'enabled': enabled,
   };
 
-  factory BrowserExtension.fromJson(Map<String, Object?> map) {
-    return BrowserExtension(
-      id: (map['id']?.toString() ?? '').trim(),
-      name: (map['name']?.toString() ?? 'Custom Extension').trim(),
-      description: (map['description']?.toString() ?? 'Userscript extension')
-          .trim(),
-      version: (map['version']?.toString() ?? '1.0').trim(),
-      matchPattern: (map['matchPattern']?.toString() ?? '*').trim(),
+  factory CustomUserscriptExtension.fromJson(Map<String, Object?> map) {
+    return CustomUserscriptExtension(
+      id: map['id']?.toString() ?? '',
+      name: map['name']?.toString() ?? 'Custom Script',
+      description: map['description']?.toString() ?? '',
+      matchPattern: map['matchPattern']?.toString() ?? '*',
       jsCode: map['jsCode']?.toString() ?? '',
       cssCode: map['cssCode']?.toString() ?? '',
-      iconBadge: (map['iconBadge']?.toString() ?? '🧩').trim(),
-      enabled: map['enabled'] == true,
-      isBuiltIn: false,
+      enabled: map['enabled'] != false,
     );
+  }
+
+  bool matchesUrl(String? rawUrl) {
+    if (rawUrl == null || rawUrl.isEmpty) return false;
+    if (matchPattern == '*' || matchPattern == '<all_urls>') {
+      return rawUrl.startsWith('http://') || rawUrl.startsWith('https://');
+    }
+    final String host = OmniboxParser.cleanDomain(rawUrl);
+    final String target = OmniboxParser.cleanDomain(matchPattern);
+    if (host.isEmpty || target.isEmpty) return false;
+    return host == target || host.endsWith('.$target');
   }
 }
 
 class ExtensionsController extends ChangeNotifier {
-  ExtensionsController(this._prefs, {http.Client? client})
-    : _client = client ?? http.Client() {
-    _load();
+  ExtensionsController(
+    this._prefs, {
+    bool syncNativeOnInit = true,
+  }) {
+    _loadLocalScripts();
+    if (syncNativeOnInit) {
+      unawaited(refreshChromeExtensions());
+    }
   }
 
-  static const String _keyEnabledBuiltIns = 'hb.ext.enabledBuiltIns.v8';
-  static const String _keyCustomExtensions = 'hb.ext.customList.v8';
+  static const String chromeWebStoreHomeUrl =
+      'https://chromewebstore.google.com';
+  static const String _keyCustomScripts = 'hb.ext.customScripts.v9';
+
+  static final RegExp _extIdPattern = RegExp(r'([a-p]{32})');
+
+  /// Real Desktop Chrome Web Store extensions (genuine 32-char IDs fetched as CRX3 from Google).
+  static const List<ChromeWebStoreCatalogItem> featuredWebStoreCatalog =
+      <ChromeWebStoreCatalogItem>[
+        ChromeWebStoreCatalogItem(
+          extensionId: 'eimadpbcbfnmbkopoojfekhnkhdbieeh',
+          name: 'Dark Reader',
+          category: 'Appearance',
+          description:
+              'Official Desktop Chrome dark theme generator for every website with brightness & contrast popup.',
+          storeUrl:
+              'https://chromewebstore.google.com/detail/dark-reader/eimadpbcbfnmbkopoojfekhnkhdbieeh',
+        ),
+        ChromeWebStoreCatalogItem(
+          extensionId: 'gebbhagfogifgggkldgodflihgfeippi',
+          name: 'Return YouTube Dislike',
+          category: 'Video',
+          description:
+              'Restores accurate dislike counts on YouTube watch pages using the official RYD API.',
+          storeUrl:
+              'https://chromewebstore.google.com/detail/return-youtube-dislike/gebbhagfogifgggkldgodflihgfeippi',
+        ),
+        ChromeWebStoreCatalogItem(
+          extensionId: 'mnjggcdmjocbbbhaepdhchncahnbgone',
+          name: 'SponsorBlock for YouTube',
+          category: 'Video',
+          description:
+              'Automatically skips sponsored segments, intros, outros, and reminders in YouTube videos.',
+          storeUrl:
+              'https://chromewebstore.google.com/detail/sponsorblock-for-youtube/mnjggcdmjocbbbhaepdhchncahnbgone',
+        ),
+        ChromeWebStoreCatalogItem(
+          extensionId: 'clngdbkpkpeebahjckkjfobafhncgmne',
+          name: 'Stylus',
+          category: 'Customization',
+          description:
+              'Redesign your favorite websites with custom desktop userstyles and themes.',
+          storeUrl:
+              'https://chromewebstore.google.com/detail/stylus/clngdbkpkpeebahjckkjfobafhncgmne',
+        ),
+        ChromeWebStoreCatalogItem(
+          extensionId: 'mdjildafknihdffpkfmmpnpoiajfjnjd',
+          name: 'Consent-O-Matic',
+          category: 'Privacy',
+          description:
+              'Automatically answers GDPR & cookie consent popups with privacy-first choices.',
+          storeUrl:
+              'https://chromewebstore.google.com/detail/consent-o-matic/mdjildafknihdffpkfmmpnpoiajfjnjd',
+        ),
+        ChromeWebStoreCatalogItem(
+          extensionId: 'jinjaccalgkegednnccohejagnlnfdag',
+          name: 'Violentmonkey',
+          category: 'Developer',
+          description:
+              'Desktop userscript manager supporting GreasyFork & OpenUserJS scripts.',
+          storeUrl:
+              'https://chromewebstore.google.com/detail/violentmonkey/jinjaccalgkegednnccohejagnlnfdag',
+        ),
+      ];
 
   final SharedPreferences _prefs;
-  final http.Client _client;
 
-  final Set<String> _enabledBuiltInIds = <String>{
-    'ext_cookie_reject',
-    'ext_copy_unlock',
-  };
-  List<BrowserExtension> _customExtensions = <BrowserExtension>[];
+  List<InstalledChromeExtension> _chromeExtensions =
+      <InstalledChromeExtension>[];
+  List<CustomUserscriptExtension> _customScripts =
+      <CustomUserscriptExtension>[];
+  bool _isInstalling = false;
+  String? _installingId;
+  String? _lastError;
 
-  static const List<BrowserExtension> _builtInCatalog = <BrowserExtension>[
-    BrowserExtension(
-      id: 'ext_dark_reader',
-      name: 'Dark Reader Web',
-      description:
-          'Smart dark theme for bright websites while keeping images and videos natural.',
-      version: '2.1',
-      matchPattern: '*',
-      iconBadge: '🌙',
-      isBuiltIn: true,
-      cssCode: '''
-html {
-  background-color: #0d1321 !important;
-  filter: invert(0.91) hue-rotate(180deg) !important;
-}
-img, video, picture, canvas, svg, [style*="background-image"] {
-  filter: invert(1) hue-rotate(180deg) !important;
-}
-''',
-      jsCode: '',
-    ),
-    BrowserExtension(
-      id: 'ext_cookie_reject',
-      name: 'Cookie Banner Auto-Dismiss',
-      description:
-          'Automatically hides annoying GDPR cookie popups and unlocks page scrolling.',
-      version: '1.8',
-      matchPattern: '*',
-      iconBadge: '🍪',
-      isBuiltIn: true,
-      cssCode: '''
-#onetrust-consent-sdk, #CybotCookiebotDialog, .qc-cmp2-container,
-[id*="cookie-banner"], [class*="cookie-banner"], [class*="cookie-consent"],
-[aria-label*="cookie" i][role="dialog"] {
-  display: none !important;
-  visibility: hidden !important;
-  pointer-events: none !important;
-}
-''',
-      jsCode: '''
-document.documentElement.style.setProperty('overflow', 'auto', 'important');
-if (document.body) document.body.style.setProperty('overflow', 'auto', 'important');
-''',
-    ),
-    BrowserExtension(
-      id: 'ext_copy_unlock',
-      name: 'Copy & Right-Click Unlocker',
-      description:
-          'Enables text selection, copy/paste, and context menus on websites that block copying.',
-      version: '1.4',
-      matchPattern: '*',
-      iconBadge: '📋',
-      isBuiltIn: true,
-      cssCode: '''
-*, *::before, *::after {
-  -webkit-user-select: text !important;
-  user-select: text !important;
-}
-''',
-      jsCode: '''
-['copy', 'cut', 'paste', 'contextmenu', 'selectstart'].forEach(function(ev) {
-  window.addEventListener(ev, function(e) { e.stopPropagation(); }, true);
-});
-''',
-    ),
-    BrowserExtension(
-      id: 'ext_yt_enhancer',
-      name: 'Video & YouTube Enhancer',
-      description:
-          'Auto-skips video promos, hides Shorts clutter banners, and unlocks clean playback.',
-      version: '1.9',
-      matchPattern: 'youtube.com',
-      iconBadge: '🎬',
-      isBuiltIn: true,
-      cssCode: '''
-ytm-mealbar-promo-renderer, ytd-mealbar-promo-renderer,
-ytm-statement-banner-renderer {
-  display: none !important;
-}
-''',
-      jsCode: '''
-var skipBtn = document.querySelector('.ytp-ad-skip-button, .ytp-skip-ad-button');
-if (skipBtn) skipBtn.click();
-''',
-    ),
-    BrowserExtension(
-      id: 'ext_amp_cleaner',
-      name: 'AMP & Tracking Link Cleaner',
-      description:
-          'Strips ping click-trackers and rewrites AMP links directly to clean canonical URLs.',
-      version: '1.3',
-      matchPattern: '*',
-      iconBadge: '🔗',
-      isBuiltIn: true,
-      jsCode: '''
-document.querySelectorAll('a[ping]').forEach(function(a) {
-  a.removeAttribute('ping');
-});
-''',
-    ),
-    BrowserExtension(
-      id: 'ext_readability_boost',
-      name: 'Crisp Font & Readability Boost',
-      description:
-          'Improves subpixel font rendering and paragraph readability across news and docs.',
-      version: '1.2',
-      matchPattern: '*',
-      iconBadge: '✨',
-      isBuiltIn: true,
-      cssCode: '''
-body {
-  -webkit-font-smoothing: antialiased !important;
-  text-rendering: optimizeLegibility !important;
-}
-''',
-      jsCode: '',
-    ),
-  ];
+  List<InstalledChromeExtension> get chromeExtensions =>
+      List<InstalledChromeExtension>.unmodifiable(_chromeExtensions);
 
-  List<BrowserExtension> get builtInExtensions => _builtInCatalog
-      .map(
-        (BrowserExtension ext) =>
-            ext.copyWith(enabled: _enabledBuiltInIds.contains(ext.id)),
-      )
-      .toList(growable: false);
+  List<CustomUserscriptExtension> get customScripts =>
+      List<CustomUserscriptExtension>.unmodifiable(_customScripts);
 
-  List<BrowserExtension> get customExtensions =>
-      List<BrowserExtension>.unmodifiable(_customExtensions);
-
-  List<BrowserExtension> get allExtensions => <BrowserExtension>[
-    ...builtInExtensions,
-    ..._customExtensions,
-  ];
+  bool get isInstalling => _isInstalling;
+  String? get installingId => _installingId;
+  String? get lastError => _lastError;
 
   int get enabledCount =>
-      allExtensions.where((BrowserExtension e) => e.enabled).length;
+      _chromeExtensions
+          .where((InstalledChromeExtension e) => e.enabled)
+          .length +
+      _customScripts.where((CustomUserscriptExtension s) => s.enabled).length;
 
-  void _load() {
-    final List<String>? savedBuiltIns = _prefs.getStringList(
-      _keyEnabledBuiltIns,
+  bool isInstalled(String extensionId) {
+    final String clean = extensionId.trim().toLowerCase();
+    return _chromeExtensions.any(
+      (InstalledChromeExtension e) => e.id.toLowerCase() == clean,
     );
-    if (savedBuiltIns != null) {
-      _enabledBuiltInIds
-        ..clear()
-        ..addAll(savedBuiltIns);
+  }
+
+  /// Extracts a 32-character Chrome Extension ID if [urlOrId] is a Chrome Web Store
+  /// detail page URL or direct extension ID; returns null otherwise.
+  static String? extractChromeWebStoreId(String? urlOrId) {
+    if (urlOrId == null || urlOrId.trim().isEmpty) {
+      return null;
     }
-    final String? rawCustom = _prefs.getString(_keyCustomExtensions);
-    if (rawCustom != null && rawCustom.isNotEmpty) {
-      try {
-        final Object? decoded = jsonDecode(rawCustom);
-        if (decoded is List<Object?>) {
-          _customExtensions = decoded
-              .whereType<Map<String, Object?>>()
-              .map(BrowserExtension.fromJson)
-              .where((BrowserExtension e) => e.id.isNotEmpty)
-              .toList();
-        }
-      } on FormatException {
-        _customExtensions = <BrowserExtension>[];
+    final String clean = urlOrId.trim().toLowerCase();
+    if (RegExp(r'^[a-p]{32}$').hasMatch(clean)) {
+      return clean;
+    }
+    if (clean.contains('chromewebstore.google.com/detail') ||
+        clean.contains('chrome.google.com/webstore/detail')) {
+      final Iterable<RegExpMatch> matches = _extIdPattern.allMatches(clean);
+      if (matches.isNotEmpty) {
+        return matches.last.group(1);
       }
+    }
+    return null;
+  }
+
+  void _loadLocalScripts() {
+    final String? raw = _prefs.getString(_keyCustomScripts);
+    if (raw == null || raw.isEmpty) return;
+    try {
+      final Object? decoded = jsonDecode(raw);
+      if (decoded is List<Object?>) {
+        _customScripts = decoded
+            .whereType<Map<String, Object?>>()
+            .map(CustomUserscriptExtension.fromJson)
+            .where((CustomUserscriptExtension e) => e.id.isNotEmpty)
+            .toList();
+      }
+    } on FormatException {
+      _customScripts = <CustomUserscriptExtension>[];
     }
   }
 
-  Future<void> toggleExtension(String id, bool enabled) async {
-    final bool isBuiltIn = _builtInCatalog.any(
-      (BrowserExtension e) => e.id == id,
+  Future<void> _persistLocalScripts() async {
+    await _prefs.setString(
+      _keyCustomScripts,
+      jsonEncode(
+        _customScripts
+            .map((CustomUserscriptExtension s) => s.toJson())
+            .toList(),
+      ),
     );
-    if (isBuiltIn) {
-      if (enabled) {
-        _enabledBuiltInIds.add(id);
-      } else {
-        _enabledBuiltInIds.remove(id);
-      }
-      await _prefs.setStringList(
-        _keyEnabledBuiltIns,
-        _enabledBuiltInIds.toList(),
-      );
-    } else {
-      _customExtensions = _customExtensions
-          .map(
-            (BrowserExtension e) => e.id == id ? e.copyWith(enabled: enabled) : e,
-          )
-          .toList();
-      await _persistCustom();
+  }
+
+  Future<void> refreshChromeExtensions() async {
+    final List<Map<String, Object?>> rawList = await NativeShieldBridge.instance
+        .listChromeExtensions();
+    _chromeExtensions = rawList
+        .map(InstalledChromeExtension.fromNativeMap)
+        .where((InstalledChromeExtension e) => e.id.isNotEmpty)
+        .toList();
+    notifyListeners();
+  }
+
+  Future<String?> installFromWebStore(String urlOrId) async {
+    final String? parsedId = extractChromeWebStoreId(urlOrId);
+    if (parsedId == null) {
+      return 'Enter a valid Chrome Web Store extension link or 32-character Extension ID.';
     }
+    _isInstalling = true;
+    _installingId = parsedId;
+    _lastError = null;
+    notifyListeners();
+
+    try {
+      final Map<String, Object?> res = await NativeShieldBridge.instance
+          .installWebStoreExtension(urlOrId.trim());
+      if (res['ok'] != true) {
+        final String err =
+            res['error']?.toString() ??
+            'Could not download CRX package from Chrome Web Store.';
+        _lastError = err;
+        return err;
+      }
+      final Object? extObj = res['extension'];
+      if (extObj is Map<Object?, Object?>) {
+        final InstalledChromeExtension installed =
+            InstalledChromeExtension.fromNativeMap(<String, Object?>{
+              for (final MapEntry<Object?, Object?> e in extObj.entries)
+                if (e.key != null) e.key.toString(): e.value,
+            });
+        _chromeExtensions = <InstalledChromeExtension>[
+          installed,
+          ..._chromeExtensions.where(
+            (InstalledChromeExtension e) => e.id != installed.id,
+          ),
+        ];
+      } else {
+        await refreshChromeExtensions();
+      }
+      return null;
+    } finally {
+      _isInstalling = false;
+      _installingId = null;
+      notifyListeners();
+    }
+  }
+
+  Future<String?> pickAndInstallCrxOrZip() async {
+    _isInstalling = true;
+    _lastError = null;
+    notifyListeners();
+    try {
+      final Map<String, Object?>? res = await NativeShieldBridge.instance
+          .pickChromeExtensionFile();
+      if (res == null) {
+        return null; // User cancelled picker
+      }
+      if (res['ok'] != true) {
+        final String err =
+            res['error']?.toString() ?? 'Invalid Chrome .crx or .zip package.';
+        _lastError = err;
+        return err;
+      }
+      await refreshChromeExtensions();
+      return null;
+    } finally {
+      _isInstalling = false;
+      notifyListeners();
+    }
+  }
+
+  Future<void> toggleChromeExtension(String id, bool enabled) async {
+    await NativeShieldBridge.instance.toggleChromeExtension(id, enabled);
+    _chromeExtensions = _chromeExtensions
+        .map(
+          (InstalledChromeExtension e) =>
+              e.id == id ? e.copyWith(enabled: enabled) : e,
+        )
+        .toList();
+    notifyListeners();
+  }
+
+  Future<void> uninstallChromeExtension(String id) async {
+    await NativeShieldBridge.instance.uninstallChromeExtension(id);
+    _chromeExtensions = _chromeExtensions
+        .where((InstalledChromeExtension e) => e.id != id)
+        .toList();
     notifyListeners();
   }
 
   Future<String?> addCustomExtension({
     required String name,
-    String description = 'Custom browser extension',
+    String description = 'Custom script extension',
     String matchPattern = '*',
     String cssCode = '',
     String jsCode = '',
@@ -313,126 +446,66 @@ body {
       return 'Enter an extension name.';
     }
     if (cssCode.trim().isEmpty && jsCode.trim().isEmpty) {
-      return 'Provide JavaScript or CSS code for the extension.';
+      return 'Provide JavaScript or CSS code.';
     }
-    final BrowserExtension ext = BrowserExtension(
-      id: 'custom_${DateTime.now().millisecondsSinceEpoch}',
+    final CustomUserscriptExtension item = CustomUserscriptExtension(
+      id: 'script_${DateTime.now().millisecondsSinceEpoch}',
       name: cleanName,
-      description: description.trim().isEmpty
-          ? 'Custom JS/CSS extension'
-          : description.trim(),
-      version: '1.0',
+      description: description.trim(),
       matchPattern: matchPattern.trim().isEmpty ? '*' : matchPattern.trim(),
       cssCode: cssCode.trim(),
       jsCode: jsCode.trim(),
-      enabled: true,
     );
-    _customExtensions = <BrowserExtension>[ext, ..._customExtensions];
-    await _persistCustom();
+    _customScripts = <CustomUserscriptExtension>[item, ..._customScripts];
+    await _persistLocalScripts();
     notifyListeners();
     return null;
   }
 
-  Future<String?> installUserscriptFromUrl(String rawUrl) async {
-    final Uri? uri = Uri.tryParse(rawUrl.trim());
-    if (uri == null || (uri.scheme != 'https' && uri.scheme != 'http')) {
-      return 'Enter a valid http:// or https:// userscript URL.';
-    }
-    try {
-      final http.Response res = await _client
-          .get(uri)
-          .timeout(const Duration(seconds: 10));
-      if (res.statusCode != 200 || res.body.trim().isEmpty) {
-        return 'Unable to download script (HTTP ${res.statusCode}).';
-      }
-      return await installFromUserscriptSource(res.body);
-    } catch (e) {
-      return 'Failed to download userscript: $e';
-    }
-  }
-
-  Future<String?> installFromUserscriptSource(String source) async {
-    final String code = source.trim();
-    if (code.isEmpty) {
-      return 'Userscript source is empty.';
-    }
-    String name = 'Imported Userscript';
-    String desc = 'Installed from .user.js';
-    String match = '*';
-
-    for (final String line in code.split('\n').take(40)) {
-      final String trimmed = line.trim();
-      final RegExpMatch? m = RegExp(
-        r'^\/\/\s*@(\w+)\s+(.+)$',
-      ).firstMatch(trimmed);
-      if (m != null) {
-        final String key = m.group(1)!.toLowerCase();
-        final String val = m.group(2)!.trim();
-        if (key == 'name' && val.isNotEmpty) name = val;
-        if (key == 'description' && val.isNotEmpty) desc = val;
-        if ((key == 'match' || key == 'include') && val.isNotEmpty) {
-          match = val;
-        }
-      }
-    }
-    return addCustomExtension(
-      name: name,
-      description: desc,
-      matchPattern: match,
-      jsCode: code,
-    );
-  }
-
-  Future<void> removeCustomExtension(String id) async {
-    _customExtensions = _customExtensions
-        .where((BrowserExtension e) => e.id != id)
+  Future<void> removeCustomScript(String id) async {
+    _customScripts = _customScripts
+        .where((CustomUserscriptExtension s) => s.id != id)
         .toList();
-    await _persistCustom();
+    await _persistLocalScripts();
     notifyListeners();
   }
 
-  Future<void> _persistCustom() async {
-    await _prefs.setString(
-      _keyCustomExtensions,
-      jsonEncode(_customExtensions.map((BrowserExtension e) => e.toJson()).toList()),
-    );
-  }
-
-  String buildInjectionScriptForUrl(String url) {
-    final Uri? parsed = Uri.tryParse(url);
-    final String host = parsed?.host ?? '';
-    if (host.isEmpty) {
+  /// Synchronously builds custom script injection; combine with [buildFullInjectionForUrl]
+  /// for unpacked Desktop Chrome Extensions (.crx) content_scripts.
+  String buildInjectionScriptForUrl(String? rawUrl) {
+    if (rawUrl == null ||
+        (!rawUrl.startsWith('http://') && !rawUrl.startsWith('https://'))) {
       return '';
     }
-    final List<BrowserExtension> active = allExtensions
-        .where((BrowserExtension e) => e.enabled && e.matchesHost(host))
-        .toList(growable: false);
-    if (active.isEmpty) {
-      return '';
-    }
-
-    final StringBuffer sb = StringBuffer('(function(){\n');
-    for (final BrowserExtension ext in active) {
-      final String safeStyleId = 'hb-ext-css-${ext.id}';
+    final StringBuffer sb = StringBuffer();
+    for (final CustomUserscriptExtension ext in _customScripts) {
+      if (!ext.enabled || !ext.matchesUrl(rawUrl)) continue;
+      sb.writeln('(function(){try{');
       if (ext.cssCode.isNotEmpty) {
+        final String styleId = 'hb-ext-css-${ext.id}';
         final String encodedCss = jsonEncode(ext.cssCode);
-        sb.writeln('''
-try {
-  var st = document.getElementById('$safeStyleId');
-  if (!st) {
-    st = document.createElement('style');
-    st.id = '$safeStyleId';
-    st.textContent = $encodedCss;
-    (document.head || document.documentElement).appendChild(st);
-  }
-} catch (_) {}
-''');
+        sb.writeln(
+          'if(!document.getElementById("$styleId")){var st=document.createElement("style");st.id="$styleId";st.textContent=$encodedCss;(document.head||document.documentElement).appendChild(st);}',
+        );
       }
       if (ext.jsCode.isNotEmpty) {
-        sb.writeln('try {\n${ext.jsCode}\n} catch (_) {}');
+        sb.writeln(ext.jsCode);
       }
+      sb.writeln('}catch(_){}})();');
     }
-    sb.writeln('})();');
     return sb.toString();
+  }
+
+  Future<String> buildFullInjectionForUrl(String? rawUrl) async {
+    if (rawUrl == null ||
+        (!rawUrl.startsWith('http://') && !rawUrl.startsWith('https://'))) {
+      return '';
+    }
+    final String crxBundle = await NativeShieldBridge.instance
+        .getChromeExtensionScriptsForUrl(rawUrl);
+    final String localBundle = buildInjectionScriptForUrl(rawUrl);
+    if (crxBundle.isEmpty) return localBundle;
+    if (localBundle.isEmpty) return crxBundle;
+    return '$crxBundle\n$localBundle';
   }
 }

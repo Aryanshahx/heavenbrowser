@@ -16,9 +16,11 @@ import android.content.pm.PackageManager;
 import android.content.pm.ShortcutInfo;
 import android.content.pm.ShortcutManager;
 import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
 import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.Paint;
+import android.graphics.Path;
 import android.graphics.RectF;
 import android.graphics.drawable.Icon;
 import android.media.MediaScannerConnection;
@@ -98,6 +100,7 @@ public class HeavenShieldPlugin
   private static final int VOICE_SEARCH_REQUEST_CODE = 49021;
   private static final int NOTIF_PERM_REQUEST_CODE = 49022;
   private static final int FOLDER_PICKER_REQUEST_CODE = 49025;
+  private static final int EXT_FILE_PICKER_REQUEST_CODE = 49026;
 
   private static final byte[] TRANSPARENT_GIF = new byte[] {
     0x47, 0x49, 0x46, 0x38, 0x39, 0x61, 0x01, 0x00, 0x01, 0x00, (byte) 0x80, 0x00,
@@ -210,8 +213,13 @@ public class HeavenShieldPlugin
   private MethodChannel channel;
   private MethodChannel.Result pendingVoiceResult;
   private MethodChannel.Result pendingFolderResult;
+  private MethodChannel.Result pendingExtFileResult;
   private MethodChannel.Result pendingNotifPermResult;
   private HeavenVpnManager vpnManager;
+  private HeavenGoogleBgSearch googleBgSearch;
+  private HeavenChromeExtManager chromeExtManager;
+  private volatile String activePopupTabUrl = "https://www.google.com";
+  private volatile String activePopupTabTitle = "Heaven Tab";
 
   private final ExecutorService downloadPool = Executors.newCachedThreadPool();
   private final Map<Long, DownloadJob> downloadJobs = new ConcurrentHashMap<>();
@@ -253,6 +261,8 @@ public class HeavenShieldPlugin
     this.customDownloadPath = sp.getString(PREF_DOWNLOAD_PATH, "");
     this.downloadNotificationsEnabled = sp.getBoolean(PREF_DL_NOTIFS_ENABLED, true);
     this.vpnManager = new HeavenVpnManager(appCtx);
+    this.googleBgSearch = new HeavenGoogleBgSearch(appCtx);
+    this.chromeExtManager = new HeavenChromeExtManager(appCtx);
     this.channel = new MethodChannel(binding.getBinaryMessenger(), CHANNEL_NAME);
     this.channel.setMethodCallHandler(this);
     setupServiceWorkerShield();
@@ -262,6 +272,10 @@ public class HeavenShieldPlugin
   @Override
   public void onDetachedFromEngine(FlutterPluginBinding binding) {
     unregisterDownloadControlReceiver(binding.getApplicationContext());
+    if (this.googleBgSearch != null) {
+      this.googleBgSearch.destroy();
+      this.googleBgSearch = null;
+    }
     if (this.channel != null) {
       this.channel.setMethodCallHandler(null);
       this.channel = null;
@@ -439,6 +453,45 @@ public class HeavenShieldPlugin
       folderCb.success(null);
       return true;
     }
+    if (requestCode == EXT_FILE_PICKER_REQUEST_CODE) {
+      MethodChannel.Result extCb = this.pendingExtFileResult;
+      this.pendingExtFileResult = null;
+      if (extCb == null) {
+        return true;
+      }
+      if (resultCode == Activity.RESULT_OK && data != null && data.getData() != null) {
+        final Uri docUri = data.getData();
+        final Context ctx = resolveContext();
+        if (ctx != null && chromeExtManager != null) {
+          downloadPool.execute(
+              () -> {
+                try (InputStream is = ctx.getContentResolver().openInputStream(docUri);
+                    ByteArrayOutputStream bos = new ByteArrayOutputStream()) {
+                  if (is == null) {
+                    mainHandler.post(() -> extCb.success(null));
+                    return;
+                  }
+                  byte[] buf = new byte[16384];
+                  int n;
+                  while ((n = is.read(buf)) > 0) {
+                    bos.write(buf, 0, n);
+                  }
+                  String seg = docUri.getLastPathSegment();
+                  chromeExtManager.installFromLocalBytes(
+                      seg != null ? seg : "extension.crx", bos.toByteArray(), extCb);
+                } catch (Throwable t) {
+                  Map<String, Object> err = new HashMap<>();
+                  err.put("ok", false);
+                  err.put("error", "Could not read selected extension file");
+                  mainHandler.post(() -> extCb.success(err));
+                }
+              });
+          return true;
+        }
+      }
+      extCb.success(null);
+      return true;
+    }
     return false;
   }
 
@@ -470,6 +523,14 @@ public class HeavenShieldPlugin
           new ServiceWorkerClient() {
             @Override
             public WebResourceResponse shouldInterceptRequest(WebResourceRequest request) {
+              if (request != null && chromeExtManager != null) {
+                WebResourceResponse extRes =
+                    chromeExtManager.interceptExtensionRequest(
+                        request.getUrl(), activePopupTabUrl, activePopupTabTitle);
+                if (extRes != null) {
+                  return extRes;
+                }
+              }
               return interceptIfAdOrTracker(-1L, request);
             }
           });
@@ -642,11 +703,118 @@ public class HeavenShieldPlugin
         handleClearSiteData(targetDomain, result);
         break;
 
+      case "searchGoogleInBackground":
+        if (googleBgSearch != null) {
+          String gQuery = call.argument("query");
+          String gTab = call.argument("tab");
+          String gSafe = call.argument("safeMode");
+          String gTime = call.argument("timeCode");
+          String gLang = call.argument("langHeader");
+          googleBgSearch.searchInBackground(gQuery, gTab, gSafe, gTime, gLang, result);
+        } else {
+          result.success(Collections.singletonMap("ok", false));
+        }
+        break;
+
+      case "listChromeExtensions":
+        if (chromeExtManager != null) {
+          result.success(chromeExtManager.listInstalledExtensions());
+        } else {
+          result.success(Collections.emptyList());
+        }
+        break;
+
+      case "installWebStoreExtension":
+        if (chromeExtManager != null) {
+          String urlOrId = call.argument("urlOrId");
+          chromeExtManager.installFromWebStore(urlOrId != null ? urlOrId : "", result);
+        } else {
+          result.success(Collections.singletonMap("ok", false));
+        }
+        break;
+
+      case "pickChromeExtensionFile":
+        handlePickChromeExtensionFile(result);
+        break;
+
+      case "toggleChromeExtension":
+        if (chromeExtManager != null) {
+          String extId = call.argument("id");
+          Boolean en = call.argument("enabled");
+          result.success(
+              chromeExtManager.setExtensionEnabled(
+                  extId != null ? extId : "", en == null || en));
+        } else {
+          result.success(false);
+        }
+        break;
+
+      case "uninstallChromeExtension":
+        if (chromeExtManager != null) {
+          String extId = call.argument("id");
+          result.success(chromeExtManager.uninstallExtension(extId != null ? extId : ""));
+        } else {
+          result.success(false);
+        }
+        break;
+
+      case "getChromeExtensionScriptsForUrl":
+        if (chromeExtManager != null) {
+          String pageUrl = call.argument("url");
+          String u = pageUrl != null ? pageUrl : "";
+          downloadPool.execute(
+              () -> {
+                String bundle = chromeExtManager.buildContentScriptsBundleForUrl(u);
+                mainHandler.post(() -> result.success(bundle));
+              });
+        } else {
+          result.success("");
+        }
+        break;
+
+      case "updateChromeExtensionStorage":
+        if (chromeExtManager != null) {
+          String extId = call.argument("id");
+          String patchJson = call.argument("patchJson");
+          chromeExtManager.updateExtensionStorage(extId, patchJson);
+        }
+        result.success(true);
+        break;
+
+      case "setPopupContextTab":
+        String pUrl = call.argument("url");
+        String pTitle = call.argument("title");
+        if (pUrl != null && !pUrl.isEmpty()) {
+          activePopupTabUrl = pUrl;
+        }
+        if (pTitle != null && !pTitle.isEmpty()) {
+          activePopupTabTitle = pTitle;
+        }
+        result.success(true);
+        break;
+
       case "provisionFreeWarpConfig":
         if (vpnManager != null) {
-          String routeMode = call.argument("routeMode");
-          vpnManager.provisionFreeWarpConfig(
-              routeMode != null ? routeMode : "stealth_4500", result);
+          vpnManager.provisionFreeWarpConfig(result);
+        } else {
+          result.success(Collections.singletonMap("ok", false));
+        }
+        break;
+
+      case "provisionForeignOpenVpnConfig":
+        if (vpnManager != null) {
+          String countryCode = call.argument("countryCode");
+          List<String> excludeHosts = call.argument("excludeHosts");
+          vpnManager.provisionForeignOpenVpnConfig(
+              countryCode != null ? countryCode : "AUTO_FOREIGN", excludeHosts, result);
+        } else {
+          result.success(Collections.singletonMap("ok", false));
+        }
+        break;
+
+      case "fetchLiveForeignCountries":
+        if (vpnManager != null) {
+          vpnManager.fetchLiveForeignCountries(result);
         } else {
           result.success(Collections.singletonMap("ok", false));
         }
@@ -665,16 +833,12 @@ public class HeavenShieldPlugin
         if (vpnManager != null) {
           String cfgText = call.argument("configText");
           String profName = call.argument("profileName");
-          String routeMode = call.argument("routeMode");
           Boolean bOnly = call.argument("browserOnly");
-          Boolean builtInWarp = call.argument("isBuiltInWarp");
           vpnManager.connectVpn(
               this.activity,
               cfgText != null ? cfgText : "",
-              profName != null ? profName : "Heaven Stealth VPN",
-              routeMode != null ? routeMode : "stealth_4500",
-              bOnly != null && bOnly,
-              builtInWarp == null || builtInWarp,
+              profName != null ? profName : "Heaven Free VPN",
+              bOnly == null || bOnly,
               result);
         } else {
           result.success(Collections.singletonMap("ok", false));
@@ -1176,55 +1340,212 @@ public class HeavenShieldPlugin
     return fallback != null ? fallback.getAbsolutePath() : null;
   }
 
+  private void handlePickChromeExtensionFile(MethodChannel.Result result) {
+    if (this.activity == null) {
+      result.success(null);
+      return;
+    }
+    this.pendingExtFileResult = result;
+    Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+    intent.addCategory(Intent.CATEGORY_OPENABLE);
+    intent.setType("*/*");
+    intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+    try {
+      this.activity.startActivityForResult(intent, EXT_FILE_PICKER_REQUEST_CODE);
+    } catch (ActivityNotFoundException e) {
+      this.pendingExtFileResult = null;
+      result.success(null);
+    }
+  }
+
   @SuppressWarnings("deprecation")
-  private void handleCreateHomeScreenShortcut(MethodCall call, MethodChannel.Result result) {
-    Context ctx = resolveContext();
-    String title = call.argument("title");
-    String url = call.argument("url");
+  private void handleCreateHomeScreenShortcut(
+      final MethodCall call, final MethodChannel.Result result) {
+    final Context ctx = resolveContext();
+    final String title = call.argument("title");
+    final String url = call.argument("url");
+    final String explicitIconUrl = call.argument("iconUrl");
+    final Object webViewIdObj = call.argument("webViewId");
     if (ctx == null || url == null || url.trim().isEmpty()) {
       result.success(false);
       return;
     }
-    String cleanUrl = url.trim();
-    String cleanTitle =
+    final String cleanUrl = url.trim();
+    String computedTitle =
         (title != null && !title.trim().isEmpty()) ? title.trim() : cleanUrl;
-    if (cleanTitle.length() > 28) {
-      cleanTitle = cleanTitle.substring(0, 28).trim();
+    if (computedTitle.length() > 28) {
+      computedTitle = computedTitle.substring(0, 28).trim();
+    }
+    final String cleanTitle = computedTitle;
+
+    Bitmap liveFaviconCopy = null;
+    if (webViewIdObj instanceof Number && pluginBinding != null) {
+      try {
+        WebView wv =
+            WebViewFlutterAndroidExternalApi.getWebView(
+                pluginBinding, ((Number) webViewIdObj).longValue());
+        if (wv != null && wv.getFavicon() != null && !wv.getFavicon().isRecycled()) {
+          liveFaviconCopy =
+              wv.getFavicon().copy(Bitmap.Config.ARGB_8888, false);
+        }
+      } catch (Throwable ignored) {
+      }
+    }
+    final Bitmap fallbackWebViewBmp = liveFaviconCopy;
+
+    downloadPool.execute(
+        () -> {
+          Bitmap fetchedLogo =
+              downloadBestWebsiteLogoBitmap(cleanUrl, explicitIconUrl, fallbackWebViewBmp);
+          final Bitmap iconBmp =
+              fetchedLogo != null
+                  ? composeWebsiteLogoLauncherBitmap(fetchedLogo)
+                  : buildShortcutIconBitmap(cleanTitle);
+
+          mainHandler.post(
+              () -> {
+                Intent launchIntent = new Intent(Intent.ACTION_VIEW, Uri.parse(cleanUrl));
+                launchIntent.setClassName(
+                    ctx.getPackageName(), "com.hypertechlabs.heavenbrowser.MainActivity");
+                launchIntent.addFlags(
+                    Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP);
+
+                try {
+                  if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    ShortcutManager sm = ctx.getSystemService(ShortcutManager.class);
+                    if (sm != null && sm.isRequestPinShortcutSupported()) {
+                      String shortcutId = "hb_site_" + Math.abs(cleanUrl.hashCode());
+                      ShortcutInfo info =
+                          new ShortcutInfo.Builder(ctx, shortcutId)
+                              .setShortLabel(cleanTitle)
+                              .setLongLabel(cleanTitle)
+                              .setIcon(Icon.createWithBitmap(iconBmp))
+                              .setIntent(launchIntent)
+                              .build();
+                      boolean requested = sm.requestPinShortcut(info, null);
+                      result.success(requested);
+                      return;
+                    }
+                  }
+                  Intent legacy =
+                      new Intent("com.android.launcher.action.INSTALL_SHORTCUT");
+                  legacy.putExtra(Intent.EXTRA_SHORTCUT_INTENT, launchIntent);
+                  legacy.putExtra(Intent.EXTRA_SHORTCUT_NAME, cleanTitle);
+                  legacy.putExtra(Intent.EXTRA_SHORTCUT_ICON, iconBmp);
+                  ctx.sendBroadcast(legacy);
+                  result.success(true);
+                } catch (Throwable t) {
+                  result.success(false);
+                }
+              });
+        });
+  }
+
+  private static Bitmap downloadBestWebsiteLogoBitmap(
+      String pageUrl, String explicitIconUrl, Bitmap webViewFavicon) {
+    List<String> candidates = new ArrayList<>(6);
+    if (explicitIconUrl != null
+        && (explicitIconUrl.startsWith("https://") || explicitIconUrl.startsWith("http://"))) {
+      candidates.add(explicitIconUrl.trim());
+    }
+    try {
+      Uri u = Uri.parse(pageUrl);
+      String host = u.getHost();
+      String scheme = u.getScheme() != null ? u.getScheme() : "https";
+      if (host != null && !host.isEmpty()) {
+        candidates.add(scheme + "://" + host + "/apple-touch-icon.png");
+        candidates.add(
+            "https://www.google.com/s2/favicons?sz=256&domain_url=" + Uri.encode(pageUrl));
+        candidates.add("https://icons.duckduckgo.com/ip3/" + host + ".ico");
+        candidates.add(scheme + "://" + host + "/favicon.ico");
+      }
+    } catch (Throwable ignored) {
     }
 
-    Intent launchIntent = new Intent(Intent.ACTION_VIEW, Uri.parse(cleanUrl));
-    launchIntent.setClassName(
-        ctx.getPackageName(), "com.hypertechlabs.heavenbrowser.MainActivity");
-    launchIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP);
-
-    Bitmap iconBmp = buildShortcutIconBitmap(cleanTitle);
-
-    try {
-      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-        ShortcutManager sm = ctx.getSystemService(ShortcutManager.class);
-        if (sm != null && sm.isRequestPinShortcutSupported()) {
-          String shortcutId = "hb_site_" + Math.abs(cleanUrl.hashCode());
-          ShortcutInfo info =
-              new ShortcutInfo.Builder(ctx, shortcutId)
-                  .setShortLabel(cleanTitle)
-                  .setLongLabel(cleanTitle)
-                  .setIcon(Icon.createWithBitmap(iconBmp))
-                  .setIntent(launchIntent)
-                  .build();
-          boolean requested = sm.requestPinShortcut(info, null);
-          result.success(requested);
-          return;
+    Bitmap bestSmall = webViewFavicon;
+    for (String iconEndpoint : candidates) {
+      Bitmap decoded = fetchRemoteBitmap(iconEndpoint);
+      if (decoded != null) {
+        if (decoded.getWidth() >= 64 && decoded.getHeight() >= 64) {
+          return decoded;
+        }
+        if (bestSmall == null
+            || (decoded.getWidth() * decoded.getHeight())
+                > (bestSmall.getWidth() * bestSmall.getHeight())) {
+          bestSmall = decoded;
         }
       }
-      Intent legacy = new Intent("com.android.launcher.action.INSTALL_SHORTCUT");
-      legacy.putExtra(Intent.EXTRA_SHORTCUT_INTENT, launchIntent);
-      legacy.putExtra(Intent.EXTRA_SHORTCUT_NAME, cleanTitle);
-      legacy.putExtra(Intent.EXTRA_SHORTCUT_ICON, iconBmp);
-      ctx.sendBroadcast(legacy);
-      result.success(true);
-    } catch (Throwable t) {
-      result.success(false);
     }
+    return bestSmall;
+  }
+
+  private static Bitmap fetchRemoteBitmap(String urlStr) {
+    HttpURLConnection conn = null;
+    try {
+      conn = (HttpURLConnection) URI.create(urlStr).toURL().openConnection();
+      conn.setInstanceFollowRedirects(true);
+      conn.setConnectTimeout(4500);
+      conn.setReadTimeout(5500);
+      conn.setRequestProperty(
+          "User-Agent",
+          "Mozilla/5.0 (Linux; Android 15; Mobile) AppleWebKit/537.36 Chrome/134.0.0.0");
+      int code = conn.getResponseCode();
+      if (code < 200 || code >= 300) {
+        return null;
+      }
+      try (InputStream is = conn.getInputStream();
+          ByteArrayOutputStream bos = new ByteArrayOutputStream()) {
+        byte[] buf = new byte[8192];
+        int n;
+        int total = 0;
+        while ((n = is.read(buf)) > 0) {
+          total += n;
+          if (total > 3 * 1024 * 1024) {
+            return null;
+          }
+          bos.write(buf, 0, n);
+        }
+        byte[] bytes = bos.toByteArray();
+        Bitmap bmp = BitmapFactory.decodeByteArray(bytes, 0, bytes.length);
+        if (bmp != null && bmp.getWidth() >= 16 && bmp.getHeight() >= 16) {
+          return bmp;
+        }
+      }
+    } catch (Throwable ignored) {
+      return null;
+    } finally {
+      if (conn != null) {
+        conn.disconnect();
+      }
+    }
+    return null;
+  }
+
+  private static Bitmap composeWebsiteLogoLauncherBitmap(Bitmap srcLogo) {
+    int size = 192;
+    Bitmap out = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888);
+    Canvas canvas = new Canvas(out);
+
+    RectF outerRect = new RectF(8f, 8f, size - 8f, size - 8f);
+    Path clipPath = new Path();
+    clipPath.addRoundRect(outerRect, 42f, 42f, Path.Direction.CW);
+
+    Paint bgPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+    bgPaint.setColor(Color.WHITE);
+    canvas.drawRoundRect(outerRect, 42f, 42f, bgPaint);
+
+    Paint bmpPaint = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.FILTER_BITMAP_FLAG);
+    canvas.save();
+    canvas.clipPath(clipPath);
+    if (srcLogo.getWidth() >= 96 && srcLogo.getHeight() >= 96) {
+      canvas.drawBitmap(srcLogo, null, outerRect, bmpPaint);
+    } else {
+      float pad = 28f;
+      RectF inset = new RectF(pad, pad, size - pad, size - pad);
+      canvas.drawBitmap(srcLogo, null, inset, bmpPaint);
+    }
+    canvas.restore();
+    return out;
   }
 
   private static Bitmap buildShortcutIconBitmap(String label) {
@@ -2235,6 +2556,14 @@ public class HeavenShieldPlugin
 
     @Override
     public WebResourceResponse shouldInterceptRequest(WebView view, WebResourceRequest request) {
+      if (request != null && chromeExtManager != null) {
+        WebResourceResponse extRes =
+            chromeExtManager.interceptExtensionRequest(
+                request.getUrl(), activePopupTabUrl, activePopupTabTitle);
+        if (extRes != null) {
+          return extRes;
+        }
+      }
       WebResourceResponse blocked = interceptIfAdOrTracker(webViewId, request);
       if (blocked != null) {
         return blocked;

@@ -31,6 +31,7 @@ class BrowserEngine extends ChangeNotifier {
     required this.settings,
     required this.isIncognito,
     this.extensions,
+    this.onOpenNewTabFromExtension,
     this.enablePlatformWebView = true,
   }) {
     settings.addListener(_onSettingsChanged);
@@ -42,11 +43,13 @@ class BrowserEngine extends ChangeNotifier {
 
   final BrowserSettingsController settings;
   final ExtensionsController? extensions;
+  final ValueChanged<String>? onOpenNewTabFromExtension;
   final bool isIncognito;
   final bool enablePlatformWebView;
 
   WebViewController? _controller;
   int? _androidWebViewId;
+  String? _pageIconUrl;
 
   final List<String> _virtualHistory = <String>[''];
   int _virtualIndex = 0;
@@ -65,6 +68,8 @@ class BrowserEngine extends ChangeNotifier {
   int _lastDownloadInterceptMs = 0;
 
   WebViewController? get controller => _controller;
+  int? get androidWebViewId => _androidWebViewId;
+  String? get pageIconUrl => _pageIconUrl;
   String? get currentUrl => _currentUrl;
   String get pageTitle => _pageTitle;
   double get progress => _progress;
@@ -129,6 +134,15 @@ class BrowserEngine extends ChangeNotifier {
     );
 
     unawaited(
+      webController.addJavaScriptChannel(
+        'HeavenChromeExtChannel',
+        onMessageReceived: (JavaScriptMessage msg) {
+          _handleChromeExtChannelMessage(msg.message);
+        },
+      ),
+    );
+
+    unawaited(
       webController.setNavigationDelegate(
         NavigationDelegate(
           onNavigationRequest: _handleNavigationRequest,
@@ -138,6 +152,7 @@ class BrowserEngine extends ChangeNotifier {
               return;
             }
             _currentUrl = url;
+            _pageIconUrl = null;
             _isLoading = true;
             _progress = 0.1;
             _pullProgress = 0;
@@ -495,6 +510,31 @@ class BrowserEngine extends ChangeNotifier {
     }
   }
 
+  void _handleChromeExtChannelMessage(String raw) {
+    try {
+      final Object? decoded = jsonDecode(raw);
+      if (decoded is! Map<Object?, Object?>) return;
+      final String extId = decoded['extId']?.toString() ?? '';
+      final String op = decoded['op']?.toString() ?? '';
+      final Object? data = decoded['data'];
+      if (op == 'storage_set' && extId.isNotEmpty && data != null) {
+        unawaited(
+          NativeShieldBridge.instance.updateChromeExtensionStorage(
+            extId,
+            jsonEncode(data),
+          ),
+        );
+      } else if (op == 'open_tab' && data is Map<Object?, Object?>) {
+        final String target = data['url']?.toString() ?? '';
+        if (target.isNotEmpty) {
+          onOpenNewTabFromExtension?.call(target);
+        }
+      }
+    } catch (_) {
+      // Ignore malformed messages.
+    }
+  }
+
   Future<void> _injectProtectionAndZoom(String url) async {
     final WebViewController? webController = _controller;
     final Uri? parsed = Uri.tryParse(url);
@@ -516,18 +556,49 @@ class BrowserEngine extends ChangeNotifier {
         '\n;(function(){try{window.open=function(){return null;};}catch(_){}})();',
       );
     }
-    final String extScript =
-        extensions?.buildInjectionScriptForUrl(url) ?? '';
-    if (extScript.isNotEmpty) {
-      combined
-        ..write('\n')
-        ..write(extScript);
-    }
 
     try {
       await webController.runJavaScript(combined.toString());
     } catch (_) {
       // Ignore JS errors on non-HTML responses.
+    }
+
+    // Inject Desktop Chrome Extensions (.crx content_scripts + chrome.* API polyfill).
+    if (extensions != null) {
+      final String crxAndScripts = await extensions!.buildFullInjectionForUrl(
+        url,
+      );
+      if (crxAndScripts.isNotEmpty) {
+        try {
+          await webController.runJavaScript(crxAndScripts);
+        } catch (_) {
+          // Non-fatal if page navigated away.
+        }
+      }
+    }
+
+    // Extract high-resolution website logo (<link rel="apple-touch-icon" / "icon">)
+    // so "Create shortcut" uses the website's own logo!
+    try {
+      final Object rawIcon = await webController.runJavaScriptReturningResult(
+        '(function(){'
+        'var el=document.querySelector(\'link[rel*="apple-touch-icon"][href]\')'
+        '||document.querySelector(\'link[rel="shortcut icon"][href]\')'
+        '||document.querySelector(\'link[rel*="icon"][href]\');'
+        'return el?el.href:"";'
+        '})()',
+      );
+      String candidate = rawIcon.toString().trim();
+      if (candidate.startsWith('"') &&
+          candidate.endsWith('"') &&
+          candidate.length >= 2) {
+        candidate = candidate.substring(1, candidate.length - 1);
+      }
+      if (candidate.startsWith('http://') || candidate.startsWith('https://')) {
+        _pageIconUrl = candidate;
+      }
+    } catch (_) {
+      // Fallback handled natively via /apple-touch-icon.png & Google S2 256px logo.
     }
   }
 

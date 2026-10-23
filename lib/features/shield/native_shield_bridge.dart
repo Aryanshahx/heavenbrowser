@@ -371,22 +371,17 @@ class NativeShieldBridge {
     }
   }
 
-  Future<Map<String, Object?>> provisionFreeWarpConfig({
-    String routeMode = 'stealth_4500',
-  }) async {
+  Future<Map<String, Object?>> provisionFreeWarpConfig() async {
     const Map<String, Object?> testFallback = <String, Object?>{
       'ok': true,
       'configText':
-          '[Interface]\nPrivateKey = AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=\nAddress = 172.16.0.2/32, 2606:4700:110::2/128\nDNS = 1.1.1.1, 1.0.0.1, 2606:4700:4700::1111\nMTU = 1280\n\n[Peer]\nPublicKey = bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo=\nAllowedIPs = 0.0.0.0/0, ::/0\nEndpoint = 162.159.192.1:4500\n',
+          '[Interface]\nPrivateKey = AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=\nAddress = 172.16.0.2/32\nDNS = 1.1.1.1\n\n[Peer]\nPublicKey = bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo=\nAllowedIPs = 0.0.0.0/0\nEndpoint = 162.159.192.6:2408\n',
       'clientIpv4': '172.16.0.2',
-      'endpoint': '162.159.192.1:4500',
+      'endpoint': '162.159.192.6:2408',
     };
     try {
       final Map<Object?, Object?>? raw = await _channel
-          .invokeMethod<Map<Object?, Object?>>(
-            'provisionFreeWarpConfig',
-            <String, Object>{'routeMode': routeMode},
-          );
+          .invokeMethod<Map<Object?, Object?>>('provisionFreeWarpConfig');
       if (raw == null) {
         return testFallback;
       }
@@ -439,24 +434,19 @@ class NativeShieldBridge {
   Future<Map<String, Object?>> connectVpn({
     required String configText,
     required String profileName,
-    String routeMode = 'stealth_4500',
-    bool browserOnly = false,
-    bool isBuiltInWarp = true,
+    required bool browserOnly,
   }) async {
     final Map<String, Object?> fallback = <String, Object?>{
       'ok': true,
       'connected': true,
       'profileName': profileName,
-      'endpoint': '162.159.192.1:4500',
     };
     try {
       final Map<Object?, Object?>? raw = await _channel
           .invokeMethod<Map<Object?, Object?>>('connectVpn', <String, Object>{
             'configText': configText,
             'profileName': profileName,
-            'routeMode': routeMode,
             'browserOnly': browserOnly,
-            'isBuiltInWarp': isBuiltInWarp,
           });
       if (raw == null) {
         return fallback;
@@ -483,6 +473,72 @@ class NativeShieldBridge {
       // Expected in widget tests.
     } on PlatformException {
       // Non-fatal.
+    }
+  }
+
+  Future<Map<String, Object?>> provisionForeignOpenVpnConfig({
+    required String countryCode,
+    List<String> excludeHosts = const <String>[],
+  }) async {
+    final Map<String, Object?> fallback = <String, Object?>{
+      'ok': true,
+      'configText':
+          'client\ndev tun\nremote 89.187.173.169 1194 tcp-client\ncipher AES-256-GCM\n<ca>\nTEST\n</ca>\n<cert>\nTEST\n</cert>\n<key>\nTEST\n</key>\n',
+      'serverHost': '89.187.173.169',
+      'countryCode': countryCode,
+      'countryName': countryCode,
+      'latencyMs': 42,
+    };
+    try {
+      final Map<Object?, Object?>? raw = await _channel
+          .invokeMethod<Map<Object?, Object?>>(
+            'provisionForeignOpenVpnConfig',
+            <String, Object>{
+              'countryCode': countryCode,
+              'excludeHosts': excludeHosts,
+            },
+          );
+      if (raw == null) {
+        return fallback;
+      }
+      return <String, Object?>{
+        for (final MapEntry<Object?, Object?> e in raw.entries)
+          if (e.key != null) e.key.toString(): e.value,
+      };
+    } on MissingPluginException {
+      return fallback;
+    } on PlatformException catch (e) {
+      return <String, Object?>{
+        'ok': false,
+        'error': e.message ?? 'Foreign VPN provisioning failed',
+      };
+    }
+  }
+
+  Future<List<Map<String, Object?>>> fetchLiveForeignCountries() async {
+    try {
+      final Object? raw = await _channel.invokeMethod<Object?>(
+        'fetchLiveForeignCountries',
+      );
+      final Object? listObj = (raw is Map<Object?, Object?>)
+          ? raw['countries']
+          : raw;
+      if (listObj is List<Object?>) {
+        return listObj
+            .whereType<Map<Object?, Object?>>()
+            .map(
+              (Map<Object?, Object?> m) => <String, Object?>{
+                for (final MapEntry<Object?, Object?> e in m.entries)
+                  if (e.key != null) e.key.toString(): e.value,
+              },
+            )
+            .toList(growable: false);
+      }
+      return const <Map<String, Object?>>[];
+    } on MissingPluginException {
+      return const <Map<String, Object?>>[];
+    } on PlatformException {
+      return const <Map<String, Object?>>[];
     }
   }
 
@@ -577,17 +633,203 @@ class NativeShieldBridge {
   Future<bool> createHomeScreenShortcut({
     required String title,
     required String url,
+    String? iconUrl,
+    int? webViewId,
   }) async {
     try {
       final bool? ok = await _channel.invokeMethod<bool>(
         'createHomeScreenShortcut',
-        <String, Object>{'title': title, 'url': url},
+        <String, Object?>{
+          'title': title,
+          'url': url,
+          'iconUrl': iconUrl,
+          'webViewId': webViewId,
+        },
       );
       return ok ?? false;
     } on MissingPluginException {
       return true;
     } on PlatformException {
       return false;
+    }
+  }
+
+  Future<Map<String, Object?>> searchGoogleInBackground({
+    required String query,
+    String tab = 'all',
+    String safeMode = 'off',
+    String timeCode = 'any',
+    String langHeader = 'en-US,en;q=0.9',
+  }) async {
+    try {
+      final Map<Object?, Object?>? raw = await _channel
+          .invokeMethod<Map<Object?, Object?>>(
+            'searchGoogleInBackground',
+            <String, Object>{
+              'query': query,
+              'tab': tab,
+              'safeMode': safeMode,
+              'timeCode': timeCode,
+              'langHeader': langHeader,
+            },
+          );
+      if (raw == null) {
+        return const <String, Object?>{'ok': false};
+      }
+      return <String, Object?>{
+        for (final MapEntry<Object?, Object?> e in raw.entries)
+          if (e.key != null) e.key.toString(): e.value,
+      };
+    } on MissingPluginException {
+      return const <String, Object?>{'ok': false};
+    } on PlatformException {
+      return const <String, Object?>{'ok': false};
+    }
+  }
+
+  Future<List<Map<String, Object?>>> listChromeExtensions() async {
+    try {
+      final Object? raw = await _channel.invokeMethod<Object?>(
+        'listChromeExtensions',
+      );
+      if (raw is List<Object?>) {
+        return raw
+            .whereType<Map<Object?, Object?>>()
+            .map(
+              (Map<Object?, Object?> m) => <String, Object?>{
+                for (final MapEntry<Object?, Object?> e in m.entries)
+                  if (e.key != null) e.key.toString(): e.value,
+              },
+            )
+            .toList(growable: false);
+      }
+      return const <Map<String, Object?>>[];
+    } on MissingPluginException {
+      return const <Map<String, Object?>>[];
+    } on PlatformException {
+      return const <Map<String, Object?>>[];
+    }
+  }
+
+  Future<Map<String, Object?>> installWebStoreExtension(String urlOrId) async {
+    try {
+      final Map<Object?, Object?>? raw = await _channel
+          .invokeMethod<Map<Object?, Object?>>(
+            'installWebStoreExtension',
+            <String, Object>{'urlOrId': urlOrId},
+          );
+      if (raw == null) {
+        return const <String, Object?>{
+          'ok': false,
+          'error': 'Extension installer unavailable.',
+        };
+      }
+      return <String, Object?>{
+        for (final MapEntry<Object?, Object?> e in raw.entries)
+          if (e.key != null) e.key.toString(): e.value,
+      };
+    } on MissingPluginException {
+      return const <String, Object?>{
+        'ok': false,
+        'error': 'Extension installer unavailable in headless environment.',
+      };
+    } on PlatformException catch (e) {
+      return <String, Object?>{
+        'ok': false,
+        'error': e.message ?? 'Chrome Web Store installation failed.',
+      };
+    }
+  }
+
+  Future<Map<String, Object?>?> pickChromeExtensionFile() async {
+    try {
+      final Map<Object?, Object?>? raw = await _channel
+          .invokeMethod<Map<Object?, Object?>>('pickChromeExtensionFile');
+      if (raw == null) {
+        return null;
+      }
+      return <String, Object?>{
+        for (final MapEntry<Object?, Object?> e in raw.entries)
+          if (e.key != null) e.key.toString(): e.value,
+      };
+    } on MissingPluginException {
+      return null;
+    } on PlatformException {
+      return null;
+    }
+  }
+
+  Future<bool> toggleChromeExtension(String id, bool enabled) async {
+    try {
+      final bool? ok = await _channel.invokeMethod<bool>(
+        'toggleChromeExtension',
+        <String, Object>{'id': id, 'enabled': enabled},
+      );
+      return ok ?? false;
+    } on MissingPluginException {
+      return true;
+    } on PlatformException {
+      return false;
+    }
+  }
+
+  Future<bool> uninstallChromeExtension(String id) async {
+    try {
+      final bool? ok = await _channel.invokeMethod<bool>(
+        'uninstallChromeExtension',
+        <String, Object>{'id': id},
+      );
+      return ok ?? false;
+    } on MissingPluginException {
+      return true;
+    } on PlatformException {
+      return false;
+    }
+  }
+
+  Future<String> getChromeExtensionScriptsForUrl(String url) async {
+    try {
+      final String? js = await _channel.invokeMethod<String>(
+        'getChromeExtensionScriptsForUrl',
+        <String, Object>{'url': url},
+      );
+      return js ?? '';
+    } on MissingPluginException {
+      return '';
+    } on PlatformException {
+      return '';
+    }
+  }
+
+  Future<void> updateChromeExtensionStorage(
+    String id,
+    String patchJson,
+  ) async {
+    try {
+      await _channel.invokeMethod<bool>(
+        'updateChromeExtensionStorage',
+        <String, Object>{'id': id, 'patchJson': patchJson},
+      );
+    } on MissingPluginException {
+      // Expected in widget tests.
+    } on PlatformException {
+      // Non-fatal.
+    }
+  }
+
+  Future<void> setPopupContextTab({
+    required String url,
+    required String title,
+  }) async {
+    try {
+      await _channel.invokeMethod<bool>(
+        'setPopupContextTab',
+        <String, Object>{'url': url, 'title': title},
+      );
+    } on MissingPluginException {
+      // Expected in widget tests.
+    } on PlatformException {
+      // Non-fatal.
     }
   }
 

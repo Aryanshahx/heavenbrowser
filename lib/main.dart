@@ -93,7 +93,10 @@ class _HeavenBrowserAppState extends State<HeavenBrowserApp>
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     if (widget.extensions == null) {
-      _ownedExtensions = ExtensionsController(widget.settings.prefs);
+      _ownedExtensions = ExtensionsController(
+        widget.settings.prefs,
+        syncNativeOnInit: widget.enablePlatformWebView,
+      );
     }
     _tabManager = TabManagerController(
       settings: widget.settings,

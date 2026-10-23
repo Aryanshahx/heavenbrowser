@@ -324,13 +324,27 @@ class SettingsScreen extends StatelessWidget {
                         leading: const Icon(Icons.extension_rounded),
                         title: const Text('Browser Extensions'),
                         subtitle: Text(
-                          '${extensions!.enabledCount} active • Add custom JS/CSS or .user.js',
+                          '${extensions!.enabledCount} active • Chrome Web Store (.crx) & .zip MV2/MV3',
                         ),
                         trailing: const Icon(Icons.chevron_right_rounded),
                         onTap: () => Navigator.of(context).push(
                           MaterialPageRoute<void>(
-                            builder: (_) =>
-                                ExtensionsScreen(extensions: extensions!),
+                            builder: (_) => ExtensionsScreen(
+                              extensions: extensions!,
+                              activeEngine: tabManager.activeEngine,
+                              onOpenWebStoreInBrowser: () {
+                                Navigator.pop(context);
+                                tabManager.activeEngine.loadUserEntry(
+                                  ExtensionsController.chromeWebStoreHomeUrl,
+                                );
+                              },
+                              onOpenUrlInNewTab: (String url) {
+                                tabManager.openNewTab(
+                                  incognito: tabManager.isActiveIncognito,
+                                  initialInput: url,
+                                );
+                              },
+                            ),
                           ),
                         ),
                       ),

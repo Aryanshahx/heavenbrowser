@@ -229,6 +229,9 @@ class TabManagerController extends ChangeNotifier {
     final BrowserEngine engine = BrowserEngine(
       settings: settings,
       extensions: extensions,
+      onOpenNewTabFromExtension: (String url) {
+        unawaited(openNewTab(incognito: incognito, initialInput: url));
+      },
       isIncognito: incognito,
       enablePlatformWebView: enablePlatformWebView,
     );

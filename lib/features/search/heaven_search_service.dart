@@ -5,6 +5,7 @@ import 'package:http/http.dart' as http;
 
 import '../../core/constants/app_constants.dart';
 import '../../core/utils/omnibox_parser.dart';
+import '../shield/native_shield_bridge.dart';
 
 enum HeavenSearchTab {
   all('All'),
@@ -322,8 +323,9 @@ class HeavenSearchService {
     'Upgrade-Insecure-Requests': '1',
   };
 
-  /// Fast Web-First search (~180-320ms) for the Google-inspired `All` tab
-  /// without blocking on slow Images/Videos scrapers!
+  /// Searches Google silently in the background WebView and copies Google's
+  /// live organic results, knowledge panel, and related searches directly into
+  /// Heaven Search's native UI (with automatic multi-engine fallback if offline).
   Future<HeavenSearchResponse> searchFastWeb(
     String rawQuery, {
     HeavenSearchFilters filters = const HeavenSearchFilters(),
@@ -333,25 +335,58 @@ class HeavenSearchService {
     final String? mathAnswer = HeavenMathEvaluator.tryEvaluate(query);
 
     final (
-      List<HeavenSearchResult> web,
+      Map<String, Object?> googleBg,
       List<HeavenSearchResult> wiki,
       HeavenKnowledgeCard? ddgCard,
-      List<String> related,
+      List<String> suggestRelated,
     ) = await (
-      _fetchOrganicWebResults(query, filters: filters),
+      NativeShieldBridge.instance.searchGoogleInBackground(
+        query: query,
+        tab: 'all',
+        safeMode: filters.safe.name,
+        timeCode: filters.time.ddgCode,
+      ),
       _fetchWikipediaResults(query),
       _fetchKnowledgeCard(query),
       fetchSuggestions('$query '),
     ).wait;
 
-    HeavenKnowledgeCard? card = ddgCard;
+    List<HeavenSearchResult> googleWeb = _parseNativeResultList(
+      googleBg['webResults'],
+    );
+    HeavenKnowledgeCard? googleCard = _parseNativeKnowledgeCard(
+      googleBg['knowledgeCard'],
+    );
+    final List<String> googleRelated = _parseNativeStringList(
+      googleBg['relatedSearches'],
+    );
+
+    if (googleWeb.isEmpty) {
+      googleWeb = await _fetchOrganicWebResults(query, filters: filters);
+    }
+
+    HeavenKnowledgeCard? card = googleCard ?? ddgCard;
     if (card == null && wiki.isNotEmpty) {
       card = await _fetchWikipediaSummaryCard(wiki.first.title);
     }
 
-    final List<HeavenSearchResult> mergedWeb = web.isNotEmpty
-        ? web
+    final List<HeavenSearchResult> mergedWeb = googleWeb.isNotEmpty
+        ? googleWeb
         : wiki.take(8).toList(growable: false);
+
+    final List<String> combinedRelated = <String>[
+      ...googleRelated,
+      ...suggestRelated,
+    ];
+    final Set<String> seenRel = <String>{query.toLowerCase()};
+    final List<String> dedupedRelated = <String>[];
+    for (final String r in combinedRelated) {
+      final String clean = r.trim();
+      if (clean.isNotEmpty && seenRel.add(clean.toLowerCase())) {
+        dedupedRelated.add(clean);
+      }
+      if (dedupedRelated.length >= 6) break;
+    }
 
     stopwatch.stop();
     return HeavenSearchResponse(
@@ -362,10 +397,7 @@ class HeavenSearchService {
       videoResults: const <HeavenSearchResult>[],
       newsResults: const <HeavenSearchResult>[],
       wikiResults: wiki,
-      relatedSearches: related
-          .where((String s) => s.toLowerCase() != query.toLowerCase())
-          .take(6)
-          .toList(growable: false),
+      relatedSearches: dedupedRelated,
       instantMathResult: mathAnswer,
       knowledgeCard: card,
     );
@@ -374,22 +406,137 @@ class HeavenSearchService {
   Future<List<HeavenImageResult>> fetchTabImages(
     String rawQuery, {
     HeavenSearchFilters filters = const HeavenSearchFilters(),
-  }) {
-    return _fetchWebImages(rawQuery.trim(), filters: filters);
+  }) async {
+    final String q = rawQuery.trim();
+    final Map<String, Object?> bg = await NativeShieldBridge.instance
+        .searchGoogleInBackground(
+          query: q,
+          tab: 'images',
+          safeMode: filters.safe.name,
+          timeCode: filters.time.ddgCode,
+        );
+    final List<HeavenImageResult> googleImgs = _parseNativeImageList(
+      bg['imageResults'],
+    );
+    if (googleImgs.isNotEmpty) {
+      return googleImgs;
+    }
+    return _fetchWebImages(q, filters: filters);
   }
 
   Future<List<HeavenSearchResult>> fetchTabVideos(
     String rawQuery, {
     HeavenSearchFilters filters = const HeavenSearchFilters(),
-  }) {
-    return _fetchVideoResults(rawQuery.trim(), filters: filters);
+  }) async {
+    final String q = rawQuery.trim();
+    final Map<String, Object?> bg = await NativeShieldBridge.instance
+        .searchGoogleInBackground(
+          query: q,
+          tab: 'videos',
+          safeMode: filters.safe.name,
+          timeCode: filters.time.ddgCode,
+        );
+    final List<HeavenSearchResult> googleVids = _parseNativeResultList(
+      bg['videoResults'],
+    );
+    if (googleVids.isNotEmpty) {
+      return googleVids;
+    }
+    return _fetchVideoResults(q, filters: filters);
   }
 
   Future<List<HeavenSearchResult>> fetchTabNews(
     String rawQuery, {
     HeavenSearchFilters filters = const HeavenSearchFilters(),
-  }) {
-    return _fetchNewsResults(rawQuery.trim(), filters: filters);
+  }) async {
+    final String q = rawQuery.trim();
+    final Map<String, Object?> bg = await NativeShieldBridge.instance
+        .searchGoogleInBackground(
+          query: q,
+          tab: 'news',
+          safeMode: filters.safe.name,
+          timeCode: filters.time.ddgCode,
+        );
+    final List<HeavenSearchResult> googleNews = _parseNativeResultList(
+      bg['newsResults'],
+    );
+    if (googleNews.isNotEmpty) {
+      return googleNews;
+    }
+    return _fetchNewsResults(q, filters: filters);
+  }
+
+  static List<HeavenSearchResult> _parseNativeResultList(Object? raw) {
+    if (raw is! List<Object?>) return const <HeavenSearchResult>[];
+    final List<HeavenSearchResult> out = <HeavenSearchResult>[];
+    for (final Object? entry in raw) {
+      if (entry is Map<Object?, Object?>) {
+        final String title = entry['title']?.toString().trim() ?? '';
+        final String url = entry['url']?.toString().trim() ?? '';
+        if (title.isEmpty || url.isEmpty) continue;
+        final String snippet = entry['snippet']?.toString().trim() ?? '';
+        final String src = entry['sourceLabel']?.toString().trim() ?? '';
+        final String thumb = entry['thumbnailUrl']?.toString().trim() ?? '';
+        out.add(
+          HeavenSearchResult(
+            title: title,
+            url: url,
+            snippet: snippet,
+            sourceLabel: src.isNotEmpty
+                ? src
+                : OmniboxParser.friendlySiteTitleFromDomain(
+                    OmniboxParser.cleanDomain(url),
+                  ),
+            thumbnailUrl: thumb.isNotEmpty ? thumb : null,
+          ),
+        );
+      }
+    }
+    return out;
+  }
+
+  static List<HeavenImageResult> _parseNativeImageList(Object? raw) {
+    if (raw is! List<Object?>) return const <HeavenImageResult>[];
+    final List<HeavenImageResult> out = <HeavenImageResult>[];
+    for (final Object? entry in raw) {
+      if (entry is Map<Object?, Object?>) {
+        final String thumb = entry['thumbUrl']?.toString().trim() ?? '';
+        final String full = entry['fullUrl']?.toString().trim() ?? thumb;
+        if (thumb.isEmpty) continue;
+        out.add(
+          HeavenImageResult(
+            title: entry['title']?.toString().trim() ?? 'Image',
+            thumbUrl: thumb,
+            fullUrl: full.isNotEmpty ? full : thumb,
+            pageUrl: entry['pageUrl']?.toString().trim() ?? full,
+          ),
+        );
+      }
+    }
+    return out;
+  }
+
+  static HeavenKnowledgeCard? _parseNativeKnowledgeCard(Object? raw) {
+    if (raw is! Map<Object?, Object?>) return null;
+    final String heading = raw['heading']?.toString().trim() ?? '';
+    final String summary = raw['summary']?.toString().trim() ?? '';
+    final String sourceUrl = raw['sourceUrl']?.toString().trim() ?? '';
+    if (heading.isEmpty || summary.isEmpty) return null;
+    return HeavenKnowledgeCard(
+      heading: heading,
+      summary: summary,
+      sourceUrl: sourceUrl.isNotEmpty ? sourceUrl : 'https://www.google.com',
+      sourceName: raw['sourceName']?.toString().trim() ?? 'Google',
+      imageUrl: raw['imageUrl']?.toString().trim(),
+    );
+  }
+
+  static List<String> _parseNativeStringList(Object? raw) {
+    if (raw is! List<Object?>) return const <String>[];
+    return raw
+        .map((Object? e) => e?.toString().trim() ?? '')
+        .where((String s) => s.isNotEmpty)
+        .toList(growable: false);
   }
 
   Future<HeavenSearchResponse> search(

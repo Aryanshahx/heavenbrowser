@@ -367,6 +367,20 @@ class _BrowserScreenState extends State<BrowserScreen>
                                 ),
                               ),
                             ),
+                          if (widget.extensions != null &&
+                              ExtensionsController.extractChromeWebStoreId(
+                                    engine.currentUrl,
+                                  ) !=
+                                  null)
+                            Positioned(
+                              right: 14,
+                              bottom: 14,
+                              child: _buildChromeWebStoreInstallPill(
+                                context,
+                                colors,
+                                engine,
+                              ),
+                            ),
                           // Full-screen tap-anywhere barrier so tapping outside Copy/Edit/Share
                           // or outside the editing bar dismisses it immediately (even over WebView)!
                           if (_isEditingOmnibox || _showLinkActionsCard)
@@ -1594,7 +1608,7 @@ class _BrowserScreenState extends State<BrowserScreen>
                         size: 20,
                         color: colors.primary,
                       ),
-                      title: const Text('Extensions'),
+                      title: const Text('Chrome Extensions'),
                       trailing: Text(
                         '${widget.extensions!.enabledCount} ON',
                         style: TextStyle(
@@ -1609,6 +1623,16 @@ class _BrowserScreenState extends State<BrowserScreen>
                           MaterialPageRoute<void>(
                             builder: (_) => ExtensionsScreen(
                               extensions: widget.extensions!,
+                              activeEngine: engine,
+                              onOpenWebStoreInBrowser: () =>
+                                  engine.loadUserEntry(
+                                    ExtensionsController.chromeWebStoreHomeUrl,
+                                  ),
+                              onOpenUrlInNewTab: (String url) =>
+                                  widget.tabManager.openNewTab(
+                                    incognito: widget.tabManager.isActiveIncognito,
+                                    initialInput: url,
+                                  ),
                             ),
                           ),
                         );
@@ -1811,6 +1835,113 @@ class _BrowserScreenState extends State<BrowserScreen>
     );
   }
 
+  Widget _buildChromeWebStoreInstallPill(
+    BuildContext context,
+    ColorScheme colors,
+    BrowserEngine engine,
+  ) {
+    final ExtensionsController extCtrl = widget.extensions!;
+    final String? extId = ExtensionsController.extractChromeWebStoreId(
+      engine.currentUrl,
+    );
+    if (extId == null) return const SizedBox.shrink();
+
+    return ListenableBuilder(
+      listenable: extCtrl,
+      builder: (BuildContext context, _) {
+        final bool installed = extCtrl.isInstalled(extId);
+        final bool installing =
+            extCtrl.isInstalling && extCtrl.installingId == extId;
+
+        if (installed) {
+          return Material(
+            elevation: 6,
+            borderRadius: BorderRadius.circular(999),
+            color: AppTheme.shieldEmerald,
+            child: InkWell(
+              borderRadius: BorderRadius.circular(999),
+              onTap: () {
+                Navigator.of(context).push(
+                  MaterialPageRoute<void>(
+                    builder: (_) => ExtensionsScreen(
+                      extensions: extCtrl,
+                      activeEngine: engine,
+                      onOpenWebStoreInBrowser: () => engine.loadUserEntry(
+                        ExtensionsController.chromeWebStoreHomeUrl,
+                      ),
+                      onOpenUrlInNewTab: (String url) =>
+                          widget.tabManager.openNewTab(
+                            incognito: widget.tabManager.isActiveIncognito,
+                            initialInput: url,
+                          ),
+                    ),
+                  ),
+                );
+              },
+              child: const Padding(
+                padding: EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: <Widget>[
+                    Icon(
+                      Icons.check_circle_rounded,
+                      size: 18,
+                      color: Colors.white,
+                    ),
+                    SizedBox(width: 7),
+                    Text(
+                      'Added to Heaven',
+                      style: TextStyle(
+                        color: Colors.white,
+                        fontWeight: FontWeight.w800,
+                        fontSize: 13,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          );
+        }
+
+        return FloatingActionButton.extended(
+          heroTag: 'cws_install_pill',
+          onPressed: installing
+              ? null
+              : () async {
+                  final String? err = await extCtrl.installFromWebStore(
+                    engine.currentUrl ?? extId,
+                  );
+                  if (!context.mounted) return;
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(
+                      content: Text(
+                        err ??
+                            'Chrome Extension (.crx) installed in Heaven Browser!',
+                      ),
+                      behavior: SnackBarBehavior.floating,
+                    ),
+                  );
+                },
+          icon: installing
+              ? const SizedBox(
+                  width: 18,
+                  height: 18,
+                  child: CircularProgressIndicator(
+                    strokeWidth: 2,
+                    color: Colors.white,
+                  ),
+                )
+              : const Icon(Icons.extension_rounded, size: 19),
+          label: Text(
+            installing ? 'Installing .crx...' : 'Add to Heaven (.crx)',
+            style: const TextStyle(fontWeight: FontWeight.w800),
+          ),
+        );
+      },
+    );
+  }
+
   Future<void> _createShortcutForCurrentPage(
     BuildContext context,
     BrowserEngine engine,
@@ -1821,85 +1952,47 @@ class _BrowserScreenState extends State<BrowserScreen>
                 engine.currentUrl!.startsWith('https://')))
         ? engine.currentUrl!
         : 'https://www.google.com';
-    final String initialTitle =
-        (!engine.isShowingStartPage && engine.pageTitle.trim().isNotEmpty)
-        ? engine.pageTitle.trim()
-        : 'Heaven Browser';
+    final String initialTitle = engine.isShowingHeavenSearch
+        ? engine.heavenSearchQuery
+        : (!engine.isShowingStartPage && engine.pageTitle != 'New Tab'
+              ? engine.pageTitle.trim()
+              : OmniboxParser.friendlySiteTitleFromDomain(
+                  OmniboxParser.cleanDomain(initialUrl),
+                ));
 
-    final TextEditingController titleCtrl = TextEditingController(
-      text: initialTitle,
-    );
-    final TextEditingController urlCtrl = TextEditingController(
-      text: initialUrl,
-    );
-
-    final bool? confirmed = await showDialog<bool>(
-      context: context,
-      builder: (BuildContext dialogContext) {
-        return AlertDialog(
-          title: const Text('Create Shortcut'),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: <Widget>[
-              TextField(
-                controller: titleCtrl,
-                decoration: const InputDecoration(
-                  labelText: 'Shortcut Name',
-                  border: OutlineInputBorder(),
-                  isDense: true,
-                ),
-              ),
-              const SizedBox(height: 10),
-              TextField(
-                controller: urlCtrl,
-                keyboardType: TextInputType.url,
-                decoration: const InputDecoration(
-                  labelText: 'Website URL',
-                  border: OutlineInputBorder(),
-                  isDense: true,
-                ),
-              ),
-            ],
+    final ({String title, String url})? chosen =
+        await showDialog<({String title, String url})>(
+          context: context,
+          builder: (_) => _CreateShortcutDialog(
+            initialTitle: initialTitle,
+            initialUrl: initialUrl,
           ),
-          actions: <Widget>[
-            TextButton(
-              onPressed: () => Navigator.pop(dialogContext, false),
-              child: const Text('Cancel'),
-            ),
-            FilledButton.icon(
-              onPressed: () => Navigator.pop(dialogContext, true),
-              icon: const Icon(Icons.add_to_home_screen_rounded, size: 18),
-              label: const Text('Add Shortcut'),
-            ),
-          ],
         );
-      },
-    );
 
-    final String chosenTitle = titleCtrl.text.trim();
-    final String chosenUrl = urlCtrl.text.trim();
-    titleCtrl.dispose();
-    urlCtrl.dispose();
-
-    if (confirmed != true || chosenUrl.isEmpty) {
+    if (chosen == null || chosen.url.isEmpty) {
       return;
     }
 
+    final bool sameSite =
+        OmniboxParser.cleanDomain(chosen.url) ==
+        OmniboxParser.cleanDomain(engine.currentUrl);
     await widget.settings.recordPageVisit(
-      url: chosenUrl,
-      title: chosenTitle.isEmpty ? chosenUrl : chosenTitle,
+      url: chosen.url,
+      title: chosen.title.isEmpty ? chosen.url : chosen.title,
     );
     final bool pinned = await NativeShieldBridge.instance
         .createHomeScreenShortcut(
-          url: chosenUrl,
-          title: chosenTitle.isEmpty ? 'Heaven Shortcut' : chosenTitle,
+          url: chosen.url,
+          title: chosen.title.isEmpty ? 'Heaven Shortcut' : chosen.title,
+          iconUrl: sameSite ? engine.pageIconUrl : null,
+          webViewId: sameSite ? engine.androidWebViewId : null,
         );
     if (context.mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(
             pinned
-                ? 'Shortcut added to Home Screen & Quick Launch!'
+                ? 'Shortcut added to Home Screen with website logo!'
                 : 'Added to Heaven Quick Launch!',
           ),
           behavior: SnackBarBehavior.floating,
@@ -2005,6 +2098,95 @@ class _DeckActionTile extends StatelessWidget {
           ),
         ),
       ),
+    );
+  }
+}
+
+class _CreateShortcutDialog extends StatefulWidget {
+  const _CreateShortcutDialog({
+    required this.initialTitle,
+    required this.initialUrl,
+  });
+
+  final String initialTitle;
+  final String initialUrl;
+
+  @override
+  State<_CreateShortcutDialog> createState() => _CreateShortcutDialogState();
+}
+
+class _CreateShortcutDialogState extends State<_CreateShortcutDialog> {
+  late final TextEditingController _titleCtrl;
+  late final TextEditingController _urlCtrl;
+
+  @override
+  void initState() {
+    super.initState();
+    _titleCtrl = TextEditingController(text: widget.initialTitle);
+    _urlCtrl = TextEditingController(text: widget.initialUrl);
+  }
+
+  @override
+  void dispose() {
+    _titleCtrl.dispose();
+    _urlCtrl.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: Row(
+        children: <Widget>[
+          SiteLogo(
+            urlOrDomain: _urlCtrl.text,
+            fallbackLabel: _titleCtrl.text,
+            size: 36,
+            borderRadius: 10,
+          ),
+          const SizedBox(width: 12),
+          const Expanded(child: Text('Create Shortcut')),
+        ],
+      ),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: <Widget>[
+          TextField(
+            controller: _titleCtrl,
+            onChanged: (_) => setState(() {}),
+            decoration: const InputDecoration(
+              labelText: 'Shortcut Name',
+              border: OutlineInputBorder(),
+              isDense: true,
+            ),
+          ),
+          const SizedBox(height: 10),
+          TextField(
+            controller: _urlCtrl,
+            keyboardType: TextInputType.url,
+            onChanged: (_) => setState(() {}),
+            decoration: const InputDecoration(
+              labelText: 'Website URL',
+              border: OutlineInputBorder(),
+              isDense: true,
+            ),
+          ),
+        ],
+      ),
+      actions: <Widget>[
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('Cancel'),
+        ),
+        FilledButton.icon(
+          onPressed: () => Navigator.pop(context, (
+            title: _titleCtrl.text.trim(),
+            url: _urlCtrl.text.trim(),
+          )),
+          icon: const Icon(Icons.add_to_home_screen_rounded, size: 18),
+          label: const Text('Add Shortcut'),
+        ),
+      ],
     );
   }
 }
