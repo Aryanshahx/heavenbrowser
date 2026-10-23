@@ -7,6 +7,7 @@ import 'package:share_plus/share_plus.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:webview_flutter/webview_flutter.dart';
 
+import '../../../core/constants/app_constants.dart';
 import '../../../core/theme/app_theme.dart';
 import '../../../core/utils/omnibox_parser.dart';
 import '../../../core/widgets/search_engine_chip_button.dart';
@@ -14,11 +15,12 @@ import '../../../core/widgets/site_logo.dart';
 import '../../devtools/desktop_inspector_panel.dart';
 import '../../downloads/downloads_controller.dart';
 import '../../downloads/downloads_screen.dart';
+import '../../downloads/media_grabber_sheet.dart';
+import '../../extensions/extension_popup_sheet.dart';
 import '../../extensions/extensions_controller.dart';
 import '../../extensions/extensions_screen.dart';
 import '../../news/interest_news_service.dart';
 import '../../search/heaven_search_service.dart';
-import '../../search/heaven_search_view.dart';
 import '../../settings/browser_settings.dart';
 import '../../settings/help_screen.dart';
 import '../../settings/languages_screen.dart';
@@ -30,6 +32,7 @@ import '../../tabs/tabs_screen.dart';
 import '../../vpn/vpn_controller.dart';
 import '../../vpn/vpn_screen.dart';
 import '../engine/browser_engine.dart';
+import '../quick_action_sheet.dart';
 import '../site_controls_sheet.dart';
 import 'widgets/library_screen.dart';
 import 'widgets/reader_mode_sheet.dart';
@@ -74,6 +77,7 @@ class _BrowserScreenState extends State<BrowserScreen>
   bool _showLinkActionsCard = false;
   bool _showFindBar = false;
   bool _showInspectorPanel = false;
+  bool _inPipMode = false;
   int _findMatches = 0;
 
   BrowserEngine get _activeEngine => widget.tabManager.activeEngine;
@@ -95,6 +99,21 @@ class _BrowserScreenState extends State<BrowserScreen>
         ),
       );
     };
+    NativeShieldBridge.instance.onPipModeChanged = (bool inPip) {
+      if (!mounted) return;
+      setState(() => _inPipMode = inPip);
+    };
+    NativeShieldBridge.instance.onRedirectBlocked = (String target) {
+      unawaited(widget.settings.incrementRedirectBlockedCount());
+      if (!mounted || !widget.settings.securityRedirectAlertsEnabled) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Blocked unwanted redirect: $target'),
+          behavior: SnackBarBehavior.floating,
+          duration: const Duration(seconds: 2),
+        ),
+      );
+    };
   }
 
   @override
@@ -103,8 +122,11 @@ class _BrowserScreenState extends State<BrowserScreen>
     if (widget.downloads.onDownloadToast != null) {
       widget.downloads.onDownloadToast = null;
     }
+    NativeShieldBridge.instance.onPipModeChanged = null;
+    NativeShieldBridge.instance.onRedirectBlocked = null;
     for (final BrowserTab tab in widget.tabManager.allTabs) {
       tab.engine.onWebStoreInstallMessage = null;
+      tab.engine.onSitePermissionPrompt = null;
     }
     WidgetsBinding.instance.removeObserver(this);
     _omniboxController.dispose();
@@ -120,25 +142,48 @@ class _BrowserScreenState extends State<BrowserScreen>
     }
   }
 
+  Future<bool> _promptSitePermission(
+    String host,
+    List<SitePermissionType> types,
+  ) async {
+    if (!mounted) return false;
+    final String joined = types.map((SitePermissionType t) => t.label).join(', ');
+    final bool? granted = await showDialog<bool>(
+      context: context,
+      builder: (BuildContext dialogContext) {
+        return AlertDialog(
+          icon: const Icon(Icons.security_rounded, size: 32),
+          title: Text('$host wants permission'),
+          content: Text(
+            'Allow $host to access $joined?\n\nYou can revoke this anytime with 1 tap from the Site Permission Dashboard.',
+          ),
+          actions: <Widget>[
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext, false),
+              child: const Text('Block'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(dialogContext, true),
+              child: const Text('Allow'),
+            ),
+          ],
+        );
+      },
+    );
+    return granted == true;
+  }
+
   String _editableLinkForEngine(BrowserEngine engine) {
     final String? url = engine.currentUrl;
-    if (OmniboxParser.isHeavenSearchUrl(url)) {
-      return OmniboxParser.extractHeavenQuery(url);
-    }
-    final String googleQ = OmniboxParser.extractGoogleSearchQuery(url);
-    if (googleQ.isNotEmpty) {
-      return googleQ;
+    final String searchQ = OmniboxParser.extractAnySearchQuery(url);
+    if (searchQ.isNotEmpty) {
+      return searchQ;
     }
     return url ?? '';
   }
 
   String _shareableLinkForEngine(BrowserEngine engine) {
-    final String? url = engine.currentUrl;
-    if (OmniboxParser.isHeavenSearchUrl(url)) {
-      final String q = OmniboxParser.extractHeavenQuery(url);
-      return 'https://www.google.com/search?q=${Uri.encodeQueryComponent(q)}';
-    }
-    return url ?? '';
+    return engine.currentUrl ?? '';
   }
 
   void _beginOmniboxEdit() {
@@ -162,7 +207,6 @@ class _BrowserScreenState extends State<BrowserScreen>
     _omniboxController.selection = TextSelection.collapsed(
       offset: editable.length,
     );
-    // Hide Copy/Edit/Share card and keep wide full-width bar open for easy URL editing!
     setState(() {
       _isEditingOmnibox = true;
       _showLinkActionsCard = false;
@@ -247,6 +291,146 @@ class _BrowserScreenState extends State<BrowserScreen>
     await _submitOmnibox(clean);
   }
 
+  void _openExtensionsScreen() {
+    if (widget.extensions == null) return;
+    Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) => ExtensionsScreen(
+          extensions: widget.extensions!,
+          activeEngine: _activeEngine,
+          onOpenWebStoreInBrowser: () => _activeEngine.loadUserEntry(
+            ExtensionsController.chromeWebStoreHomeUrl,
+          ),
+          onOpenUrlInNewTab: (String url) => widget.tabManager.openNewTab(
+            incognito: widget.tabManager.isActiveIncognito,
+            initialInput: url,
+          ),
+        ),
+      ),
+    );
+  }
+
+  Future<void> _openQuickExtensionToolbarMenu(
+    BuildContext context,
+    BrowserEngine engine,
+  ) async {
+    final ExtensionsController? extCtrl = widget.extensions;
+    if (extCtrl == null) return;
+    final List<InstalledChromeExtension> enabled =
+        extCtrl.enabledChromeExtensions;
+    if (enabled.isEmpty) {
+      _openExtensionsScreen();
+      return;
+    }
+    if (enabled.length == 1) {
+      await _triggerToolbarExtension(context, enabled.first, engine);
+      return;
+    }
+    await showModalBottomSheet<void>(
+      context: context,
+      showDragHandle: true,
+      builder: (BuildContext sheetContext) {
+        return SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(16, 4, 16, 18),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: <Widget>[
+                Row(
+                  children: <Widget>[
+                    const Expanded(
+                      child: Text(
+                        'Active Extensions on This Tab',
+                        style: TextStyle(
+                          fontSize: 15.5,
+                          fontWeight: FontWeight.w800,
+                        ),
+                      ),
+                    ),
+                    TextButton(
+                      onPressed: () {
+                        Navigator.pop(sheetContext);
+                        _openExtensionsScreen();
+                      },
+                      child: const Text('Manage'),
+                    ),
+                  ],
+                ),
+                for (final InstalledChromeExtension ext in enabled)
+                  ListTile(
+                    dense: true,
+                    leading: ext.iconBytes != null
+                        ? ClipRRect(
+                            borderRadius: BorderRadius.circular(6),
+                            child: Image.memory(
+                              ext.iconBytes!,
+                              width: 24,
+                              height: 24,
+                            ),
+                          )
+                        : const Icon(Icons.extension_rounded),
+                    title: Text(
+                      ext.name,
+                      style: const TextStyle(fontWeight: FontWeight.w700),
+                    ),
+                    subtitle: Text(
+                      ext.hasPopup
+                          ? 'Open extension popup'
+                          : 'Execute action on active page',
+                      style: const TextStyle(fontSize: 11.5),
+                    ),
+                    onTap: () {
+                      Navigator.pop(sheetContext);
+                      _triggerToolbarExtension(context, ext, engine);
+                    },
+                  ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  Future<void> _triggerToolbarExtension(
+    BuildContext context,
+    InstalledChromeExtension ext,
+    BrowserEngine engine,
+  ) async {
+    if (ext.hasPopup) {
+      await ExtensionPopupSheet.show(
+        context,
+        extension: ext,
+        activeEngine: engine,
+        onOpenNewTab: (String url) => widget.tabManager.openNewTab(
+          incognito: widget.tabManager.isActiveIncognito,
+          initialInput: url,
+        ),
+      );
+      return;
+    }
+    await NativeShieldBridge.instance.setPopupContextTab(
+      url: engine.currentUrl ?? 'https://www.google.com',
+      title: engine.pageTitle,
+      webViewId: engine.androidWebViewId,
+    );
+    await NativeShieldBridge.instance.triggerChromeExtensionAction(
+      id: ext.id,
+      url: engine.currentUrl ?? 'https://www.google.com',
+      title: engine.pageTitle,
+    );
+    await engine.reinjectActiveExtensions();
+    if (context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('${ext.name} executed on active tab!'),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return ListenableBuilder(
@@ -265,15 +449,26 @@ class _BrowserScreenState extends State<BrowserScreen>
         final ColorScheme colors = effectiveTheme.colorScheme;
         final bool bottomBar = widget.settings.bottomOmnibox;
         final BrowserEngine engine = _activeEngine;
+
         engine.onWebStoreInstallMessage ??= (String msg) {
           if (!mounted) return;
           ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text(msg),
-              behavior: SnackBarBehavior.floating,
-            ),
+            SnackBar(content: Text(msg), behavior: SnackBarBehavior.floating),
           );
         };
+        engine.onSitePermissionPrompt ??= _promptSitePermission;
+
+        // Clean System-Wide Picture-in-Picture (PiP) mode: pure edge-to-edge video!
+        if (_inPipMode) {
+          return Theme(
+            data: effectiveTheme,
+            child: Scaffold(
+              backgroundColor: Colors.black,
+              body: _buildTabsViewport(colors),
+            ),
+          );
+        }
+
         final bool showLinkActions =
             _isEditingOmnibox &&
             _showLinkActionsCard &&
@@ -288,6 +483,13 @@ class _BrowserScreenState extends State<BrowserScreen>
             showLinkActions ||
             (_isEditingOmnibox &&
                 (_liveSuggestions.isNotEmpty || recentMatches.isNotEmpty));
+
+        final bool showQuickActionFab =
+            widget.settings.quickActionEnabled &&
+            !_isEditingOmnibox &&
+            !_showInspectorPanel &&
+            ExtensionsController.extractChromeWebStoreId(engine.currentUrl) ==
+                null;
 
         return Theme(
           data: effectiveTheme,
@@ -320,10 +522,21 @@ class _BrowserScreenState extends State<BrowserScreen>
               }
             },
             child: Scaffold(
+              bottomNavigationBar: bottomBar
+                  ? Padding(
+                      padding: EdgeInsets.only(
+                        bottom: MediaQuery.viewInsetsOf(context).bottom,
+                      ),
+                      child: SafeArea(
+                        top: false,
+                        child: _buildCommandCapsuleBar(context, colors),
+                      ),
+                    )
+                  : null,
               body: SafeArea(
+                bottom: !bottomBar,
                 child: Column(
                   children: <Widget>[
-                    // TOP DOCK BAR BY DEFAULT
                     if (!bottomBar) _buildCommandCapsuleBar(context, colors),
                     if (_showFindBar) _buildFindBar(colors),
                     Expanded(
@@ -395,6 +608,21 @@ class _BrowserScreenState extends State<BrowserScreen>
                                 ),
                               ),
                             ),
+                          if (showQuickActionFab)
+                            Positioned(
+                              left: widget.settings.quickActionLeftHanded
+                                  ? 14
+                                  : null,
+                              right: widget.settings.quickActionLeftHanded
+                                  ? null
+                                  : 14,
+                              bottom: 14,
+                              child: _buildQuickActionCornerButton(
+                                context,
+                                colors,
+                                engine,
+                              ),
+                            ),
                           if (widget.extensions != null &&
                               ExtensionsController.extractChromeWebStoreId(
                                     engine.currentUrl,
@@ -409,8 +637,10 @@ class _BrowserScreenState extends State<BrowserScreen>
                                 engine,
                               ),
                             ),
-                          // Full-screen tap-anywhere barrier so tapping outside Copy/Edit/Share
-                          // or outside the editing bar dismisses it immediately (even over WebView)!
+                          if (incognito && widget.tabManager.isIncognitoLocked)
+                            Positioned.fill(
+                              child: _buildIncognitoLockOverlay(colors),
+                            ),
                           if (_isEditingOmnibox || _showLinkActionsCard)
                             Positioned.fill(
                               child: GestureDetector(
@@ -446,7 +676,6 @@ class _BrowserScreenState extends State<BrowserScreen>
                           unawaited(engine.clearInspectorHighlight());
                         },
                       ),
-                    if (bottomBar) _buildCommandCapsuleBar(context, colors),
                   ],
                 ),
               ),
@@ -454,6 +683,121 @@ class _BrowserScreenState extends State<BrowserScreen>
           ),
         );
       },
+    );
+  }
+
+  Widget _buildQuickActionCornerButton(
+    BuildContext context,
+    ColorScheme colors,
+    BrowserEngine engine,
+  ) {
+    final bool hasMedia =
+        engine.detectedMediaStreams.isNotEmpty || engine.isVideoPlaying;
+    return Material(
+      elevation: 5,
+      color: colors.primary.withValues(alpha: 0.92),
+      shape: const CircleBorder(),
+      child: InkWell(
+        key: const Key('quick_action_fab'),
+        customBorder: const CircleBorder(),
+        onTap: () {
+          if (widget.extensions == null) return;
+          QuickActionSheet.show(
+            context,
+            engine: engine,
+            settings: widget.settings,
+            downloads: widget.downloads,
+            extensions: widget.extensions!,
+            onOpenExtensions: _openExtensionsScreen,
+          );
+        },
+        child: SizedBox(
+          width: 44,
+          height: 44,
+          child: Stack(
+            alignment: Alignment.center,
+            children: <Widget>[
+              Icon(
+                Icons.flash_on_rounded,
+                size: 21,
+                color: colors.onPrimary,
+              ),
+              if (hasMedia || widget.settings.ultraDataSaverMode)
+                Positioned(
+                  right: 7,
+                  top: 7,
+                  child: Container(
+                    width: 8,
+                    height: 8,
+                    decoration: const BoxDecoration(
+                      color: AppTheme.shieldEmerald,
+                      shape: BoxShape.circle,
+                    ),
+                  ),
+                ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildIncognitoLockOverlay(ColorScheme colors) {
+    return Material(
+      color: const Color(0xFF061015),
+      child: Center(
+        child: Padding(
+          padding: const EdgeInsets.all(28),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: <Widget>[
+              const Icon(
+                Icons.fingerprint_rounded,
+                size: 46,
+                color: AppTheme.incognitoCyan,
+              ),
+              const SizedBox(height: 14),
+              const Text(
+                'Private Incognito Session Locked',
+                style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800),
+              ),
+              const SizedBox(height: 8),
+              Text(
+                'Verify your fingerprint or face unlock to access Incognito tabs.',
+                textAlign: TextAlign.center,
+                style: TextStyle(fontSize: 13, color: colors.onSurfaceVariant),
+              ),
+              const SizedBox(height: 18),
+              Wrap(
+                spacing: 10,
+                children: <Widget>[
+                  if (widget.tabManager.normalTabs.isNotEmpty)
+                    OutlinedButton(
+                      onPressed: () => widget.tabManager.switchToTab(
+                        widget.tabManager.normalTabs.last.id,
+                      ),
+                      child: const Text('Switch to Normal Tab'),
+                    ),
+                  FilledButton.icon(
+                    key: const Key('unlock_active_incognito_button'),
+                    onPressed: () async {
+                      final bool ok = await NativeShieldBridge.instance
+                          .authenticateBiometric(
+                            reason: 'Unlock Private Incognito Tab',
+                          );
+                      if (ok) {
+                        widget.tabManager.markIncognitoUnlocked(true);
+                      }
+                    },
+                    icon: const Icon(Icons.lock_open_rounded, size: 18),
+                    label: const Text('Unlock'),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+      ),
     );
   }
 
@@ -515,29 +859,32 @@ class _BrowserScreenState extends State<BrowserScreen>
             widget.tabManager.openNewTab(incognito: true, initialInput: url),
         onVoiceSearch: _triggerVoiceSearch,
       );
-    } else if (engine.isShowingHeavenSearch) {
-      overlayChild = HeavenSearchView(
-        query: engine.heavenSearchQuery,
-        searchService: widget.searchService,
-        downloads: widget.downloads,
-        isIncognito: tab.isIncognito,
-        onOpenUrl: (String url) {
-          if (!tab.isIncognito) {
-            unawaited(widget.interests.recordActivity(text: url, weight: 1.4));
-          }
-          engine.loadUserEntry(url);
-        },
-        onOpenInNewTab: (String url) =>
-            widget.tabManager.openNewTab(incognito: false, initialInput: url),
-        onOpenInIncognitoTab: (String url) =>
-            widget.tabManager.openNewTab(incognito: true, initialInput: url),
-        onSubmitNewQuery: (String q) {
-          if (!tab.isIncognito) {
-            unawaited(widget.interests.recordActivity(text: q, weight: 2.2));
-          }
-          engine.loadUri(Uri.parse(SearchEngine.heaven.buildSearchUrl(q)));
-        },
-        onVoiceSearch: _triggerVoiceSearch,
+    } else if (engine.isHibernated) {
+      overlayChild = Center(
+        child: Padding(
+          padding: const EdgeInsets.all(24),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: <Widget>[
+              Icon(Icons.bedtime_rounded, size: 42, color: colors.primary),
+              const SizedBox(height: 12),
+              Text(
+                engine.pageTitle,
+                textAlign: TextAlign.center,
+                style: const TextStyle(
+                  fontSize: 16,
+                  fontWeight: FontWeight.w800,
+                ),
+              ),
+              const SizedBox(height: 12),
+              FilledButton.tonalIcon(
+                onPressed: engine.wakeFromHibernation,
+                icon: const Icon(Icons.bolt_rounded),
+                label: const Text('Wake Tab'),
+              ),
+            ],
+          ),
+        ),
       );
     } else if (engine.errorMessage != null) {
       overlayChild = Center(
@@ -592,8 +939,6 @@ class _BrowserScreenState extends State<BrowserScreen>
           );
     }
 
-    // Keep WebViewWidget mounted across StartPage / HeavenSearchView transitions so tapping a
-    // search result reveals the pre-mounted Android surface with zero PlatformView glitching!
     return Stack(
       fit: StackFit.expand,
       children: <Widget>[
@@ -609,9 +954,6 @@ class _BrowserScreenState extends State<BrowserScreen>
     );
   }
 
-  /// Overlay card shown when tapping the address/search bar on an active link:
-  /// - Shows Copy, Edit, Share options!
-  /// - Disappears immediately when tapping anywhere outside or tapping Edit!
   Widget _buildOmniboxOverlayPanel(
     BuildContext context,
     ColorScheme colors,
@@ -654,9 +996,7 @@ class _BrowserScreenState extends State<BrowserScreen>
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: <Widget>[
                               Text(
-                                engine.isShowingHeavenSearch
-                                    ? 'Search: ${engine.heavenSearchQuery}'
-                                    : engine.pageTitle,
+                                engine.pageTitle,
                                 maxLines: 1,
                                 overflow: TextOverflow.ellipsis,
                                 style: const TextStyle(
@@ -857,9 +1197,6 @@ class _BrowserScreenState extends State<BrowserScreen>
     );
   }
 
-  /// Responsive Top/Bottom Dock Bar:
-  /// - When `_isEditingOmnibox` is true: Expands Search/URL bar across FULL WIDTH for easy link editing!
-  /// - When displaying normally: `[Home] [Forward?] [Shield | Search/URL Pill] [+ New Tab] [Tabs] [Menu]`!
   Widget _buildCommandCapsuleBar(BuildContext context, ColorScheme colors) {
     final BrowserEngine engine = _activeEngine;
     final bool incognito = widget.tabManager.isActiveIncognito;
@@ -957,7 +1294,6 @@ class _BrowserScreenState extends State<BrowserScreen>
             ),
           ),
           const SizedBox(width: 2),
-          // + Button right in the search bar area to add more tabs!
           GestureDetector(
             onLongPress: () => widget.tabManager.openNewTab(incognito: true),
             child: IconButton(
@@ -1042,10 +1378,8 @@ class _BrowserScreenState extends State<BrowserScreen>
     );
   }
 
-  /// Full-width wide search/URL editing field (shown when tapping the search bar or tapping Edit!)
   Widget _buildWideEditingField(ColorScheme colors, BrowserEngine engine) {
     final bool hasText = _omniboxController.text.isNotEmpty;
-    // Only show Mic when on Start Page AND nothing searched/typed!
     final bool showMic = engine.isShowingStartPage && !hasText;
 
     return Row(
@@ -1125,6 +1459,11 @@ class _BrowserScreenState extends State<BrowserScreen>
     BrowserEngine engine,
     bool incognito,
   ) {
+    final bool hasActiveExtensions =
+        widget.extensions != null &&
+        widget.extensions!.enabledChromeExtensions.isNotEmpty;
+    final bool hasDetectedMedia = engine.detectedMediaStreams.isNotEmpty;
+
     return Row(
       children: <Widget>[
         const SizedBox(width: 4),
@@ -1134,8 +1473,20 @@ class _BrowserScreenState extends State<BrowserScreen>
               widget.settings.setSearchEngine(sel),
         ),
         InkWell(
+          key: const Key('site_permissions_button'),
           borderRadius: BorderRadius.circular(18),
-          onTap: () => _openShieldSheet(context),
+          onTap: () {
+            if (engine.isShowingStartPage) {
+              _openShieldSheet(context);
+            } else {
+              SiteControlsSheet.show(
+                context,
+                engine: engine,
+                settings: widget.settings,
+              );
+            }
+          },
+          onLongPress: () => _openShieldSheet(context),
           child: Padding(
             padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 6),
             child: Icon(
@@ -1171,7 +1522,7 @@ class _BrowserScreenState extends State<BrowserScreen>
                     widget.settings.barSwipeSwitchTabs)
                 ? (DragEndDetails d) {
                     final double v = d.primaryVelocity ?? 0;
-                    if (v.abs() > 220) {
+                    if (v.abs() > 200) {
                       final bool switched = widget.tabManager.switchAdjacentTab(
                         v < 0 ? 1 : -1,
                       );
@@ -1183,7 +1534,10 @@ class _BrowserScreenState extends State<BrowserScreen>
                 : null,
             onVerticalDragEnd: widget.settings.gesturesEnabled
                 ? (DragEndDetails d) {
-                    if ((d.primaryVelocity ?? 0).abs() > 240) {
+                    final double vy = d.primaryVelocity ?? 0;
+                    // Swipe UP (negative vy) on bottom address bar opens the Tab Grid!
+                    if (vy < -200 ||
+                        (!widget.settings.bottomOmnibox && vy > 220)) {
                       HapticFeedback.selectionClick();
                       _openTabsScreen();
                     }
@@ -1191,7 +1545,7 @@ class _BrowserScreenState extends State<BrowserScreen>
                 : null,
             child: Text(
               engine.isShowingStartPage
-                  ? 'Search or type URL'
+                  ? 'Search Google or type URL'
                   : OmniboxParser.formatDisplayUrl(engine.currentUrl),
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
@@ -1207,6 +1561,39 @@ class _BrowserScreenState extends State<BrowserScreen>
             ),
           ),
         ),
+        if (hasDetectedMedia)
+          InkWell(
+            key: const Key('omnibox_media_grabber_button'),
+            borderRadius: BorderRadius.circular(14),
+            onTap: () => MediaGrabberSheet.show(
+              context,
+              engine: engine,
+              downloads: widget.downloads,
+              settings: widget.settings,
+            ),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 4),
+              child: Icon(
+                Icons.download_for_offline_rounded,
+                size: 18,
+                color: colors.primary,
+              ),
+            ),
+          ),
+        if (hasActiveExtensions && !engine.isShowingStartPage)
+          InkWell(
+            key: const Key('omnibox_extension_button'),
+            borderRadius: BorderRadius.circular(14),
+            onTap: () => _openQuickExtensionToolbarMenu(context, engine),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 4),
+              child: Icon(
+                Icons.extension_rounded,
+                size: 17,
+                color: colors.primary,
+              ),
+            ),
+          ),
         if (engine.pageBlockedCount > 0)
           GestureDetector(
             onTap: () => _openShieldSheet(context),
@@ -1227,7 +1614,6 @@ class _BrowserScreenState extends State<BrowserScreen>
               ),
             ),
           ),
-        // Only show Mic when on Start Page — NEVER when we already searched something!
         if (engine.isShowingStartPage) ...<Widget>[
           IconButton(
             onPressed: _triggerVoiceSearch,
@@ -1239,7 +1625,7 @@ class _BrowserScreenState extends State<BrowserScreen>
           ),
           const SizedBox(width: 2),
         ] else
-          const SizedBox(width: 8),
+          const SizedBox(width: 6),
       ],
     );
   }
@@ -1421,10 +1807,7 @@ class _BrowserScreenState extends State<BrowserScreen>
   Future<void> _openBrowserMenu(BuildContext context) async {
     final BrowserEngine engine = _activeEngine;
     final String? url = engine.currentUrl;
-    final bool hasWebPage =
-        url != null &&
-        !engine.isShowingStartPage &&
-        !engine.isShowingHeavenSearch;
+    final bool hasWebPage = url != null && !engine.isShowingStartPage;
     final bool bookmarked = widget.settings.isBookmarked(url);
 
     await showModalBottomSheet<void>(
@@ -1435,7 +1818,7 @@ class _BrowserScreenState extends State<BrowserScreen>
         return SafeArea(
           child: ConstrainedBox(
             constraints: BoxConstraints(
-              maxHeight: MediaQuery.sizeOf(sheetContext).height * 0.84,
+              maxHeight: MediaQuery.sizeOf(sheetContext).height * 0.86,
             ),
             child: SingleChildScrollView(
               padding: const EdgeInsets.fromLTRB(16, 4, 16, 16),
@@ -1587,6 +1970,20 @@ class _BrowserScreenState extends State<BrowserScreen>
                           },
                         ),
                         5 => _DeckActionTile(
+                          icon: Icons.video_collection_rounded,
+                          label: 'Media & PiP',
+                          accent: colors.primary,
+                          onTap: () {
+                            Navigator.pop(sheetContext);
+                            MediaGrabberSheet.show(
+                              context,
+                              engine: engine,
+                              downloads: widget.downloads,
+                              settings: widget.settings,
+                            );
+                          },
+                        ),
+                        6 => _DeckActionTile(
                           icon: Icons.menu_book_rounded,
                           label: 'Reader',
                           accent: colors.primary,
@@ -1594,16 +1991,6 @@ class _BrowserScreenState extends State<BrowserScreen>
                           onTap: () {
                             Navigator.pop(sheetContext);
                             _triggerReaderMode();
-                          },
-                        ),
-                        6 => _DeckActionTile(
-                          icon: Icons.find_in_page_outlined,
-                          label: 'Find Text',
-                          accent: colors.primary,
-                          enabled: hasWebPage,
-                          onTap: () {
-                            Navigator.pop(sheetContext);
-                            setState(() => _showFindBar = true);
                           },
                         ),
                         _ => _DeckActionTile(
@@ -1664,21 +2051,40 @@ class _BrowserScreenState extends State<BrowserScreen>
                       );
                     },
                   ),
+                  if (hasWebPage)
+                    ListTile(
+                      dense: true,
+                      contentPadding: const EdgeInsets.symmetric(horizontal: 8),
+                      leading: Icon(
+                        Icons.find_in_page_outlined,
+                        size: 20,
+                        color: colors.primary,
+                      ),
+                      title: const Text('Find in page'),
+                      onTap: () {
+                        Navigator.pop(sheetContext);
+                        setState(() => _showFindBar = true);
+                      },
+                    ),
                   ListTile(
                     dense: true,
                     contentPadding: const EdgeInsets.symmetric(horizontal: 8),
                     leading: Icon(
-                      Icons.workspaces_outline,
+                      Icons.admin_panel_settings_outlined,
                       size: 20,
                       color: colors.primary,
                     ),
-                    title: const Text('Add tab to new group'),
+                    title: const Text('Site Permission Dashboard'),
+                    subtitle: const Text(
+                      'Location, Camera, Mic & 1-tap revoke',
+                      style: TextStyle(fontSize: 11),
+                    ),
                     onTap: () {
                       Navigator.pop(sheetContext);
-                      TabsScreen.showCreateGroupDialog(
+                      SiteControlsSheet.show(
                         context,
-                        tabManager: widget.tabManager,
-                        tabId: widget.tabManager.activeTab.id,
+                        engine: engine,
+                        settings: widget.settings,
                       );
                     },
                   ),
@@ -1702,40 +2108,24 @@ class _BrowserScreenState extends State<BrowserScreen>
                       ),
                       onTap: () {
                         Navigator.pop(sheetContext);
-                        Navigator.of(context).push(
-                          MaterialPageRoute<void>(
-                            builder: (_) => ExtensionsScreen(
-                              extensions: widget.extensions!,
-                              activeEngine: engine,
-                              onOpenWebStoreInBrowser: () =>
-                                  engine.loadUserEntry(
-                                    ExtensionsController.chromeWebStoreHomeUrl,
-                                  ),
-                              onOpenUrlInNewTab: (String url) =>
-                                  widget.tabManager.openNewTab(
-                                    incognito: widget.tabManager.isActiveIncognito,
-                                    initialInput: url,
-                                  ),
-                            ),
-                          ),
-                        );
+                        _openExtensionsScreen();
                       },
                     ),
                   ListTile(
                     dense: true,
                     contentPadding: const EdgeInsets.symmetric(horizontal: 8),
                     leading: Icon(
-                      Icons.tune_rounded,
+                      Icons.workspaces_outline,
                       size: 20,
                       color: colors.primary,
                     ),
-                    title: const Text('Site controls'),
+                    title: const Text('Add tab to new group'),
                     onTap: () {
                       Navigator.pop(sheetContext);
-                      SiteControlsSheet.show(
+                      TabsScreen.showCreateGroupDialog(
                         context,
-                        engine: engine,
-                        settings: widget.settings,
+                        tabManager: widget.tabManager,
+                        tabId: widget.tabManager.activeTab.id,
                       );
                     },
                   ),
@@ -1799,6 +2189,25 @@ class _BrowserScreenState extends State<BrowserScreen>
                     },
                   ),
                   ListTile(
+                    key: const Key('browser_menu_privacy_policy_tile'),
+                    dense: true,
+                    contentPadding: const EdgeInsets.symmetric(horizontal: 8),
+                    leading: Icon(
+                      Icons.privacy_tip_outlined,
+                      size: 20,
+                      color: colors.primary,
+                    ),
+                    title: const Text('Privacy Policy'),
+                    trailing: const Icon(Icons.open_in_new_rounded, size: 16),
+                    onTap: () {
+                      Navigator.pop(sheetContext);
+                      widget.tabManager.openNewTab(
+                        incognito: widget.tabManager.isActiveIncognito,
+                        initialInput: AppConstants.privacyPolicyUrl,
+                      );
+                    },
+                  ),
+                  ListTile(
                     dense: true,
                     contentPadding: const EdgeInsets.symmetric(horizontal: 8),
                     leading: Icon(
@@ -1811,12 +2220,34 @@ class _BrowserScreenState extends State<BrowserScreen>
                       Navigator.pop(sheetContext);
                       Navigator.of(context).push(
                         MaterialPageRoute<void>(
-                          builder: (_) => const HelpScreen(),
+                          builder: (_) => HelpScreen(
+                            onOpenUrlInBrowser: (String url) =>
+                                widget.tabManager.openNewTab(
+                                  incognito: widget.tabManager.isActiveIncognito,
+                                  initialInput: url,
+                                ),
+                          ),
                         ),
                       );
                     },
                   ),
                   const Divider(height: 1),
+                  SwitchListTile.adaptive(
+                    dense: true,
+                    secondary: const Icon(Icons.data_saver_on_rounded),
+                    title: const Text('Ultra Data Saver (Text-Only)'),
+                    subtitle: const Text(
+                      'Block images & heavy assets on cellular',
+                    ),
+                    value: widget.settings.ultraDataSaverMode,
+                    onChanged: (bool value) async {
+                      Navigator.pop(sheetContext);
+                      await widget.settings.setUltraDataSaverMode(value);
+                      if (!engine.isShowingStartPage) {
+                        await engine.reloadFullPage();
+                      }
+                    },
+                  ),
                   SwitchListTile.adaptive(
                     dense: true,
                     secondary: const Icon(Icons.desktop_windows_outlined),
@@ -1943,24 +2374,7 @@ class _BrowserScreenState extends State<BrowserScreen>
             color: AppTheme.shieldEmerald,
             child: InkWell(
               borderRadius: BorderRadius.circular(999),
-              onTap: () {
-                Navigator.of(context).push(
-                  MaterialPageRoute<void>(
-                    builder: (_) => ExtensionsScreen(
-                      extensions: extCtrl,
-                      activeEngine: engine,
-                      onOpenWebStoreInBrowser: () => engine.loadUserEntry(
-                        ExtensionsController.chromeWebStoreHomeUrl,
-                      ),
-                      onOpenUrlInNewTab: (String url) =>
-                          widget.tabManager.openNewTab(
-                            incognito: widget.tabManager.isActiveIncognito,
-                            initialInput: url,
-                          ),
-                    ),
-                  ),
-                );
-              },
+              onTap: _openExtensionsScreen,
               child: const Padding(
                 padding: EdgeInsets.symmetric(horizontal: 14, vertical: 10),
                 child: Row(
@@ -2035,13 +2449,12 @@ class _BrowserScreenState extends State<BrowserScreen>
                 engine.currentUrl!.startsWith('https://')))
         ? engine.currentUrl!
         : 'https://www.google.com';
-    final String initialTitle = engine.isShowingHeavenSearch
-        ? engine.heavenSearchQuery
-        : (!engine.isShowingStartPage && engine.pageTitle != 'New Tab'
-              ? engine.pageTitle.trim()
-              : OmniboxParser.friendlySiteTitleFromDomain(
-                  OmniboxParser.cleanDomain(initialUrl),
-                ));
+    final String initialTitle =
+        (!engine.isShowingStartPage && engine.pageTitle != 'New Tab')
+        ? engine.pageTitle.trim()
+        : OmniboxParser.friendlySiteTitleFromDomain(
+            OmniboxParser.cleanDomain(initialUrl),
+          );
 
     final ({String title, String url})? chosen =
         await showDialog<({String title, String url})>(

@@ -14,6 +14,7 @@ import 'features/extensions/extensions_controller.dart';
 import 'features/news/interest_news_service.dart';
 import 'features/search/heaven_search_service.dart';
 import 'features/settings/browser_settings.dart';
+import 'features/shield/native_shield_bridge.dart';
 import 'features/tabs/tab_manager.dart';
 import 'features/vpn/vpn_controller.dart';
 
@@ -77,6 +78,8 @@ class _HeavenBrowserAppState extends State<HeavenBrowserApp>
   InterestProfileController? _ownedInterests;
   HeavenNewsFeedService? _ownedNewsService;
   VpnController? _ownedVpn;
+  bool _appUnlocked = false;
+  bool _verifyingAppLock = false;
 
   DownloadsController get _effectiveDownloads =>
       widget.downloads ?? _ownedDownloads!;
@@ -92,6 +95,8 @@ class _HeavenBrowserAppState extends State<HeavenBrowserApp>
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    _appUnlocked = !widget.settings.biometricLockApp;
+
     if (widget.extensions == null) {
       _ownedExtensions = ExtensionsController(
         widget.settings.prefs,
@@ -104,6 +109,15 @@ class _HeavenBrowserAppState extends State<HeavenBrowserApp>
       enablePlatformWebView: widget.enablePlatformWebView,
     );
     _searchService = widget.searchService ?? HeavenSearchService();
+
+    NativeShieldBridge.instance.onExtensionOpenNewTab = (String url) {
+      unawaited(
+        _tabManager.openNewTab(
+          incognito: _tabManager.isActiveIncognito,
+          initialInput: url,
+        ),
+      );
+    };
 
     if (widget.downloads == null) {
       _ownedDownloads = DownloadsController(
@@ -144,6 +158,49 @@ class _HeavenBrowserAppState extends State<HeavenBrowserApp>
         initialRoute.startsWith('https://')) {
       unawaited(_tabManager.activeEngine.loadUserEntry(initialRoute));
     }
+
+    // Request Android POST_NOTIFICATIONS permission on app startup (and unlock app if locked)
+    if (widget.enablePlatformWebView) {
+      WidgetsBinding.instance.addPostFrameCallback((_) async {
+        await NativeShieldBridge.instance.requestNotificationPermission();
+        if (mounted && widget.settings.biometricLockApp && !_appUnlocked) {
+          await _unlockEntireApp();
+        }
+      });
+    }
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.paused) {
+      if (widget.settings.biometricLockIncognito) {
+        _tabManager.markIncognitoUnlocked(false);
+      }
+      if (widget.settings.biometricLockApp && _appUnlocked) {
+        setState(() => _appUnlocked = false);
+      }
+    } else if (state == AppLifecycleState.resumed) {
+      if (widget.enablePlatformWebView &&
+          widget.settings.biometricLockApp &&
+          !_appUnlocked) {
+        unawaited(_unlockEntireApp());
+      }
+    }
+  }
+
+  Future<void> _unlockEntireApp() async {
+    if (_verifyingAppLock) return;
+    setState(() => _verifyingAppLock = true);
+    final bool ok = await NativeShieldBridge.instance.authenticateBiometric(
+      reason: 'Unlock Heaven Browser',
+    );
+    if (!mounted) return;
+    setState(() {
+      _verifyingAppLock = false;
+      if (ok) {
+        _appUnlocked = true;
+      }
+    });
   }
 
   @override
@@ -161,6 +218,7 @@ class _HeavenBrowserAppState extends State<HeavenBrowserApp>
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    NativeShieldBridge.instance.onExtensionOpenNewTab = null;
     _tabManager.dispose();
     _ownedDownloads?.dispose();
     _ownedExtensions?.dispose();
@@ -168,6 +226,69 @@ class _HeavenBrowserAppState extends State<HeavenBrowserApp>
     _ownedNewsService?.dispose();
     _ownedVpn?.dispose();
     super.dispose();
+  }
+
+  Widget _buildHomeOrLockGate() {
+    if (widget.settings.biometricLockApp && !_appUnlocked) {
+      return Scaffold(
+        body: SafeArea(
+          child: Center(
+            child: Padding(
+              padding: const EdgeInsets.all(28),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: <Widget>[
+                  Container(
+                    width: 78,
+                    height: 78,
+                    decoration: BoxDecoration(
+                      color: AppTheme.electricBlue.withValues(alpha: 0.16),
+                      borderRadius: BorderRadius.circular(24),
+                    ),
+                    child: const Icon(
+                      Icons.fingerprint_rounded,
+                      size: 42,
+                      color: AppTheme.electricBlue,
+                    ),
+                  ),
+                  const SizedBox(height: 18),
+                  const Text(
+                    'Heaven Browser Locked',
+                    style: TextStyle(fontSize: 20, fontWeight: FontWeight.w900),
+                  ),
+                  const SizedBox(height: 8),
+                  const Text(
+                    'Verify your fingerprint, face, or device PIN to continue browsing privately.',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(fontSize: 13.5, height: 1.4),
+                  ),
+                  const SizedBox(height: 22),
+                  FilledButton.icon(
+                    key: const Key('unlock_app_biometric_button'),
+                    onPressed: _verifyingAppLock ? null : _unlockEntireApp,
+                    icon: const Icon(Icons.lock_open_rounded),
+                    label: Text(
+                      _verifyingAppLock ? 'Verifying...' : 'Unlock Browser',
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      );
+    }
+
+    return BrowserScreen(
+      settings: widget.settings,
+      tabManager: _tabManager,
+      searchService: _searchService,
+      downloads: _effectiveDownloads,
+      extensions: _effectiveExtensions,
+      newsService: _effectiveNews,
+      interests: _effectiveInterests,
+      vpn: _effectiveVpn,
+    );
   }
 
   @override
@@ -183,18 +304,7 @@ class _HeavenBrowserAppState extends State<HeavenBrowserApp>
           darkTheme: AppTheme.darkTheme,
           themeMode: widget.settings.themeMode,
           onGenerateInitialRoutes: (String _) => <Route<dynamic>>[
-            MaterialPageRoute<void>(
-              builder: (_) => BrowserScreen(
-                settings: widget.settings,
-                tabManager: _tabManager,
-                searchService: _searchService,
-                downloads: _effectiveDownloads,
-                extensions: _effectiveExtensions,
-                newsService: _effectiveNews,
-                interests: _effectiveInterests,
-                vpn: _effectiveVpn,
-              ),
-            ),
+            MaterialPageRoute<void>(builder: (_) => _buildHomeOrLockGate()),
           ],
           onGenerateRoute: (RouteSettings routeSettings) {
             final String? name = routeSettings.name;
@@ -205,16 +315,7 @@ class _HeavenBrowserAppState extends State<HeavenBrowserApp>
               );
             }
             return MaterialPageRoute<void>(
-              builder: (_) => BrowserScreen(
-                settings: widget.settings,
-                tabManager: _tabManager,
-                searchService: _searchService,
-                downloads: _effectiveDownloads,
-                extensions: _effectiveExtensions,
-                newsService: _effectiveNews,
-                interests: _effectiveInterests,
-                vpn: _effectiveVpn,
-              ),
+              builder: (_) => _buildHomeOrLockGate(),
             );
           },
         );

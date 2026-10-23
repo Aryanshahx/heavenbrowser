@@ -2,7 +2,8 @@ import 'package:flutter/services.dart';
 
 import 'heaven_shield.dart';
 
-typedef NativeBlockedCallback = void Function(int webViewId, String domain);
+typedef NativeBlockedCallback =
+    void Function(int webViewId, String domain, int bytesSaved);
 typedef NativePullProgressCallback = void Function(double progress);
 typedef NativePullRefreshCallback = void Function();
 typedef NativeDownloadStartedCallback =
@@ -11,6 +12,10 @@ typedef NativeWebViewDownloadInterceptedCallback =
     void Function(bool wasEmptyPage);
 typedef NativeConsoleMessageCallback =
     void Function(String level, String message, String sourceId, int line);
+typedef NativeMediaStreamDetectedCallback =
+    void Function(String url, String kind, String format, String label);
+typedef NativeMediaPlaybackChangedCallback =
+    void Function(bool playing, bool isVideo, String title);
 
 class NativeShieldBridge {
   NativeShieldBridge._() {
@@ -34,8 +39,16 @@ class NativeShieldBridge {
       <int, NativeWebViewDownloadInterceptedCallback>{};
   final Map<int, NativeConsoleMessageCallback> _consoleListeners =
       <int, NativeConsoleMessageCallback>{};
+  final Map<int, NativeMediaStreamDetectedCallback> _streamListeners =
+      <int, NativeMediaStreamDetectedCallback>{};
+  final Map<int, NativeMediaPlaybackChangedCallback> _playbackListeners =
+      <int, NativeMediaPlaybackChangedCallback>{};
 
   NativeDownloadStartedCallback? onDownloadStarted;
+  void Function(bool inPip)? onPipModeChanged;
+  void Function(String target)? onRedirectBlocked;
+  void Function(int bytesSaved)? onBytesSaved;
+  void Function(String url)? onExtensionOpenNewTab;
 
   Future<dynamic> _handleNativeCall(MethodCall call) async {
     final Object? rawArgs = call.arguments;
@@ -44,7 +57,50 @@ class NativeShieldBridge {
       final Object? idVal = rawArgs['webViewId'];
       final int webViewId = idVal is num ? idVal.toInt() : -1;
       final String domain = (rawArgs['domain']?.toString() ?? 'tracker').trim();
-      _blockedListeners[webViewId]?.call(webViewId, domain);
+      final int bytesSaved = (rawArgs['bytesSaved'] is num)
+          ? (rawArgs['bytesSaved']! as num).toInt()
+          : 14200;
+      _blockedListeners[webViewId]?.call(webViewId, domain, bytesSaved);
+    } else if (call.method == 'onBytesSaved' &&
+        rawArgs is Map<Object?, Object?>) {
+      final int bytes = (rawArgs['bytesSaved'] is num)
+          ? (rawArgs['bytesSaved']! as num).toInt()
+          : 0;
+      if (bytes > 0) {
+        onBytesSaved?.call(bytes);
+      }
+    } else if (call.method == 'onRedirectBlocked' &&
+        rawArgs is Map<Object?, Object?>) {
+      final String target = (rawArgs['target']?.toString() ?? 'redirect')
+          .trim();
+      onRedirectBlocked?.call(target);
+    } else if (call.method == 'onPipModeChanged' &&
+        rawArgs is Map<Object?, Object?>) {
+      onPipModeChanged?.call(rawArgs['inPip'] == true);
+    } else if (call.method == 'onExtensionOpenNewTab' &&
+        rawArgs is Map<Object?, Object?>) {
+      final String url = (rawArgs['url']?.toString() ?? '').trim();
+      if (url.isNotEmpty) {
+        onExtensionOpenNewTab?.call(url);
+      }
+    } else if (call.method == 'onMediaStreamDetected' &&
+        rawArgs is Map<Object?, Object?>) {
+      final int webViewId = (rawArgs['webViewId'] as num?)?.toInt() ?? -1;
+      final String url = (rawArgs['url']?.toString() ?? '').trim();
+      final String kind = (rawArgs['kind']?.toString() ?? 'video').trim();
+      final String format = (rawArgs['format']?.toString() ?? 'MP4').trim();
+      final String label = (rawArgs['label']?.toString() ?? 'Media Stream')
+          .trim();
+      if (url.isNotEmpty) {
+        _streamListeners[webViewId]?.call(url, kind, format, label);
+      }
+    } else if (call.method == 'onMediaPlaybackChanged' &&
+        rawArgs is Map<Object?, Object?>) {
+      final int webViewId = (rawArgs['webViewId'] as num?)?.toInt() ?? -1;
+      final bool playing = rawArgs['playing'] == true;
+      final bool isVideo = rawArgs['isVideo'] != false;
+      final String title = (rawArgs['title']?.toString() ?? '').trim();
+      _playbackListeners[webViewId]?.call(playing, isVideo, title);
     } else if (call.method == 'onPullProgress' &&
         rawArgs is Map<Object?, Object?>) {
       final Object? idVal = rawArgs['webViewId'];
@@ -90,11 +146,23 @@ class NativeShieldBridge {
     required bool desktopMode,
     required Set<String> trustedHosts,
     required bool sendDntAndGpc,
+    bool ultraDataSaverMode = false,
+    bool backgroundMediaEnabled = true,
+    bool autoPipEnabled = true,
+    bool antiRedirectProtection = true,
+    bool webNotificationsEnabled = false,
+    bool backgroundPlayNotificationEnabled = true,
   }) async {
     try {
       await _channel.invokeMethod<bool>('updateConfig', <String, Object>{
         'shieldEnabled': shieldEnabled,
         'desktopMode': desktopMode,
+        'ultraDataSaverMode': ultraDataSaverMode,
+        'backgroundMediaEnabled': backgroundMediaEnabled,
+        'autoPipEnabled': autoPipEnabled,
+        'antiRedirectProtection': antiRedirectProtection,
+        'webNotificationsEnabled': webNotificationsEnabled,
+        'backgroundPlayNotificationEnabled': backgroundPlayNotificationEnabled,
         'blockedDomains': HeavenShield.blockedRootDomains.toList(
           growable: false,
         ),
@@ -120,6 +188,8 @@ class NativeShieldBridge {
     required NativePullRefreshCallback onPullRefresh,
     NativeWebViewDownloadInterceptedCallback? onDownloadIntercepted,
     NativeConsoleMessageCallback? onConsoleMessage,
+    NativeMediaStreamDetectedCallback? onMediaStreamDetected,
+    NativeMediaPlaybackChangedCallback? onMediaPlaybackChanged,
   }) async {
     _blockedListeners[webViewId] = onBlocked;
     _pullProgressListeners[webViewId] = onPullProgress;
@@ -129,6 +199,12 @@ class NativeShieldBridge {
     }
     if (onConsoleMessage != null) {
       _consoleListeners[webViewId] = onConsoleMessage;
+    }
+    if (onMediaStreamDetected != null) {
+      _streamListeners[webViewId] = onMediaStreamDetected;
+    }
+    if (onMediaPlaybackChanged != null) {
+      _playbackListeners[webViewId] = onMediaPlaybackChanged;
     }
     try {
       await _channel.invokeMethod<bool>('attachToWebView', <String, Object?>{
@@ -195,6 +271,146 @@ class NativeShieldBridge {
     _pullRefreshListeners.remove(webViewId);
     _downloadInterceptListeners.remove(webViewId);
     _consoleListeners.remove(webViewId);
+    _streamListeners.remove(webViewId);
+    _playbackListeners.remove(webViewId);
+  }
+
+  Future<bool> enterPictureInPicture() async {
+    try {
+      final bool? ok = await _channel.invokeMethod<bool>(
+        'enterPictureInPicture',
+      );
+      return ok ?? false;
+    } on MissingPluginException {
+      return true;
+    } on PlatformException {
+      return false;
+    }
+  }
+
+  Future<List<Map<String, String>>> scanPageMediaStreams(int webViewId) async {
+    try {
+      final Object? raw = await _channel.invokeMethod<Object?>(
+        'scanPageMediaStreams',
+        <String, Object>{'webViewId': webViewId},
+      );
+      if (raw is List<Object?>) {
+        return raw
+            .whereType<Map<Object?, Object?>>()
+            .map(
+              (Map<Object?, Object?> m) => <String, String>{
+                for (final MapEntry<Object?, Object?> e in m.entries)
+                  if (e.key != null && e.value != null)
+                    e.key.toString(): e.value.toString(),
+              },
+            )
+            .toList(growable: false);
+      }
+      return const <Map<String, String>>[];
+    } on MissingPluginException {
+      return const <Map<String, String>>[];
+    } on PlatformException {
+      return const <Map<String, String>>[];
+    }
+  }
+
+  Future<bool> isBiometricAvailable() async {
+    try {
+      final bool? ok = await _channel.invokeMethod<bool>(
+        'isBiometricAvailable',
+      );
+      return ok ?? false;
+    } on MissingPluginException {
+      return true;
+    } on PlatformException {
+      return false;
+    }
+  }
+
+  Future<bool> authenticateBiometric({
+    String reason = 'Verify your fingerprint or face to unlock',
+  }) async {
+    try {
+      final bool? ok = await _channel.invokeMethod<bool>(
+        'authenticateBiometric',
+        <String, Object>{'reason': reason},
+      );
+      return ok ?? false;
+    } on MissingPluginException {
+      return true;
+    } on PlatformException {
+      return false;
+    }
+  }
+
+  Future<bool> requestSiteHardwarePermissions(List<String> permissions) async {
+    if (permissions.isEmpty) {
+      return true;
+    }
+    try {
+      final bool? ok = await _channel.invokeMethod<bool>(
+        'requestSiteHardwarePermissions',
+        <String, Object>{'permissions': permissions},
+      );
+      return ok ?? false;
+    } on MissingPluginException {
+      return true;
+    } on PlatformException {
+      return false;
+    }
+  }
+
+  Future<bool> sendTestNotification() async {
+    try {
+      final bool? ok = await _channel.invokeMethod<bool>(
+        'sendTestNotification',
+      );
+      return ok ?? false;
+    } on MissingPluginException {
+      return true;
+    } on PlatformException {
+      return false;
+    }
+  }
+
+  Future<String> sendChromeExtensionRuntimeMessage({
+    required String id,
+    required String messageJson,
+    String? senderUrl,
+  }) async {
+    try {
+      final String? reply = await _channel.invokeMethod<String>(
+        'sendChromeExtensionRuntimeMessage',
+        <String, Object?>{
+          'id': id,
+          'messageJson': messageJson,
+          'senderUrl': senderUrl ?? '',
+        },
+      );
+      return reply ?? '{}';
+    } on MissingPluginException {
+      return '{}';
+    } on PlatformException {
+      return '{}';
+    }
+  }
+
+  Future<bool> triggerChromeExtensionAction({
+    required String id,
+    required String url,
+    required String title,
+  }) async {
+    try {
+      final bool? ok = await _channel.invokeMethod<bool>(
+        'triggerChromeExtensionAction',
+        <String, Object>{'id': id, 'url': url, 'title': title},
+      );
+      return ok ?? false;
+    } on MissingPluginException {
+      return true;
+    } on PlatformException {
+      return false;
+    }
   }
 
   Future<void> approveExternalNavigation({
@@ -701,41 +917,6 @@ class NativeShieldBridge {
     }
   }
 
-  Future<Map<String, Object?>> searchGoogleInBackground({
-    required String query,
-    String tab = 'all',
-    String safeMode = 'off',
-    String timeCode = 'any',
-    String regionCode = '',
-    String langHeader = 'en-US,en;q=0.9',
-  }) async {
-    try {
-      final Map<Object?, Object?>? raw = await _channel
-          .invokeMethod<Map<Object?, Object?>>(
-            'searchGoogleInBackground',
-            <String, Object>{
-              'query': query,
-              'tab': tab,
-              'safeMode': safeMode,
-              'timeCode': timeCode,
-              'regionCode': regionCode,
-              'langHeader': langHeader,
-            },
-          );
-      if (raw == null) {
-        return const <String, Object?>{'ok': false};
-      }
-      return <String, Object?>{
-        for (final MapEntry<Object?, Object?> e in raw.entries)
-          if (e.key != null) e.key.toString(): e.value,
-      };
-    } on MissingPluginException {
-      return const <String, Object?>{'ok': false};
-    } on PlatformException {
-      return const <String, Object?>{'ok': false};
-    }
-  }
-
   Future<List<Map<String, Object?>>> listChromeExtensions() async {
     try {
       final Object? raw = await _channel.invokeMethod<Object?>(
@@ -869,11 +1050,12 @@ class NativeShieldBridge {
   Future<void> setPopupContextTab({
     required String url,
     required String title,
+    int? webViewId,
   }) async {
     try {
       await _channel.invokeMethod<bool>(
         'setPopupContextTab',
-        <String, Object>{'url': url, 'title': title},
+        <String, Object?>{'url': url, 'title': title, 'webViewId': webViewId},
       );
     } on MissingPluginException {
       // Expected in widget tests.

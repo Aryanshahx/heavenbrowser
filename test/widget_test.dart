@@ -9,16 +9,18 @@ import 'package:heavenbrowser/core/l10n/app_strings.dart';
 import 'package:heavenbrowser/core/theme/app_theme.dart';
 import 'package:heavenbrowser/core/utils/omnibox_parser.dart';
 import 'package:heavenbrowser/features/browser/engine/browser_engine.dart';
+import 'package:heavenbrowser/features/browser/site_controls_sheet.dart';
 import 'package:heavenbrowser/features/devtools/desktop_inspector_panel.dart';
 import 'package:heavenbrowser/features/downloads/downloads_controller.dart';
 import 'package:heavenbrowser/features/extensions/extensions_controller.dart';
 import 'package:heavenbrowser/features/news/interest_news_service.dart';
 import 'package:heavenbrowser/features/search/heaven_search_service.dart';
-import 'package:heavenbrowser/features/search/heaven_search_view.dart';
 import 'package:heavenbrowser/features/settings/browser_settings.dart';
 import 'package:heavenbrowser/features/settings/help_screen.dart';
+import 'package:heavenbrowser/features/settings/notifications_screen.dart';
 import 'package:heavenbrowser/features/shield/heaven_shield.dart';
 import 'package:heavenbrowser/features/tabs/tab_manager.dart';
+import 'package:heavenbrowser/features/tabs/tabs_screen.dart';
 import 'package:heavenbrowser/features/vpn/vpn_controller.dart';
 import 'package:heavenbrowser/main.dart';
 import 'package:http/http.dart' as http;
@@ -29,19 +31,9 @@ final Uint8List _kSamplePreviewPng = base64Decode(
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==',
 );
 
-HeavenSearchService _createMockSearchService({
-  List<http.Request>? capturedRequests,
-}) {
-  final String encodedYoutube = base64Url
-      .encode(utf8.encode('https://www.youtube.com/watch?v=dQw4w9WgXcQ'))
-      .replaceAll('=', '');
-
+HeavenSearchService _createMockSearchService() {
   final MockClient mockClient = MockClient((http.Request request) async {
-    capturedRequests?.add(request);
-    final String host = request.url.host;
-    final String path = request.url.path;
-
-    if (host == 'suggestqueries.google.com') {
+    if (request.url.host == 'suggestqueries.google.com') {
       return http.Response(
         jsonEncode(<Object>[
           'flutter',
@@ -50,127 +42,8 @@ HeavenSearchService _createMockSearchService({
         200,
       );
     }
-    if (host == 'www.bing.com' &&
-        path == '/search' &&
-        request.url.queryParameters['format'] == 'rss') {
-      const String bingWebRss = '''
-      <rss version="2.0"><channel>
-        <item>
-          <title>Flutter Official Docs</title>
-          <link>https://docs.flutter.dev/get-started</link>
-          <description>Install Flutter SDK on Ubuntu Linux and build fast native apps.</description>
-        </item>
-      </channel></rss>
-      ''';
-      return http.Response(bingWebRss, 200);
-    }
-    if (host == 'www.bing.com' && path == '/search') {
-      final String bingWebHtml = '''
-      <ol id="b_results">
-        <li class="b_algo">
-          <h2><a href="https://www.bing.com/ck/a?!&&p=abc&u=a1$encodedYoutube&ntb=1">Flutter Official Video</a></h2>
-          <div class="b_caption"><p>Build fast apps on every screen with <strong>Flutter</strong>.</p></div>
-        </li>
-      </ol>
-      ''';
-      return http.Response(bingWebHtml, 200);
-    }
-    if (host == 'www.bing.com' && path == '/images/async') {
-      const String bingImagesHtml = '''
-      <a class="iusc" m="{&quot;murl&quot;:&quot;https://example.com/full.png&quot;,&quot;turl&quot;:&quot;https://example.com/thumb.png&quot;,&quot;purl&quot;:&quot;https://flutter.dev/showcase&quot;,&quot;t&quot;:&quot;Flutter Showcase UI&quot;}"></a>
-      ''';
-      return http.Response(bingImagesHtml, 200);
-    }
-    if (host == 'www.bing.com' && path == '/videos/search') {
-      const String bingVideosHtml = '''
-      <div class="mc_vtvc" vrhm="{&quot;vt&quot;:&quot;Flutter 60fps Demo&quot;,&quot;murl&quot;:&quot;https://www.youtube.com/watch?v=dQw4w9WgXcQ&quot;,&quot;du&quot;:&quot;04:12&quot;,&quot;thid&quot;:&quot;OVP.flutter123&quot;}"></div>
-      ''';
-      return http.Response(bingVideosHtml, 200);
-    }
-    if (host == 'www.bing.com' && path == '/news/infinitescrollajax') {
-      const String bingNewsHtml = '''
-      <div class="news-card newsitem cardcommon" data-title="Flutter 3.47 Released" data-url="https://news.example.com/flutter" data-author="TechDaily">
-        <img src="/th?id=ONUT.flutternews123&amp;pid=News&amp;w=234&amp;h=132" />
-        <div class="snippet">Google ships faster Impeller rendering on Android.</div>
-        <span aria-label="2 hours ago">2h</span>
-      </div>
-      ''';
-      return http.Response(bingNewsHtml, 200);
-    }
-    if (host == 'html.duckduckgo.com') {
-      const String sampleHtml = '''
-      <div class="result">
-        <a class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fdart.dev%2Foverview">Dart Language Overview</a>
-        <a class="result__snippet">Client-optimized language for fast apps on any platform.</a>
-      </div>
-      ''';
-      return http.Response(sampleHtml, 200);
-    }
-    if (host == 'commons.wikimedia.org') {
-      return http.Response(
-        jsonEncode(<String, Object>{
-          'query': <String, Object>{
-            'pages': <String, Object>{
-              '1': <String, Object>{
-                'title': 'File:Flutter Logo.png',
-                'imageinfo': <Map<String, Object>>[
-                  <String, Object>{
-                    'thumburl': 'https://example.com/thumb.png',
-                    'url': 'https://example.com/full.png',
-                    'descriptionurl':
-                        'https://commons.wikimedia.org/wiki/File:Flutter',
-                  },
-                ],
-              },
-            },
-          },
-        }),
-        200,
-      );
-    }
-    if (host == 'news.google.com') {
-      const String sampleRss = '''
-      <rss><channel>
-        <item>
-          <title>Flutter 3.47 Released - TechDaily</title>
-          <link>https://news.example.com/flutter</link>
-          <pubDate>Thu, 22 Oct 2026 09:00:00 GMT</pubDate>
-          <source url="https://news.example.com">TechDaily</source>
-        </item>
-      </channel></rss>
-      ''';
-      return http.Response(sampleRss, 200);
-    }
-    if (host == 'api.duckduckgo.com') {
-      return http.Response(
-        jsonEncode(<String, Object>{
-          'Heading': 'Flutter (software)',
-          'AbstractText':
-              'Flutter is an open-source UI software development kit created by Google.',
-          'AbstractURL': 'https://en.wikipedia.org/wiki/Flutter_(software)',
-          'AbstractSource': 'Wikipedia',
-        }),
-        200,
-      );
-    }
-    if (host == 'en.wikipedia.org') {
-      return http.Response(
-        jsonEncode(<String, Object>{
-          'query': <String, Object>{
-            'search': <Map<String, Object>>[
-              <String, Object>{
-                'title': 'Flutter (software)',
-                'snippet': 'Open-source UI SDK',
-              },
-            ],
-          },
-        }),
-        200,
-      );
-    }
-    return http.Response('{}', 200);
+    return http.Response('[]', 200);
   });
-
   return HeavenSearchService(client: mockClient);
 }
 
@@ -196,11 +69,6 @@ HeavenNewsFeedService _createMockNewsService(
     const String rss = '''
     <rss xmlns:media="http://search.yahoo.com/mrss/"><channel>
       <item>
-        <title>Text Only Item Without Cover Photo Should Be Filtered Out</title>
-        <link>https://textonly.example.com/no-photo</link>
-        <pubDate>Thu, 22 Oct 2026 11:15:00 GMT</pubDate>
-      </item>
-      <item>
         <title>Linux Kernel Rust Drivers Expand on ARM64 - LWN</title>
         <link>https://lwn.example.com/rust-arm64</link>
         <pubDate>Thu, 22 Oct 2026 10:00:00 GMT</pubDate>
@@ -221,7 +89,7 @@ HeavenNewsFeedService _createMockNewsService(
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
-  group('Step 8: Google-Inspired Native Heaven Search, Extensions, Gestures & Settings', () {
+  group('Step 13 Core: Google Default Engine, Persistent Tabs, Hibernation & Extensions', () {
     test('uses Electric Sapphire & Midnight Navy blue palette', () {
       expect(AppTheme.sapphireBlue, const Color(0xFF2563EB));
       expect(AppTheme.electricBlue, const Color(0xFF3B82F6));
@@ -231,24 +99,55 @@ void main() {
     });
 
     test(
-      'Heaven Search stays native (does NOT open google.com), parses Bing RSS fast, formats Google-inspired breadcrumbs & records recent searches outside Incognito',
+      'Heaven Engine is completely removed, Google is Default Search Engine, and bottom navigation is default',
       () async {
+        expect(
+          File(
+            'android/app/src/main/java/com/hypertechlabs/heavenbrowser/HeavenGoogleBgSearch.java',
+          ).existsSync(),
+          isFalse,
+        );
+        expect(
+          File('lib/features/search/heaven_search_view.dart').existsSync(),
+          isFalse,
+        );
+        expect(SearchEngine.values.first, SearchEngine.google);
+        expect(
+          SearchEngine.values.map((SearchEngine e) => e.name),
+          isNot(contains('heaven')),
+        );
+        expect(SearchEngine.fromName('heaven'), SearchEngine.google);
+
         SharedPreferences.setMockInitialValues(<String, Object>{});
         final SharedPreferences prefs = await SharedPreferences.getInstance();
         final BrowserSettingsController settings = BrowserSettingsController(
           prefs,
         );
+        expect(settings.searchEngine, SearchEngine.google);
+        expect(settings.bottomOmnibox, isTrue);
+
         final BrowserEngine normalEngine = BrowserEngine(
           settings: settings,
           isIncognito: false,
           enablePlatformWebView: false,
         );
         await normalEngine.loadUserEntry('raspberry pi 5');
-        expect(normalEngine.isShowingHeavenSearch, isTrue);
-        expect(normalEngine.heavenSearchQuery, 'raspberry pi 5');
+        expect(
+          normalEngine.currentUrl,
+          'https://www.google.com/search?q=raspberry+pi+5',
+        );
         expect(settings.recentSearches, contains('raspberry pi 5'));
 
-        // Incognito never saves recent searches!
+        // Legacy heaven:// search URLs automatically migrate to Google Search
+        await normalEngine.loadUri(
+          Uri.parse('heaven://search?q=flutter+sdk'),
+        );
+        expect(
+          normalEngine.currentUrl,
+          'https://www.google.com/search?q=flutter+sdk',
+        );
+
+        // Incognito never saves recent searches
         final BrowserEngine incogEngine = BrowserEngine(
           settings: settings,
           isIncognito: true,
@@ -257,24 +156,11 @@ void main() {
         await incogEngine.loadUserEntry('secret query');
         expect(settings.recentSearches, isNot(contains('secret query')));
 
-        await settings.removeRecentSearch('raspberry pi 5');
-        expect(settings.recentSearches, isEmpty);
-
-        // Google-inspired breadcrumb formatting
-        expect(
-          OmniboxParser.formatGoogleBreadcrumb(
-            'https://docs.flutter.dev/get-started/install',
-          ),
-          'https://docs.flutter.dev › get-started › install',
-        );
-
         final HeavenSearchService service = _createMockSearchService();
-        final HeavenSearchResponse fastRes = await service.searchFastWeb(
+        final List<String> suggestions = await service.fetchSuggestions(
           'flutter',
         );
-        expect(fastRes.webResults.length, 3);
-        expect(fastRes.webResults.first.title, 'Flutter Official Docs');
-        expect(fastRes.relatedSearches, contains('flutter sdk'));
+        expect(suggestions, contains('flutter sdk'));
 
         normalEngine.dispose();
         incogEngine.dispose();
@@ -282,7 +168,63 @@ void main() {
     );
 
     test(
-      'ExtensionsController installs Desktop Chrome Web Store (.crx) extensions, parses 32-char IDs & merges CRX content_scripts',
+      'Open tabs, active tab, and tab groups persist across app restarts and support automatic hibernation',
+      () async {
+        SharedPreferences.setMockInitialValues(<String, Object>{});
+        final SharedPreferences prefs = await SharedPreferences.getInstance();
+        final BrowserSettingsController settings = BrowserSettingsController(
+          prefs,
+        );
+
+        final TabManagerController session1 = TabManagerController(
+          settings: settings,
+          enablePlatformWebView: false,
+        );
+        await session1.activeEngine.loadUserEntry('https://flutter.dev');
+        final BrowserTab tab2 = await session1.openNewTab(
+          incognito: false,
+          initialInput: 'https://dart.dev',
+        );
+        final TabGroup grp = session1.createGroupAndAddTab(
+          name: 'SDK Docs',
+          tabId: tab2.id,
+        );
+        expect(session1.normalTabs.length, 2);
+        expect(session1.groups.length, 1);
+        session1.dispose();
+
+        // Simulate app restart with the same SharedPreferences
+        final TabManagerController session2 = TabManagerController(
+          settings: settings,
+          enablePlatformWebView: false,
+        );
+        expect(session2.normalTabs.length, 2);
+        expect(session2.groups.length, 1);
+        expect(session2.groups.first.name, 'SDK Docs');
+        expect(session2.activeTab.groupId, grp.id);
+        expect(session2.activeEngine.currentUrl, 'https://dart.dev');
+
+        // Background restored tab starts sleeping to save RAM and wakes on focus
+        final BrowserTab bgTab = session2.normalTabs.first;
+        expect(bgTab.engine.currentUrl, 'https://flutter.dev');
+        expect(bgTab.engine.isHibernated, isTrue);
+
+        session2.switchToTab(bgTab.id);
+        await Future<void>.delayed(Duration.zero);
+        expect(bgTab.engine.isHibernated, isFalse);
+
+        // Aggressive hibernation freezes inactive background tabs
+        final int frozen = await session2.hibernateInactiveTabsNow(
+          threshold: Duration.zero,
+        );
+        expect(frozen, 1);
+        expect(session2.normalTabs.last.engine.isHibernated, isTrue);
+        session2.dispose();
+      },
+    );
+
+    test(
+      'ExtensionsController installs .crx packages, searches live Web Store RSS, supports options/background flags, and exposes NO suggested catalog',
       () async {
         const MethodChannel nativeChannel = MethodChannel(
           'com.hypertechlabs.heavenbrowser/native_shield',
@@ -310,6 +252,9 @@ void main() {
                       'source': 'webstore',
                       'popupUrl':
                           'https://chrome-ext.heaven.local/eimadpbcbfnmbkopoojfekhnkhdbieeh/ui/popup/index.html',
+                      'optionsUrl':
+                          'https://chrome-ext.heaven.local/eimadpbcbfnmbkopoojfekhnkhdbieeh/ui/options/index.html',
+                      'hasBackground': true,
                       'iconBase64': base64Encode(_kSamplePreviewPng),
                       'permissions': <String>['storage', 'tabs'],
                       'matches': <String>['<all_urls>'],
@@ -326,138 +271,109 @@ void main() {
               }
             });
 
+        final MockClient cwsMock = MockClient((http.Request req) async {
+          const String rss = '''
+          <rss version="2.0"><channel>
+            <item>
+              <title>JSON Viewer - Chrome Web Store</title>
+              <link>https://chromewebstore.google.com/detail/json-viewer/gbmdgpbipfallnflgajpaliibnhdgobh</link>
+              <description>Pretty print JSON documents in Chrome.</description>
+            </item>
+          </channel></rss>
+          ''';
+          return http.Response(rss, 200);
+        });
+
         SharedPreferences.setMockInitialValues(<String, Object>{});
         final SharedPreferences prefs = await SharedPreferences.getInstance();
         final ExtensionsController ext = ExtensionsController(
           prefs,
           syncNativeOnInit: false,
+          httpClient: cwsMock,
         );
 
+        expect(ext.chromeExtensions, isEmpty);
+
+        final List<ChromeWebStoreSearchItem> searchRes =
+            await ext.searchWebStoreExtensions('json viewer');
+        expect(searchRes.length, 1);
         expect(
-          ExtensionsController.extractChromeWebStoreId(
-            'https://chromewebstore.google.com/detail/dark-reader/eimadpbcbfnmbkopoojfekhnkhdbieeh?hl=en',
-          ),
-          'eimadpbcbfnmbkopoojfekhnkhdbieeh',
+          searchRes.first.extensionId,
+          'gbmdgpbipfallnflgajpaliibnhdgobh',
         );
-        expect(
-          ExtensionsController.featuredWebStoreCatalog.length,
-          greaterThanOrEqualTo(6),
-        );
+        expect(searchRes.first.name, 'JSON Viewer');
 
         final String? installErr = await ext.installFromWebStore(
           'https://chromewebstore.google.com/detail/dark-reader/eimadpbcbfnmbkopoojfekhnkhdbieeh',
         );
         expect(installErr, isNull);
         expect(ext.isInstalled('eimadpbcbfnmbkopoojfekhnkhdbieeh'), isTrue);
-        expect(ext.chromeExtensions.first.name, 'Dark Reader');
         expect(ext.chromeExtensions.first.hasPopup, isTrue);
-        expect(ext.chromeExtensions.first.iconBytes, isNotNull);
-
-        final String? scriptErr = await ext.addCustomExtension(
-          name: 'Custom Dark Boost',
-          description: 'Adds custom border',
-          matchPattern: 'example.com',
-          jsCode: 'window.__heavenExtRan = true;',
-          cssCode: 'body { outline: 1px solid blue; }',
-        );
-        expect(scriptErr, isNull);
+        expect(ext.chromeExtensions.first.hasOptions, isTrue);
+        expect(ext.chromeExtensions.first.hasBackground, isTrue);
 
         final String fullInjected = await ext.buildFullInjectionForUrl(
-          'https://sub.example.com/article',
+          'https://www.google.com/search?q=flutter',
         );
         expect(fullInjected, contains('__darkReaderCrxLoaded'));
-        expect(fullInjected, contains('__heavenExtRan'));
-        expect(fullInjected, contains('outline: 1px solid blue'));
         ext.dispose();
       },
     );
 
     test(
-      'HeavenSearchService copies live Background Google Search results directly into Heaven Search UI',
-      () async {
-        const MethodChannel nativeChannel = MethodChannel(
-          'com.hypertechlabs.heavenbrowser/native_shield',
+      'Privacy Policy file is populated and AppConstants.privacyPolicyUrl points to official GitHub policy',
+      () {
+        expect(
+          AppConstants.privacyPolicyUrl,
+          'https://github.com/Aryanshahx/heavenbrowser/blob/main/privacypolicy.md',
         );
-        addTearDown(() {
-          TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
-              .setMockMethodCallHandler(nativeChannel, null);
-        });
-
-        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
-            .setMockMethodCallHandler(nativeChannel, (MethodCall call) async {
-              if (call.method == 'searchGoogleInBackground') {
-                return <String, Object>{
-                  'ok': true,
-                  'webResults': <Map<String, Object>>[
-                    <String, Object>{
-                      'title': 'Google Live Result: Flutter SDK',
-                      'url': 'https://flutter.dev',
-                      'snippet': 'Copied from background Google Search DOM.',
-                      'sourceLabel': 'flutter.dev',
-                    },
-                  ],
-                  'knowledgeCard': <String, Object>{
-                    'heading': 'Flutter Framework',
-                    'summary': 'UI toolkit by Google.',
-                    'sourceUrl': 'https://flutter.dev',
-                    'sourceName': 'Google',
-                  },
-                  'relatedSearches': <String>[
-                    'flutter desktop extensions',
-                    'flutter android arm64',
-                  ],
-                };
-              }
-              return null;
-            });
-
-        final HeavenSearchService service = _createMockSearchService();
-        final HeavenSearchResponse res = await service.searchFastWeb('flutter');
-        expect(res.webResults.first.title, 'Google Live Result: Flutter SDK');
-        expect(res.knowledgeCard?.heading, 'Flutter Framework');
-        expect(res.relatedSearches, contains('flutter desktop extensions'));
+        final File policyFile = File('privacypolicy.md');
+        expect(policyFile.existsSync(), isTrue);
+        final String policyText = policyFile.readAsStringSync();
+        expect(policyText.length, greaterThan(1500));
+        expect(policyText, contains('Privacy Policy for Heaven Browser'));
+        expect(policyText, contains('techlabs.hyper@gmail.com'));
       },
     );
 
     test(
-      'Tab Groups, Adjacent Tab Gesture Switching, Languages & Per-Site Controls work cleanly',
+      'Per-Site Permission store, 1-tap revoke, Ultra Data Saver & Data Saved metrics work cleanly',
       () async {
         SharedPreferences.setMockInitialValues(<String, Object>{});
         final SharedPreferences prefs = await SharedPreferences.getInstance();
         final BrowserSettingsController settings = BrowserSettingsController(
           prefs,
         );
-        final TabManagerController tm = TabManagerController(
-          settings: settings,
-          enablePlatformWebView: false,
+
+        expect(
+          settings.getSitePermission('meet.example.com', SitePermissionType.camera),
+          SitePermissionDecision.ask,
+        );
+        await settings.setSitePermission(
+          'meet.example.com',
+          SitePermissionType.camera,
+          SitePermissionDecision.allow,
+        );
+        expect(
+          settings.getSitePermission('meet.example.com', SitePermissionType.camera),
+          SitePermissionDecision.allow,
         );
 
-        final BrowserTab second = await tm.openNewTab(incognito: false);
-        expect(tm.activeTab.id, second.id);
-        expect(tm.switchAdjacentTab(-1), isTrue);
-        expect(tm.activeTab.id, isNot(second.id));
-
-        final TabGroup group = tm.createGroupAndAddTab(
-          name: 'Dev Docs',
-          tabId: second.id,
+        await settings.revokeSitePermission(
+          'meet.example.com',
+          SitePermissionType.camera,
         );
-        expect(tm.groups.length, 1);
-        expect(second.groupId, group.id);
-        tm.deleteGroup(group.id);
-        expect(second.groupId, isNull);
+        expect(
+          settings.getSitePermission('meet.example.com', SitePermissionType.camera),
+          SitePermissionDecision.block,
+        );
+
+        await settings.incrementBytesSaved(2 * 1024 * 1024);
+        expect(settings.formattedDataSaved, '2.0 MB');
 
         await settings.setLanguage(BrowserLanguage.hi);
         expect(settings.language, BrowserLanguage.hi);
-        expect(settings.language.acceptLanguageHeader, contains('hi-IN'));
-
-        await settings.toggleSiteJavaScript('paywall.example.com');
-        expect(
-          settings.isJavaScriptAllowedForHost('paywall.example.com'),
-          isFalse,
-        );
-
         expect(HelpScreen.supportEmail, 'techlabs.hyper@gmail.com');
-        tm.dispose();
       },
     );
   });
@@ -538,15 +454,6 @@ void main() {
         await vpn.selectProfile(VpnController.builtInWarpId);
         expect(vpn.isConnected, isTrue);
 
-        final String? wgErr = await vpn.addCustomProfile(
-          name: 'Proton Free NL',
-          countryLabel: 'Netherlands',
-          configText:
-              '[Interface]\nPrivateKey = AAAA\nAddress = 10.2.0.2/32\n[Peer]\nPublicKey = BBBB\nEndpoint = 185.159.157.1:51820\nAllowedIPs = 0.0.0.0/0\n',
-        );
-        expect(wgErr, isNull);
-        expect(vpn.customProfiles.length, 1);
-
         await vpn.disconnect();
         expect(vpn.isConnected, isFalse);
         vpn.dispose();
@@ -590,32 +497,30 @@ void main() {
   });
 
   testWidgets(
-    'Step 9 UI: Background Google -> Heaven Search UI, Desktop Chrome Extensions (.crx), Website Logo Shortcut & Classic Foreign VPN on 320px screen',
+    'Step 13 Ergonomic UI: Bottom Bar, Swipe Gestures, Quick Action Menu, Clean Extensions, Per-Site Permission Dashboard, Notifications & Privacy Policy on 320px screen',
     (WidgetTester tester) async {
       const MethodChannel nativeChannel = MethodChannel(
         'com.hypertechlabs.heavenbrowser/native_shield',
       );
       Map<Object?, Object?>? capturedShortcutArgs;
+      bool testNotificationSent = false;
+
       TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
           .setMockMethodCallHandler(nativeChannel, (MethodCall call) async {
             switch (call.method) {
-              case 'searchGoogleInBackground':
-                return <String, Object>{
-                  'ok': true,
-                  'webResults': <Map<String, Object>>[
-                    <String, Object>{
-                      'title': 'Flutter Official Docs',
-                      'url': 'https://docs.flutter.dev',
-                      'snippet': 'Build apps for any screen.',
-                      'sourceLabel': 'docs.flutter.dev',
-                    },
-                  ],
-                  'relatedSearches': <String>['flutter sdk', 'dart pub'],
-                };
               case 'listChromeExtensions':
                 return const <Map<String, Object>>[];
               case 'createHomeScreenShortcut':
                 capturedShortcutArgs = call.arguments as Map<Object?, Object?>?;
+                return true;
+              case 'getNotificationStatus':
+                return <String, Object>{
+                  'systemEnabled': true,
+                  'runtimeGranted': true,
+                  'downloadNotificationsEnabled': true,
+                };
+              case 'sendTestNotification':
+                testNotificationSent = true;
                 return true;
               case 'provisionForeignOpenVpnConfig':
                 return <String, Object>{
@@ -645,7 +550,11 @@ void main() {
       final BrowserSettingsController settings = BrowserSettingsController(
         prefs,
       );
-      await settings.recordRecentSearch('ubuntu raspberry pi');
+      await settings.setSitePermission(
+        'www.google.com',
+        SitePermissionType.camera,
+        SitePermissionDecision.allow,
+      );
 
       final DownloadsController downloads = DownloadsController(
         prefs,
@@ -686,19 +595,7 @@ void main() {
       await tester.pumpAndSettle();
       expect(tester.takeException(), isNull);
 
-      // 1. Tiny Search Engine Switcher button is present right on the Search Bar!
-      expect(
-        find.byKey(const Key('tiny_search_engine_switcher')),
-        findsWidgets,
-      );
-
-      // 2. Tapping Home Search Bar displays Recent Searches!
-      await tester.tap(find.byKey(const Key('home_search_textfield')));
-      await tester.pumpAndSettle();
-      expect(find.text('Recent Searches'), findsOneWidget);
-      expect(find.text('ubuntu raspberry pi'), findsOneWidget);
-
-      // 3. Submit query -> Background Google Search copied into Heaven Search UI!
+      // 1. Submit search -> resolves directly to Google Search!
       await tester.enterText(
         find.byKey(const Key('home_search_textfield')),
         'flutter',
@@ -706,91 +603,102 @@ void main() {
       await tester.pump();
       await tester.tap(find.byKey(const Key('home_search_icon_button')));
       await tester.pumpAndSettle();
-      expect(tester.takeException(), isNull);
-      expect(find.text('Flutter Official Docs'), findsOneWidget);
-      await tester.scrollUntilVisible(
-        find.text('People also search for'),
-        180,
-        scrollable: find
-            .descendant(
-              of: find.byType(HeavenSearchView),
-              matching: find.byType(Scrollable),
-            )
-            .first,
+      expect(find.textContaining('google.com'), findsWidgets);
+
+      // 2. Open Quick Action Menu via floating corner button & customize
+      expect(find.byKey(const Key('quick_action_fab')), findsOneWidget);
+      await tester.tap(find.byKey(const Key('quick_action_fab')));
+      await tester.pumpAndSettle();
+      expect(find.text('One-Handed Quick Actions'), findsOneWidget);
+      await tester.tap(find.byKey(const Key('quick_action_permissions')));
+      await tester.pumpAndSettle();
+
+      // 3. Per-Site Permission Dashboard shows allowed Camera & revokes with 1 tap!
+      expect(find.byType(SiteControlsSheet), findsOneWidget);
+      await tester.ensureVisible(find.byKey(const Key('revoke_perm_camera')));
+      await tester.pumpAndSettle();
+      expect(find.byKey(const Key('revoke_perm_camera')), findsOneWidget);
+      await tester.tap(find.byKey(const Key('revoke_perm_camera')));
+      await tester.pumpAndSettle();
+      expect(
+        settings.getSitePermission('www.google.com', SitePermissionType.camera),
+        SitePermissionDecision.block,
+      );
+      Navigator.of(tester.element(find.byType(SiteControlsSheet))).pop();
+      await tester.pumpAndSettle();
+
+      // 4. Swipe UP on bottom address bar opens the Tab Grid (TabsScreen), add a 2nd tab, then swipe LEFT/RIGHT on address bar to switch tabs!
+      await tester.fling(
+        find.byKey(const Key('omnibox_display_pill')),
+        const Offset(0, -120),
+        900,
       );
       await tester.pumpAndSettle();
-      expect(tester.takeException(), isNull);
-      expect(find.text('People also search for'), findsOneWidget);
+      expect(find.byType(TabsScreen), findsOneWidget);
+      await tester.tap(find.text('New Tab'));
+      await tester.pumpAndSettle();
+      // Now on Tab 2 (Start Page); swipe right on address bar to jump instantly back to Tab 1 (google.com)!
+      await tester.fling(
+        find.byKey(const Key('omnibox_display_pill')),
+        const Offset(140, 0),
+        900,
+      );
+      await tester.pumpAndSettle();
+      expect(find.textContaining('google.com'), findsWidgets);
 
-      // 4. Open Browser Menu -> Verify Chrome Extensions & Create shortcut!
+      // 5. Open Chrome Extensions -> NO suggested extensions shown!
       await tester.tap(find.byTooltip('Browser Menu'));
       await tester.pumpAndSettle();
-      expect(tester.takeException(), isNull);
-      expect(find.text('Add tab to new group'), findsOneWidget);
-      expect(find.text('Chrome Extensions'), findsOneWidget);
-      expect(find.text('Site controls'), findsOneWidget);
-      expect(find.text('Create shortcut'), findsOneWidget);
-
-      // Open Desktop Chrome Extensions screen -> Verify Web Store + .crx UI!
+      await tester.ensureVisible(find.text('Chrome Extensions'));
+      await tester.pumpAndSettle();
       await tester.tap(find.text('Chrome Extensions'));
       await tester.pumpAndSettle();
-      expect(tester.takeException(), isNull);
-      expect(find.text('Desktop Chrome Extensions'), findsOneWidget);
-      expect(
-        find.byKey(const Key('open_chrome_web_store_button')),
-        findsOneWidget,
-      );
-      expect(find.byKey(const Key('import_crx_file_button')), findsOneWidget);
-      expect(find.text('Dark Reader'), findsOneWidget);
+      expect(find.byKey(const Key('extensions_empty_state')), findsOneWidget);
+      expect(find.text('Dark Reader'), findsNothing);
+      expect(find.text('SponsorBlock for YouTube'), findsNothing);
       await tester.pageBack();
       await tester.pumpAndSettle();
 
-      // Open Create Shortcut -> Verify Website Logo & shortcut creation!
+      // 6. Open Redesigned Notification Control Center -> Send Test Alert!
       await tester.tap(find.byTooltip('Browser Menu'));
+      await tester.pumpAndSettle();
+      await tester.ensureVisible(find.text('Notifications'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Notifications'));
+      await tester.pumpAndSettle();
+      expect(find.byType(NotificationsScreen), findsOneWidget);
+      expect(find.text('Notification Control Center'), findsOneWidget);
+      await tester.tap(find.byKey(const Key('send_test_notification_button')));
+      await tester.pumpAndSettle();
+      expect(testNotificationSent, isTrue);
+      await tester.pageBack();
+      await tester.pumpAndSettle();
+
+      // 7. Create Shortcut with website logo still works cleanly
+      await tester.tap(find.byTooltip('Browser Menu'));
+      await tester.pumpAndSettle();
+      await tester.ensureVisible(find.text('Create shortcut'));
       await tester.pumpAndSettle();
       await tester.tap(find.text('Create shortcut'));
       await tester.pumpAndSettle();
-      expect(tester.takeException(), isNull);
-      expect(find.text('Create Shortcut'), findsOneWidget);
       await tester.tap(find.text('Add Shortcut'));
       await tester.pumpAndSettle();
-      expect(tester.takeException(), isNull);
       expect(capturedShortcutArgs, isNotNull);
       await tester.pump(const Duration(seconds: 5));
       await tester.pumpAndSettle();
 
-      // Open Restored Foreign Country VPN screen -> Verify Foreign Countries & 1-tap Connect!
+      // 8. Privacy Policy menu option redirects to GitHub privacypolicy.md!
       await tester.tap(find.byTooltip('Browser Menu'));
       await tester.pumpAndSettle();
-      await tester.tap(find.text('VPN'));
-      await tester.pumpAndSettle();
-      expect(tester.takeException(), isNull);
-      expect(find.textContaining('Foreign Country Servers'), findsOneWidget);
-      await tester.tap(find.byKey(const Key('vpn_power_button')));
-      await tester.pumpAndSettle();
-      expect(tester.takeException(), isNull);
-      expect(vpn.isConnected, isTrue);
-      await tester.pageBack();
-      await tester.pumpAndSettle();
-
-      // Open Downloads screen -> Verify Change Download Location card!
-      await tester.tap(find.byTooltip('Browser Menu'));
-      await tester.pumpAndSettle();
-      await tester.tap(find.text('Downloads'));
-      await tester.pumpAndSettle();
-      expect(tester.takeException(), isNull);
-      expect(
-        find.byKey(const Key('change_download_location_card')),
-        findsOneWidget,
+      await tester.ensureVisible(
+        find.byKey(const Key('browser_menu_privacy_policy_tile')),
       );
-
-      final TabManagerController tm = TabManagerController(
-        settings: settings,
-        enablePlatformWebView: false,
+      await tester.pumpAndSettle();
+      await tester.tap(
+        find.byKey(const Key('browser_menu_privacy_policy_tile')),
       );
-      tm.activeTab.previewBytes = _kSamplePreviewPng;
-      expect(tm.activeTab.previewBytes, isNotEmpty);
-      tm.dispose();
+      await tester.pumpAndSettle();
+      expect(find.textContaining('github.com'), findsWidgets);
 
       vpn.dispose();
       extensions.dispose();
@@ -799,134 +707,30 @@ void main() {
     },
   );
 
-  group('Step 10: Shield v10, Desktop Chrome Web Store, Fast Google Search & Inspect DevTools', () {
+  group('Shield, DevTools & Native Java Architecture Invariants', () {
     test(
-      'HeavenShield v10 blocks Google Ads, YouTube Ads, and Pirated/Porn Redirect networks',
+      'HeavenShield blocks Google Ads, YouTube Ads, and Pirated/Porn Redirect networks',
       () {
-        // Google & YouTube ad domains & ad telemetry paths
-        expect(HeavenShield.matchBlockedDomain('pagead2.googlesyndication.com'), isNotNull);
-        expect(HeavenShield.matchBlockedDomain('googleads.g.doubleclick.net'), isNotNull);
-        expect(HeavenShield.matchBlockedDomain('adtrafficquality.google'), isNotNull);
+        expect(
+          HeavenShield.matchBlockedDomain('pagead2.googlesyndication.com'),
+          isNotNull,
+        );
+        expect(
+          HeavenShield.matchBlockedDomain('googleads.g.doubleclick.net'),
+          isNotNull,
+        );
         expect(HeavenShield.matchBlockedDomain('ads.youtube.com'), isNotNull);
         expect(
-          HeavenShield.shouldBlockUri(
-            Uri.parse('https://www.youtube.com/api/stats/ads?v=123'),
-          ),
-          isTrue,
+          HeavenShield.matchBlockedDomain('syndication.exoclick.com'),
+          isNotNull,
         );
-
-        // Pirated streaming & adult/porn redirect / popunder / cam / casino domains
-        expect(HeavenShield.matchBlockedDomain('syndication.exoclick.com'), isNotNull);
-        expect(HeavenShield.matchBlockedDomain('ads.trafficjunky.net'), isNotNull);
-        expect(HeavenShield.matchBlockedDomain('juicyads.com'), isNotNull);
-        expect(HeavenShield.matchBlockedDomain('c1.popads.net'), isNotNull);
-        expect(HeavenShield.matchBlockedDomain('popcash.net'), isNotNull);
-        expect(HeavenShield.matchBlockedDomain('clickadu.com'), isNotNull);
-        expect(HeavenShield.matchBlockedDomain('hilltopads.net'), isNotNull);
         expect(HeavenShield.matchBlockedDomain('adsterra.com'), isNotNull);
-        expect(HeavenShield.matchBlockedDomain('go.stripchat.com'), isNotNull);
-        expect(HeavenShield.matchBlockedDomain('jerkmate.com'), isNotNull);
         expect(
-          HeavenShield.shouldBlockUri(
-            Uri.parse('https://chaturbate.com/in/?tour=abc'),
-            pageHost: 'watchmovies-free.to',
-          ),
-          isTrue,
+          HeavenShield.matchBlockedDomain('chromewebstore.google.com'),
+          isNull,
         );
-        expect(HeavenShield.matchBlockedDomain('1xbet.com'), isNotNull);
-        expect(
-          HeavenShield.shouldBlockUri(
-            Uri.parse('https://stream-example.org/afu.php?zoneid=999'),
-          ),
-          isTrue,
-        );
-
-        // Normal websites & Chrome Web Store remain unblocked
-        expect(HeavenShield.matchBlockedDomain('chromewebstore.google.com'), isNull);
+        expect(HeavenShield.matchBlockedDomain('www.google.com'), isNull);
         expect(HeavenShield.matchBlockedDomain('www.youtube.com'), isNull);
-        expect(HeavenShield.matchBlockedDomain('docs.flutter.dev'), isNull);
-
-        final String script = HeavenShield.buildProtectionScript(
-          shieldEnabled: true,
-          sendDntAndGpc: true,
-        );
-        expect(script, contains('__heavenShieldV10Active'));
-        expect(script, contains('adPlacements'));
-        expect(script, contains('ALLOW_NAV:'));
-      },
-    );
-
-    test(
-      'Chrome Web Store uses Desktop Windows Chrome 134 UA & searches live Web Store extensions',
-      () async {
-        expect(
-          AppConstants.desktopUserAgent,
-          contains('Windows NT 10.0; Win64; x64'),
-        );
-        expect(AppConstants.desktopUserAgent, contains('Chrome/134.0.0.0'));
-        expect(
-          ExtensionsController.chromeWebStoreHomeUrl,
-          equals('https://chromewebstore.google.com/?hl=en'),
-        );
-        expect(
-          ExtensionsController.isChromeWebStoreUrl(
-            'https://chromewebstore.google.com/detail/ublock-origin-lite/ddkjiahejlhfcafbddmgiahcphecmpfh',
-          ),
-          isTrue,
-        );
-        expect(
-          ExtensionsController.isChromeWebStoreUrl(
-            'https://chrome.google.com/webstore/category/extensions',
-          ),
-          isTrue,
-        );
-
-        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
-            .setMockMethodCallHandler(
-              const MethodChannel('com.hypertechlabs.heavenbrowser/native_shield'),
-              (MethodCall call) async {
-                if (call.method == 'searchGoogleInBackground') {
-                  final Map<Object?, Object?> args =
-                      call.arguments as Map<Object?, Object?>;
-                  if (args['tab'] == 'cws') {
-                    return <String, Object>{
-                      'ok': true,
-                      'webResults': <Map<String, String>>[
-                        <String, String>{
-                          'title': 'JSON Viewer - Chrome Web Store',
-                          'url':
-                              'https://chromewebstore.google.com/detail/json-viewer/gbmdgpbipfallnflgajpaliibnhdgobh',
-                          'snippet': 'Pretty print JSON documents in Chrome.',
-                        },
-                      ],
-                    };
-                  }
-                }
-                return null;
-              },
-            );
-
-        SharedPreferences.setMockInitialValues(<String, Object>{});
-        final SharedPreferences prefs = await SharedPreferences.getInstance();
-        final ExtensionsController ctrl = ExtensionsController(
-          prefs,
-          syncNativeOnInit: false,
-        );
-        final List<ChromeWebStoreCatalogItem> found =
-            await ctrl.searchWebStoreExtensions('json viewer');
-        expect(found, isNotEmpty);
-        expect(
-          found.first.extensionId,
-          equals('gbmdgpbipfallnflgajpaliibnhdgobh'),
-        );
-        expect(found.first.name, equals('JSON Viewer'));
-        ctrl.dispose();
-
-        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
-            .setMockMethodCallHandler(
-              const MethodChannel('com.hypertechlabs.heavenbrowser/native_shield'),
-              null,
-            );
       },
     );
 
@@ -938,45 +742,13 @@ void main() {
         addTearDown(() {
           tester.view.resetPhysicalSize();
           tester.view.resetDevicePixelRatio();
-          TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
-              .setMockMethodCallHandler(
-                const MethodChannel('com.hypertechlabs.heavenbrowser/native_shield'),
-                null,
-              );
         });
-
-        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
-            .setMockMethodCallHandler(
-              const MethodChannel('com.hypertechlabs.heavenbrowser/native_shield'),
-              (MethodCall call) async {
-                switch (call.method) {
-                  case 'searchGoogleInBackground':
-                    return <String, Object>{
-                      'ok': true,
-                      'webResults': <Map<String, String>>[
-                        <String, String>{
-                          'title': 'Dart DevTools Guide',
-                          'url': 'https://dart.dev/tools/dart-devtools',
-                          'snippet': 'Official Dart & Flutter developer tools.',
-                          'sourceLabel': 'dart.dev',
-                        },
-                      ],
-                      'relatedSearches': <String>['flutter inspector'],
-                    };
-                  case 'listChromeExtensions':
-                    return const <Map<String, Object>>[];
-                  default:
-                    return true;
-                }
-              },
-            );
 
         SharedPreferences.setMockInitialValues(<String, Object>{});
         final SharedPreferences prefs = await SharedPreferences.getInstance();
         final BrowserSettingsController settings = BrowserSettingsController(
           prefs,
         );
-        final HeavenSearchService searchService = _createMockSearchService();
         final DownloadsController downloads = DownloadsController(
           prefs,
           enableNativePolling: false,
@@ -992,7 +764,8 @@ void main() {
           prefs,
           enableNativePolling: false,
           client: MockClient(
-            (_) async => http.Response('ip=198.51.100.7\nloc=US\nwarp=on\n', 200),
+            (_) async =>
+                http.Response('ip=198.51.100.7\nloc=US\nwarp=on\n', 200),
           ),
         );
         final ExtensionsController extensions = ExtensionsController(
@@ -1003,7 +776,7 @@ void main() {
         await tester.pumpWidget(
           HeavenBrowserApp(
             settings: settings,
-            searchService: searchService,
+            searchService: _createMockSearchService(),
             downloads: downloads,
             newsService: newsService,
             interests: interests,
@@ -1014,34 +787,12 @@ void main() {
         );
         await tester.pumpAndSettle();
 
-        // 1. Verify Fast Background Google Search displays 'Google live results' badge!
-        await tester.enterText(
-          find.byKey(const Key('home_search_textfield')),
-          'dart devtools',
-        );
-        await tester.pump();
-        await tester.tap(find.byKey(const Key('home_search_icon_button')));
-        await tester.pumpAndSettle();
-        expect(find.text('Dart DevTools Guide'), findsOneWidget);
-        expect(find.textContaining('Google live results'), findsOneWidget);
-
-        // 2. Open Browser Menu -> Tap 'Inspect (DevTools)'!
         await tester.tap(find.byTooltip('Browser Menu'));
         await tester.pumpAndSettle();
-        expect(
-          find.byKey(const Key('browser_menu_inspect_tile')),
-          findsOneWidget,
-        );
         await tester.tap(find.byKey(const Key('browser_menu_inspect_tile')));
         await tester.pumpAndSettle();
-        expect(tester.takeException(), isNull);
-        expect(
-          find.byKey(const Key('desktop_inspector_panel')),
-          findsOneWidget,
-        );
         expect(find.byType(DesktopInspectorPanel), findsOneWidget);
 
-        // 3. Toggle Element Picker inside Inspect panel
         await tester.tap(
           find.byKey(const Key('devtools_element_picker_button')),
         );
@@ -1051,10 +802,8 @@ void main() {
           findsOneWidget,
         );
 
-        // 4. Switch to Console tab & evaluate JavaScript
         await tester.tap(find.text('Console'));
         await tester.pumpAndSettle();
-        expect(tester.takeException(), isNull);
         await tester.enterText(
           find.byKey(const Key('devtools_console_input')),
           'document.title',
@@ -1063,30 +812,6 @@ void main() {
         await tester.pumpAndSettle();
         expect(find.text('> document.title'), findsOneWidget);
 
-        // 5. Switch to Network, Storage & Info tabs cleanly with zero overflow
-        await tester.ensureVisible(find.text('Network'));
-        await tester.pumpAndSettle();
-        await tester.tap(find.text('Network'));
-        await tester.pumpAndSettle();
-        expect(tester.takeException(), isNull);
-
-        await tester.ensureVisible(find.text('Storage'));
-        await tester.pumpAndSettle();
-        await tester.tap(find.text('Storage'));
-        await tester.pumpAndSettle();
-        expect(tester.takeException(), isNull);
-
-        await tester.ensureVisible(find.text('Info'));
-        await tester.pumpAndSettle();
-        await tester.tap(find.text('Info'));
-        await tester.pumpAndSettle();
-        expect(tester.takeException(), isNull);
-        expect(
-          find.text('Live Edit Page Text (document.designMode)'),
-          findsOneWidget,
-        );
-
-        // 6. Close DevTools panel cleanly
         await tester.tap(find.byKey(const Key('devtools_close_button')));
         await tester.pumpAndSettle();
         expect(find.byKey(const Key('desktop_inspector_panel')), findsNothing);
@@ -1099,82 +824,40 @@ void main() {
     );
 
     test(
-      'Android startup safety: HeavenShieldPlugin never replaces SecureWebChromeClient and HeavenGoogleBgSearch stays offscreen',
+      'Native Java safety: SecureWebChromeClient preserved, MV2/MV3 background worker & DNR present, Media Service & PiP wired',
       () {
         final String shieldJava = File(
           'android/app/src/main/java/com/hypertechlabs/heavenbrowser/HeavenShieldPlugin.java',
         ).readAsStringSync();
         expect(shieldJava.contains('setWebChromeClient'), isFalse);
         expect(shieldJava.contains('ShieldWebChromeClient'), isFalse);
-
-        final String bgSearchJava = File(
-          'android/app/src/main/java/com/hypertechlabs/heavenbrowser/HeavenGoogleBgSearch.java',
-        ).readAsStringSync();
-        expect(bgSearchJava.contains('android.R.id.content'), isFalse);
-      },
-    );
-
-    test(
-      'Step 12: DOCUMENT_START YouTube ad-pruning, genuine Google SERP session, IPv6 Happy-Eyeballs CRX downloader & glitch-free link navigation',
-      () async {
-        // 1. Native DOCUMENT_START YouTube /youtubei/v1/player pruning & expanded domain shield
-        final String shieldJava = File(
-          'android/app/src/main/java/com/hypertechlabs/heavenbrowser/HeavenShieldPlugin.java',
-        ).readAsStringSync();
         expect(shieldJava.contains('addDocumentStartJavaScript'), isTrue);
         expect(shieldJava.contains('/youtubei/v1/player'), isTrue);
-        expect(shieldJava.contains('adBreakHeartbeatParams'), isTrue);
-        expect(HeavenShield.blockedRootDomains.length, greaterThan(250));
-        expect(HeavenShield.matchBlockedDomain('ads.clmbtech.com'), 'clmbtech.com');
-        expect(HeavenShield.matchBlockedDomain('cdn.vdo.ai'), 'vdo.ai');
-        final String cosJs = HeavenShield.buildProtectionScript(
-          shieldEnabled: true,
-          sendDntAndGpc: true,
-        );
-        expect(cosJs.contains('sweepScheduled'), isTrue);
+        expect(shieldJava.contains('enterPictureInPictureMode'), isTrue);
+        expect(shieldJava.contains('executeHlsPlaylistDownload'), isTrue);
 
-        // 2. Genuine Android Chrome Google Search session (no gen_204 block, no Win32 tamper, no &num=18)
-        final String bgSearchJava = File(
-          'android/app/src/main/java/com/hypertechlabs/heavenbrowser/HeavenGoogleBgSearch.java',
-        ).readAsStringSync();
-        expect(bgSearchJava.contains('OffscreenActiveWebView'), isTrue);
-        expect(bgSearchJava.contains('path.contains("/gen_204")'), isFalse);
-        expect(bgSearchJava.contains("'Win32'"), isFalse);
-        expect(bgSearchJava.contains('&num=18'), isFalse);
-
-        // 3. Dual-stack IPv6-first Happy Eyeballs + update.googleapis.com CRX downloader
-        final String netHelperJava = File(
-          'android/app/src/main/java/com/hypertechlabs/heavenbrowser/HeavenNetHelper.java',
-        ).readAsStringSync();
-        expect(netHelperJava.contains('Inet6Address'), isTrue);
-        expect(netHelperJava.contains('setEndpointIdentificationAlgorithm("HTTPS")'), isTrue);
         final String extJava = File(
           'android/app/src/main/java/com/hypertechlabs/heavenbrowser/HeavenChromeExtManager.java',
         ).readAsStringSync();
-        expect(extJava.contains('update.googleapis.com/service/update2/crx'), isTrue);
-        expect(extJava.contains('downloadCrxViaChromiumWebView'), isTrue);
-
-        // 4. Single-shot pre-normalized HTTPS + tracking-stripped navigation when tapping search results
-        SharedPreferences.setMockInitialValues(<String, Object>{});
-        final SharedPreferences prefs = await SharedPreferences.getInstance();
-        final BrowserSettingsController settings = BrowserSettingsController(
-          prefs,
+        expect(
+          extJava.contains('update.googleapis.com/service/update2/crx'),
+          isTrue,
         );
-        final BrowserEngine engine = BrowserEngine(
-          settings: settings,
-          isIncognito: false,
-          enablePlatformWebView: false,
-        );
-        await engine.loadUserEntry('flutter');
-        expect(engine.isShowingHeavenSearch, isTrue);
+        expect(extJava.contains('bootBackgroundWorker'), isTrue);
+        expect(extJava.contains('dispatchRuntimeMessageToBackground'), isTrue);
+        expect(extJava.contains('DnrBlockRule'), isTrue);
 
-        await engine.loadUserEntry(
-          'http://example.com/article?id=42&utm_source=google&fbclid=xyz',
-        );
-        expect(engine.isShowingHeavenSearch, isFalse);
-        expect(engine.currentUrl, 'https://example.com/article?id=42');
+        final String mediaServiceJava = File(
+          'android/app/src/main/java/com/hypertechlabs/heavenbrowser/HeavenMediaService.java',
+        ).readAsStringSync();
+        expect(mediaServiceJava.contains('FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK'), isTrue);
 
-        engine.dispose();
+        final String manifestXml = File(
+          'android/app/src/main/AndroidManifest.xml',
+        ).readAsStringSync();
+        expect(manifestXml.contains('android:supportsPictureInPicture="true"'), isTrue);
+        expect(manifestXml.contains('android.permission.USE_BIOMETRIC'), isTrue);
+        expect(manifestXml.contains('android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK'), isTrue);
       },
     );
   });

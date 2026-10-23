@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import '../../core/constants/app_constants.dart';
 import '../../core/utils/omnibox_parser.dart';
@@ -27,6 +28,39 @@ class SettingsScreen extends StatelessWidget {
   final TabManagerController tabManager;
   final ExtensionsController? extensions;
   final DownloadsController? downloads;
+
+  Future<void> _openPrivacyPolicy(BuildContext context) async {
+    Navigator.of(context).pop();
+    await tabManager.openNewTab(
+      incognito: tabManager.isActiveIncognito,
+      initialInput: AppConstants.privacyPolicyUrl,
+    );
+  }
+
+  Future<void> _toggleBiometricSetting(
+    BuildContext context, {
+    required bool currentValue,
+    required Future<void> Function(bool) onApply,
+    required String reason,
+  }) async {
+    final bool ok = await NativeShieldBridge.instance.authenticateBiometric(
+      reason: reason,
+    );
+    if (!ok) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text(
+              'Set up Fingerprint, Face Unlock, or Screen Lock in Android Settings first.',
+            ),
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      }
+      return;
+    }
+    await onApply(!currentValue);
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -112,14 +146,12 @@ class SettingsScreen extends StatelessWidget {
                                 borderRadius: 8,
                               ),
                               title: Text(
-                                engine == SearchEngine.heaven
+                                engine == SearchEngine.google
                                     ? '${engine.label} (Default)'
                                     : engine.label,
                               ),
                               subtitle: Text(
-                                engine == SearchEngine.heaven
-                                    ? 'Web, Images, Videos, Live News & Instant Math'
-                                    : engine.homeUrl,
+                                engine.homeUrl,
                                 style: const TextStyle(fontSize: 12),
                               ),
                             ),
@@ -129,13 +161,198 @@ class SettingsScreen extends StatelessWidget {
                   ],
                 ),
                 const SizedBox(height: 20),
-                _SectionTitle('Heaven Shield & Privacy', colors),
+                _SectionTitle('Ergonomic One-Handed UI & Gestures', colors),
                 _SettingsCard(
                   children: <Widget>[
                     SwitchListTile.adaptive(
+                      title: const Text('Bottom Navigation Bar (Default)'),
+                      subtitle: const Text(
+                        'Keep address bar, tab switcher & menus in easy thumb reach at the bottom',
+                      ),
+                      value: settings.bottomOmnibox,
+                      onChanged: settings.setBottomOmnibox,
+                    ),
+                    const Divider(height: 1),
+                    SwitchListTile.adaptive(
+                      title: const Text('Floating Quick Action Button'),
+                      subtitle: const Text(
+                        '1-tap corner button for Refresh, Bookmark, Media, PiP & Desktop Mode',
+                      ),
+                      value: settings.quickActionEnabled,
+                      onChanged: settings.setQuickActionEnabled,
+                    ),
+                    const Divider(height: 1),
+                    SwitchListTile.adaptive(
+                      title: const Text('Left-Handed Quick Action Corner'),
+                      subtitle: const Text(
+                        'Place Quick Action button in bottom-left instead of bottom-right',
+                      ),
+                      value: settings.quickActionLeftHanded,
+                      onChanged: settings.quickActionEnabled
+                          ? settings.setQuickActionLeftHanded
+                          : null,
+                    ),
+                    const Divider(height: 1),
+                    SwitchListTile.adaptive(
+                      title: const Text('Swipe Address Bar to Switch Tabs'),
+                      subtitle: const Text(
+                        'Swipe left/right on address bar to switch tabs, swipe up for Tab Grid',
+                      ),
+                      value: settings.barSwipeSwitchTabs,
+                      onChanged: settings.gesturesEnabled
+                          ? settings.setBarSwipeSwitchTabs
+                          : null,
+                    ),
+                    const Divider(height: 1),
+                    SwitchListTile.adaptive(
+                      title: const Text('Edge Swipe Back & Forward'),
+                      subtitle: const Text(
+                        'Swipe inward from left/right screen edge to navigate history',
+                      ),
+                      value: settings.edgeSwipeNavigation,
+                      onChanged: settings.gesturesEnabled
+                          ? settings.setEdgeSwipeNavigation
+                          : null,
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 20),
+                _SectionTitle('Media & Background Handling', colors),
+                _SettingsCard(
+                  children: <Widget>[
+                    SwitchListTile.adaptive(
+                      title: const Text('True Background Audio & Video'),
+                      subtitle: const Text(
+                        'Keep YouTube, Twitch & video platforms playing with screen locked',
+                      ),
+                      value: settings.backgroundMediaEnabled,
+                      onChanged: settings.setBackgroundMediaEnabled,
+                    ),
+                    const Divider(height: 1),
+                    SwitchListTile.adaptive(
+                      title: const Text('Auto Picture-in-Picture (PiP)'),
+                      subtitle: const Text(
+                        'Automatically pop playing videos into Android PiP when pressing Home',
+                      ),
+                      value: settings.autoPipEnabled,
+                      onChanged: settings.setAutoPipEnabled,
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 20),
+                _SectionTitle('Data Control & Mobile Performance', colors),
+                _SettingsCard(
+                  children: <Widget>[
+                    ListTile(
+                      leading: Icon(
+                        Icons.savings_outlined,
+                        color: colors.primary,
+                      ),
+                      title: Text(
+                        'Cellular Data Saved: ${settings.formattedDataSaved}',
+                        style: const TextStyle(fontWeight: FontWeight.w800),
+                      ),
+                      subtitle: Text(
+                        '${settings.totalTrackersBlocked} ad/tracker requests & heavy assets blocked',
+                      ),
+                    ),
+                    const Divider(height: 1),
+                    SwitchListTile.adaptive(
+                      title: const Text('Text-Only / Ultra Data Saver Mode'),
+                      subtitle: const Text(
+                        'Blocks network images, video posters & heavy fonts for instant cellular loads',
+                      ),
+                      value: settings.ultraDataSaverMode,
+                      onChanged: (bool val) async {
+                        await settings.setUltraDataSaverMode(val);
+                        if (!tabManager.activeEngine.isShowingStartPage) {
+                          await tabManager.activeEngine.reloadFullPage();
+                        }
+                      },
+                    ),
+                    const Divider(height: 1),
+                    SwitchListTile.adaptive(
+                      title: const Text('Aggressive Tab Hibernation'),
+                      subtitle: Text(
+                        'Automatically sleep inactive tabs after ${settings.tabHibernationMinutes} min to save RAM & battery',
+                      ),
+                      value: settings.tabHibernationEnabled,
+                      onChanged: settings.setTabHibernationEnabled,
+                    ),
+                    if (settings.tabHibernationEnabled)
+                      Padding(
+                        padding: const EdgeInsets.fromLTRB(16, 4, 16, 10),
+                        child: Row(
+                          children: <Widget>[
+                            const Text(
+                              'Sleep Timeout',
+                              style: TextStyle(fontSize: 12.5),
+                            ),
+                            Expanded(
+                              child: Slider(
+                                value: settings.tabHibernationMinutes
+                                    .toDouble(),
+                                min: 1,
+                                max: 15,
+                                divisions: 14,
+                                label: '${settings.tabHibernationMinutes} min',
+                                onChanged: (double v) => settings
+                                    .setTabHibernationMinutes(v.round()),
+                              ),
+                            ),
+                            Text('${settings.tabHibernationMinutes}m'),
+                          ],
+                        ),
+                      ),
+                  ],
+                ),
+                const SizedBox(height: 20),
+                _SectionTitle('Mobile Privacy & App Security', colors),
+                _SettingsCard(
+                  children: <Widget>[
+                    SwitchListTile.adaptive(
+                      title: const Text('Biometric Lock for Incognito Tabs'),
+                      subtitle: const Text(
+                        'Require Fingerprint or Face Unlock before viewing Incognito tabs',
+                      ),
+                      value: settings.biometricLockIncognito,
+                      onChanged: (_) => _toggleBiometricSetting(
+                        context,
+                        currentValue: settings.biometricLockIncognito,
+                        onApply: settings.setBiometricLockIncognito,
+                        reason:
+                            'Verify biometrics to configure Incognito Tab Lock',
+                      ),
+                    ),
+                    const Divider(height: 1),
+                    SwitchListTile.adaptive(
+                      title: const Text('Biometric Lock for Entire App'),
+                      subtitle: const Text(
+                        'Lock Heaven Browser with Fingerprint or Face Unlock on startup',
+                      ),
+                      value: settings.biometricLockApp,
+                      onChanged: (_) => _toggleBiometricSetting(
+                        context,
+                        currentValue: settings.biometricLockApp,
+                        onApply: settings.setBiometricLockApp,
+                        reason:
+                            'Verify biometrics to configure Heaven App Lock',
+                      ),
+                    ),
+                    const Divider(height: 1),
+                    SwitchListTile.adaptive(
+                      title: const Text('Automatic Anti-Redirects'),
+                      subtitle: Text(
+                        'Block ads from hijacking pages to Play Store or spam sites (${settings.antiRedirectsBlockedCount} blocked)',
+                      ),
+                      value: settings.antiRedirectProtection,
+                      onChanged: settings.setAntiRedirectProtection,
+                    ),
+                    const Divider(height: 1),
+                    SwitchListTile.adaptive(
                       title: const Text('Heaven Native Ad & Tracker Shield'),
                       subtitle: const Text(
-                        'Blocks ad scripts, banners, popups & trackers at the network layer',
+                        'Blocks ad scripts, banners, YouTube ads & trackers at the network layer',
                       ),
                       value: settings.shieldEnabled,
                       onChanged: settings.setShieldEnabled,
@@ -169,9 +386,9 @@ class SettingsScreen extends StatelessWidget {
                     ),
                     const Divider(height: 1),
                     SwitchListTile.adaptive(
-                      title: const Text('Auto-Burn When App Backgrounded'),
+                      title: const Text('Auto-Burn Tabs & Data on Exit'),
                       subtitle: const Text(
-                        'Wipe tabs, cookies & storage when leaving app',
+                        'Optional: wipe tabs, cookies & storage when leaving app (Off by default so tabs stay open)',
                       ),
                       value: settings.clearOnExit,
                       onChanged: settings.setClearOnExit,
@@ -179,7 +396,7 @@ class SettingsScreen extends StatelessWidget {
                   ],
                 ),
                 const SizedBox(height: 20),
-                _SectionTitle('Appearance & Toolbar', colors),
+                _SectionTitle('Appearance & Rendering', colors),
                 _SettingsCard(
                   children: <Widget>[
                     Padding(
@@ -218,17 +435,6 @@ class SettingsScreen extends StatelessWidget {
                           ),
                         ],
                       ),
-                    ),
-                    const Divider(height: 1),
-                    SwitchListTile.adaptive(
-                      title: const Text('Top Address & Search Dock'),
-                      subtitle: const Text(
-                        'Keep search bar, Home & Forward controls at the top (Default)',
-                      ),
-                      value: !settings.bottomOmnibox,
-                      onChanged: (bool topSelected) {
-                        settings.setBottomOmnibox(!topSelected);
-                      },
                     ),
                     const Divider(height: 1),
                     SwitchListTile.adaptive(
@@ -276,42 +482,6 @@ class SettingsScreen extends StatelessWidget {
                           ),
                         ],
                       ),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 20),
-                _SectionTitle('Touch Gestures', colors),
-                _SettingsCard(
-                  children: <Widget>[
-                    SwitchListTile.adaptive(
-                      title: const Text('Enable App Touch Gestures'),
-                      subtitle: const Text(
-                        'Swipe address bar & screen edges for fast one-hand navigation',
-                      ),
-                      value: settings.gesturesEnabled,
-                      onChanged: settings.setGesturesEnabled,
-                    ),
-                    const Divider(height: 1),
-                    SwitchListTile.adaptive(
-                      title: const Text('Swipe Address Bar to Switch Tabs'),
-                      subtitle: const Text(
-                        'Slide left/right on address bar for adjacent tabs, swipe up for Tab Grid',
-                      ),
-                      value: settings.barSwipeSwitchTabs,
-                      onChanged: settings.gesturesEnabled
-                          ? settings.setBarSwipeSwitchTabs
-                          : null,
-                    ),
-                    const Divider(height: 1),
-                    SwitchListTile.adaptive(
-                      title: const Text('Edge Swipe Back & Forward'),
-                      subtitle: const Text(
-                        'Swipe inward from left/right screen edge to navigate history',
-                      ),
-                      value: settings.edgeSwipeNavigation,
-                      onChanged: settings.gesturesEnabled
-                          ? settings.setEdgeSwipeNavigation
-                          : null,
                     ),
                   ],
                 ),
@@ -369,7 +539,7 @@ class SettingsScreen extends StatelessWidget {
                       leading: const Icon(Icons.notifications_outlined),
                       title: const Text('Notifications'),
                       subtitle: const Text(
-                        'Download alerts, website notifications & silent VPN',
+                        'Permission status, download & media playback alerts',
                       ),
                       trailing: const Icon(Icons.chevron_right_rounded),
                       onTap: () => Navigator.of(context).push(
@@ -395,13 +565,32 @@ class SettingsScreen extends StatelessWidget {
                     ),
                     const Divider(height: 1),
                     ListTile(
+                      key: const Key('settings_privacy_policy_tile'),
+                      leading: const Icon(Icons.privacy_tip_outlined),
+                      title: const Text('Privacy Policy'),
+                      subtitle: const Text(
+                        'github.com/Aryanshahx/heavenbrowser/blob/main/privacypolicy.md',
+                      ),
+                      trailing: const Icon(Icons.open_in_new_rounded, size: 18),
+                      onTap: () => _openPrivacyPolicy(context),
+                    ),
+                    const Divider(height: 1),
+                    ListTile(
                       leading: const Icon(Icons.help_outline_rounded),
                       title: const Text('Help & Support'),
                       subtitle: const Text(HelpScreen.supportEmail),
                       trailing: const Icon(Icons.chevron_right_rounded),
                       onTap: () => Navigator.of(context).push(
                         MaterialPageRoute<void>(
-                          builder: (_) => const HelpScreen(),
+                          builder: (_) => HelpScreen(
+                            onOpenUrlInBrowser: (String url) {
+                              Navigator.of(context).pop();
+                              tabManager.openNewTab(
+                                incognito: tabManager.isActiveIncognito,
+                                initialInput: url,
+                              );
+                            },
+                          ),
                         ),
                       ),
                     ),
@@ -466,17 +655,28 @@ class SettingsScreen extends StatelessWidget {
                 const SizedBox(height: 20),
                 _SectionTitle('About', colors),
                 _SettingsCard(
-                  children: const <Widget>[
-                    ListTile(
+                  children: <Widget>[
+                    const ListTile(
                       leading: Icon(Icons.verified_outlined),
                       title: Text(AppConstants.appName),
                       subtitle: Text('Version ${AppConstants.appVersion}'),
                     ),
-                    Divider(height: 1),
-                    ListTile(
+                    const Divider(height: 1),
+                    const ListTile(
                       leading: Icon(Icons.inventory_2_outlined),
                       title: Text('Package ID'),
                       subtitle: Text(AppConstants.packageName),
+                    ),
+                    const Divider(height: 1),
+                    ListTile(
+                      leading: const Icon(Icons.policy_outlined),
+                      title: const Text('Official Privacy Policy'),
+                      subtitle: const Text(AppConstants.privacyPolicyUrl),
+                      trailing: const Icon(Icons.launch_rounded, size: 17),
+                      onTap: () => launchUrl(
+                        Uri.parse(AppConstants.privacyPolicyUrl),
+                        mode: LaunchMode.externalApplication,
+                      ),
                     ),
                   ],
                 ),

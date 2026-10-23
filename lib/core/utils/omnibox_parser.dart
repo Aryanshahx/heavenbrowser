@@ -1,17 +1,10 @@
 enum SearchEngine {
-  heaven(
-    label: 'Heaven Search',
-    shortLabel: 'Heaven',
-    badge: 'H',
-    homeUrl: 'heaven://search',
-    queryPrefix: 'heaven://search?q=',
-  ),
   google(
     label: 'Google Search',
     shortLabel: 'Google',
     badge: 'G',
     homeUrl: 'https://www.google.com',
-    queryPrefix: 'https://www.google.com/search?safe=off&q=',
+    queryPrefix: 'https://www.google.com/search?q=',
   ),
   duckDuckGo(
     label: 'DuckDuckGo',
@@ -56,10 +49,13 @@ enum SearchEngine {
   final String homeUrl;
   final String queryPrefix;
 
-  bool get isNativeHeaven => this == SearchEngine.heaven;
-
   String buildSearchUrl(String rawQuery) {
     return '$queryPrefix${Uri.encodeQueryComponent(rawQuery.trim())}';
+  }
+
+  Uri buildSearchUri(String rawQuery) {
+    final String q = rawQuery.trim();
+    return Uri.parse(q.isEmpty ? homeUrl : buildSearchUrl(q));
   }
 
   static SearchEngine fromName(String? value) {
@@ -68,7 +64,7 @@ enum SearchEngine {
         return engine;
       }
     }
-    return SearchEngine.heaven;
+    return SearchEngine.google;
   }
 }
 
@@ -88,6 +84,17 @@ class OmniboxParser {
     caseSensitive: false,
   );
 
+  static bool isLegacyHeavenUrl(String? url) {
+    if (url == null || url.isEmpty) return false;
+    return url.trim().toLowerCase().startsWith('heaven://');
+  }
+
+  static String extractLegacyHeavenQuery(String? url) {
+    if (url == null || url.isEmpty) return '';
+    final Uri? parsed = Uri.tryParse(url.trim());
+    return (parsed?.queryParameters['q'] ?? '').trim();
+  }
+
   static bool looksLikeDirectDestination(String raw) {
     final String trimmed = raw.trim();
     if (trimmed.isEmpty || trimmed.contains(' ')) {
@@ -98,27 +105,6 @@ class OmniboxParser {
         _domainLikePattern.hasMatch(trimmed) ||
         _ipv4Pattern.hasMatch(trimmed) ||
         _localhostPattern.hasMatch(trimmed);
-  }
-
-  static bool isHeavenSearchUrl(String? url) {
-    if (url == null || url.isEmpty) {
-      return false;
-    }
-    final Uri? uri = Uri.tryParse(url);
-    return uri != null &&
-        uri.scheme == 'heaven' &&
-        (uri.host == 'search' || uri.host == 'lite');
-  }
-
-  static String extractHeavenQuery(String? url) {
-    if (url == null || url.isEmpty) {
-      return '';
-    }
-    final Uri? uri = Uri.tryParse(url);
-    if (uri == null || uri.scheme != 'heaven') {
-      return '';
-    }
-    return (uri.queryParameters['q'] ?? '').trim();
   }
 
   static String extractGoogleSearchQuery(String? url) {
@@ -139,6 +125,31 @@ class OmniboxParser {
       return '';
     }
     return (uri.queryParameters['q'] ?? '').trim();
+  }
+
+  static String extractAnySearchQuery(String? url) {
+    if (url == null || url.isEmpty) {
+      return '';
+    }
+    final String googleQ = extractGoogleSearchQuery(url);
+    if (googleQ.isNotEmpty) {
+      return googleQ;
+    }
+    final Uri? uri = Uri.tryParse(url);
+    if (uri == null) {
+      return '';
+    }
+    final String host = uri.host.toLowerCase();
+    if (host.endsWith('duckduckgo.com') ||
+        host.endsWith('search.brave.com') ||
+        (host.endsWith('bing.com') && uri.path == '/search')) {
+      return (uri.queryParameters['q'] ?? '').trim();
+    }
+    if (host.endsWith('startpage.com')) {
+      return (uri.queryParameters['query'] ?? uri.queryParameters['q'] ?? '')
+          .trim();
+    }
+    return '';
   }
 
   static Uri? unwrapGoogleRedirectUri(Uri uri) {
@@ -164,7 +175,6 @@ class OmniboxParser {
     final String input = rawInput.trim();
     if (input.isEmpty) return false;
     if (input == 'about:blank' ||
-        input.startsWith('heaven://') ||
         input.startsWith('http://') ||
         input.startsWith('https://')) {
       return false;
@@ -188,8 +198,17 @@ class OmniboxParser {
       return Uri.parse(searchEngine.homeUrl);
     }
 
-    if (input == 'about:blank' || input.startsWith('heaven://')) {
+    if (input == 'about:blank') {
       return Uri.parse(input);
+    }
+
+    // Legacy heaven://search URLs migrate automatically to active search engine (Google default)
+    if (input.startsWith('heaven://')) {
+      final Uri? legacy = Uri.tryParse(input);
+      final String q = (legacy?.queryParameters['q'] ?? '').trim();
+      return Uri.parse(
+        q.isEmpty ? searchEngine.homeUrl : searchEngine.buildSearchUrl(q),
+      );
     }
 
     if (input.startsWith('http://') || input.startsWith('https://')) {
@@ -260,14 +279,11 @@ class OmniboxParser {
     if (url == null || url.isEmpty) {
       return '';
     }
-    if (isHeavenSearchUrl(url)) {
-      final String q = extractHeavenQuery(url);
-      return q.isEmpty ? 'Heaven Search' : 'Heaven Search • $q';
-    }
     final String googleQ = extractGoogleSearchQuery(url);
     if (googleQ.isNotEmpty) {
       return 'Google • $googleQ';
     }
+    final String anyQ = extractAnySearchQuery(url);
     final Uri? uri = Uri.tryParse(url);
     if (uri == null || uri.host.isEmpty) {
       return url;
@@ -276,10 +292,12 @@ class OmniboxParser {
     if (host.startsWith('www.') && host.length > 4) {
       host = host.substring(4);
     }
+    if (anyQ.isNotEmpty) {
+      return '${friendlySiteTitleFromDomain(host)} • $anyQ';
+    }
     return host;
   }
 
-  /// Formats a URL into a Google Search-inspired breadcrumb (`https://ubuntu.com › download › pi`).
   static String formatGoogleBreadcrumb(String rawUrl) {
     final Uri? uri = Uri.tryParse(rawUrl);
     if (uri == null || uri.host.isEmpty) {

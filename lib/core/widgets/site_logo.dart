@@ -29,7 +29,7 @@ class SiteLogo extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final String raw = (urlOrDomain ?? '').trim();
-    if (raw.isEmpty || OmniboxParser.isHeavenSearchUrl(raw)) {
+    if (raw.isEmpty || OmniboxParser.isLegacyHeavenUrl(raw)) {
       return ClipRRect(
         borderRadius: BorderRadius.circular(borderRadius),
         child: Image.asset(

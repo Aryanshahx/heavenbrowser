@@ -1,11 +1,14 @@
 package com.hypertechlabs.heavenbrowser;
 
 import android.Manifest;
+import android.annotation.SuppressLint;
 import android.app.Activity;
+import android.app.KeyguardManager;
 import android.app.Notification;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.app.PendingIntent;
+import android.app.PictureInPictureParams;
 import android.content.ActivityNotFoundException;
 import android.content.BroadcastReceiver;
 import android.content.Context;
@@ -23,10 +26,13 @@ import android.graphics.Paint;
 import android.graphics.Path;
 import android.graphics.RectF;
 import android.graphics.drawable.Icon;
+import android.hardware.biometrics.BiometricManager;
+import android.hardware.biometrics.BiometricPrompt;
 import android.media.MediaScannerConnection;
 import android.net.Uri;
 import android.net.http.SslError;
 import android.os.Build;
+import android.os.CancellationSignal;
 import android.os.Environment;
 import android.os.Handler;
 import android.os.Looper;
@@ -35,12 +41,14 @@ import android.os.SystemClock;
 import android.provider.DocumentsContract;
 import android.provider.Settings;
 import android.speech.RecognizerIntent;
+import android.util.Rational;
 import android.view.KeyEvent;
 import android.view.MotionEvent;
 import android.view.View;
 import android.webkit.ClientCertRequest;
 import android.webkit.CookieManager;
 import android.webkit.HttpAuthHandler;
+import android.webkit.JavascriptInterface;
 import android.webkit.MimeTypeMap;
 import android.webkit.ServiceWorkerClient;
 import android.webkit.ServiceWorkerController;
@@ -100,10 +108,13 @@ public class HeavenShieldPlugin
       "com.hypertechlabs.heavenbrowser.DOWNLOAD_CONTROL";
   private static final String NOTIF_CHANNEL_PROGRESS = "heaven_dl_progress_v5";
   private static final String NOTIF_CHANNEL_COMPLETE = "heaven_dl_complete_v5";
+  private static final String NOTIF_CHANNEL_ALERTS = "heaven_alerts_v13";
   private static final int VOICE_SEARCH_REQUEST_CODE = 49021;
   private static final int NOTIF_PERM_REQUEST_CODE = 49022;
   private static final int FOLDER_PICKER_REQUEST_CODE = 49025;
   private static final int EXT_FILE_PICKER_REQUEST_CODE = 49026;
+  private static final int SITE_HARDWARE_PERM_REQUEST_CODE = 49027;
+  private static final int LEGACY_CREDENTIAL_REQUEST_CODE = 49028;
 
   private static final byte[] TRANSPARENT_GIF = new byte[] {
     0x47, 0x49, 0x46, 0x38, 0x39, 0x61, 0x01, 0x00, 0x01, 0x00, (byte) 0x80, 0x00,
@@ -407,6 +418,96 @@ public class HeavenShieldPlugin
           + "}catch(_){}"
           + "})();";
 
+  private static final String BG_MEDIA_AND_STREAM_SNIFFER_SCRIPT =
+      "(function(){"
+          + "try{"
+          + "if(window.__heavenMediaHookV13)return;"
+          + "window.__heavenMediaHookV13=true;"
+          + "if(window.__heavenWebNotifsBlocked&&window.Notification){"
+          + "  try{"
+          + "    Object.defineProperty(Notification,'permission',{configurable:true,get:function(){return 'denied';}});"
+          + "    Notification.requestPermission=function(cb){if(typeof cb==='function')cb('denied');return Promise.resolve('denied');};"
+          + "  }catch(e){}"
+          + "}"
+          + "if(window.__heavenBgMediaEnabled){"
+          + "  try{"
+          + "    Object.defineProperty(document,'hidden',{configurable:true,get:function(){return false;}});"
+          + "    Object.defineProperty(document,'webkitHidden',{configurable:true,get:function(){return false;}});"
+          + "    Object.defineProperty(document,'visibilityState',{configurable:true,get:function(){return 'visible';}});"
+          + "    Object.defineProperty(document,'webkitVisibilityState',{configurable:true,get:function(){return 'visible';}});"
+          + "    var origDocAdd=Document.prototype.addEventListener;"
+          + "    Document.prototype.addEventListener=function(type,fn,opts){"
+          + "      if(type==='visibilitychange'||type==='webkitvisibilitychange')return;"
+          + "      return origDocAdd.apply(this,arguments);"
+          + "    };"
+          + "    var origWinAdd=Window.prototype.addEventListener;"
+          + "    Window.prototype.addEventListener=function(type,fn,opts){"
+          + "      if(type==='visibilitychange'||type==='webkitvisibilitychange')return;"
+          + "      return origWinAdd.apply(this,arguments);"
+          + "    };"
+          + "    setInterval(function(){try{window._lact=Date.now();}catch(e){}},15000);"
+          + "  }catch(e){}"
+          + "}"
+          + "function reportMedia(el,playing){"
+          + "  try{"
+          + "    if(!window.HeavenMediaBridge)return;"
+          + "    var isVid=el.tagName==='VIDEO';"
+          + "    var vw=isVid?(el.videoWidth||16):16;"
+          + "    var vh=isVid?(el.videoHeight||9):9;"
+          + "    window.HeavenMediaBridge.onPlaybackState(!!playing,vw,vh,document.title||location.hostname||'',location.hostname||'',isVid);"
+          + "    var src=el.currentSrc||el.src||'';"
+          + "    if(src&&src.indexOf('blob:')!==0&&src.indexOf('data:')!==0){"
+          + "      window.HeavenMediaBridge.onStreamFound(src,isVid?'video':'audio',(isVid?(vh+'p Video'):'Audio Stream'));"
+          + "    }"
+          + "  }catch(e){}"
+          + "}"
+          + "document.addEventListener('play',function(ev){if(ev&&ev.target&&(ev.target.tagName==='VIDEO'||ev.target.tagName==='AUDIO'))reportMedia(ev.target,true);},true);"
+          + "document.addEventListener('playing',function(ev){if(ev&&ev.target&&(ev.target.tagName==='VIDEO'||ev.target.tagName==='AUDIO'))reportMedia(ev.target,true);},true);"
+          + "document.addEventListener('pause',function(ev){if(ev&&ev.target&&(ev.target.tagName==='VIDEO'||ev.target.tagName==='AUDIO')&&!document.hidden)reportMedia(ev.target,false);},true);"
+          + "document.addEventListener('ended',function(ev){if(ev&&ev.target&&(ev.target.tagName==='VIDEO'||ev.target.tagName==='AUDIO'))reportMedia(ev.target,false);},true);"
+          + "document.addEventListener('loadedmetadata',function(ev){"
+          + "  try{"
+          + "    var t=ev&&ev.target;"
+          + "    if(t&&(t.tagName==='VIDEO'||t.tagName==='AUDIO')&&window.HeavenMediaBridge){"
+          + "      var s=t.currentSrc||t.src||'';"
+          + "      if(s&&s.indexOf('blob:')!==0&&s.indexOf('data:')!==0){"
+          + "        var isV=t.tagName==='VIDEO';"
+          + "        window.HeavenMediaBridge.onStreamFound(s,isV?'video':'audio',isV?((t.videoHeight||720)+'p Video'):'Audio Stream');"
+          + "      }"
+          + "    }"
+          + "  }catch(e){}"
+          + "},true);"
+          + "}catch(_){}"
+          + "})();";
+
+  private static final String ULTRA_DATA_SAVER_STYLE_SCRIPT =
+      "(function(){"
+          + "try{"
+          + "var st=document.getElementById('heaven-ultra-datasaver-css');"
+          + "if(window.__heavenUltraDataSaver){"
+          + "  if(!st){st=document.createElement('style');st.id='heaven-ultra-datasaver-css';"
+          + "  st.textContent='img,picture,video,canvas,svg[width][height]:not([width=\"16\"]):not([width=\"20\"]):not([width=\"24\"]),iframe[src*=\"ads\"],iframe[src*=\"youtube\"]{display:none!important;max-height:0!important;} *{background-image:none!important;animation:none!important;transition:none!important;}';"
+          + "  (document.head||document.documentElement).appendChild(st);}"
+          + "}else if(st){st.remove();}"
+          + "}catch(e){}"
+          + "})();";
+
+  private static final String PIP_MAXIMIZE_VIDEO_SCRIPT =
+      "(function(){try{"
+          + "var v=document.querySelector('video');"
+          + "if(!v)return;"
+          + "v.__hbOldStyle=v.getAttribute('style')||'';"
+          + "v.setAttribute('style','position:fixed!important;inset:0!important;width:100vw!important;height:100vh!important;max-width:100vw!important;max-height:100vh!important;z-index:2147483647!important;background:#000!important;object-fit:contain!important;');"
+          + "}catch(e){}})();";
+
+  private static final String PIP_RESTORE_VIDEO_SCRIPT =
+      "(function(){try{"
+          + "var v=document.querySelector('video');"
+          + "if(!v||v.__hbOldStyle===undefined)return;"
+          + "if(v.__hbOldStyle)v.setAttribute('style',v.__hbOldStyle);else v.removeAttribute('style');"
+          + "delete v.__hbOldStyle;"
+          + "}catch(e){}})();";
+
   private static final class DownloadJob {
     final long id;
     final String url;
@@ -480,22 +581,40 @@ public class HeavenShieldPlugin
   private MethodChannel.Result pendingFolderResult;
   private MethodChannel.Result pendingExtFileResult;
   private MethodChannel.Result pendingNotifPermResult;
+  private MethodChannel.Result pendingSiteHardwarePermResult;
+  private MethodChannel.Result pendingBiometricResult;
   private HeavenVpnManager vpnManager;
-  private HeavenGoogleBgSearch googleBgSearch;
   private HeavenChromeExtManager chromeExtManager;
+  private volatile long activeFocusedWebViewId = -1L;
   private volatile String activePopupTabUrl = "https://www.google.com";
-  private volatile String activePopupTabTitle = "Heaven Tab";
+  private volatile String activePopupTabTitle = "Google";
 
   private final ExecutorService downloadPool = Executors.newCachedThreadPool();
   private final Map<Long, DownloadJob> downloadJobs = new ConcurrentHashMap<>();
   private final AtomicLong idGenerator = new AtomicLong(System.currentTimeMillis());
   private BroadcastReceiver controlReceiver;
+  private BroadcastReceiver mediaCmdReceiver;
   private boolean notifChannelsReady = false;
   private volatile String customDownloadPath = "";
   private volatile boolean downloadNotificationsEnabled = true;
 
   private volatile boolean shieldEnabled = true;
   private volatile boolean desktopMode = false;
+  private volatile boolean ultraDataSaverMode = false;
+  private volatile boolean backgroundMediaEnabled = true;
+  private volatile boolean autoPipEnabled = true;
+  private volatile boolean antiRedirectEnabled = true;
+  private volatile boolean webNotificationsEnabled = false;
+  private volatile boolean backgroundPlayNotifEnabled = true;
+
+  private volatile boolean activeVideoPlaying = false;
+  private volatile boolean activeAudioOrVideoPlaying = false;
+  private volatile long activeMediaWebViewId = -1L;
+  private volatile int activeVideoWidth = 16;
+  private volatile int activeVideoHeight = 9;
+  private volatile String activeMediaTitle = "Heaven Browser";
+  private volatile String activeMediaHost = "";
+  private final Set<String> reportedStreamUrls = Collections.synchronizedSet(new HashSet<>());
   private volatile Set<String> blockedDomains = Collections.emptySet();
   private volatile Set<String> trustedHosts = Collections.emptySet();
   private volatile String cosmeticScript = "";
@@ -564,12 +683,51 @@ public class HeavenShieldPlugin
     this.customDownloadPath = sp.getString(PREF_DOWNLOAD_PATH, "");
     this.downloadNotificationsEnabled = sp.getBoolean(PREF_DL_NOTIFS_ENABLED, true);
     this.vpnManager = new HeavenVpnManager(appCtx);
-    this.googleBgSearch = new HeavenGoogleBgSearch(appCtx);
     this.chromeExtManager = new HeavenChromeExtManager(appCtx);
+    this.chromeExtManager.setActiveTabBridge(
+        new HeavenChromeExtManager.ActiveTabExtensionBridge() {
+          @Override
+          public void evalInActiveTab(final String jsCode) {
+            mainHandler.post(
+                () -> {
+                  if (pluginBinding == null || activeFocusedWebViewId < 0) {
+                    return;
+                  }
+                  WebView wv =
+                      WebViewFlutterAndroidExternalApi.getWebView(
+                          pluginBinding, activeFocusedWebViewId);
+                  if (wv != null && jsCode != null && !jsCode.isEmpty()) {
+                    wv.evaluateJavascript(jsCode, null);
+                  }
+                });
+          }
+
+          @Override
+          public void openNewTab(final String url) {
+            mainHandler.post(
+                () -> {
+                  MethodChannel ch = channel;
+                  if (ch != null && url != null && !url.isEmpty()) {
+                    ch.invokeMethod("onExtensionOpenNewTab", Collections.singletonMap("url", url));
+                  }
+                });
+          }
+
+          @Override
+          public String getActiveTabUrl() {
+            return activePopupTabUrl;
+          }
+
+          @Override
+          public String getActiveTabTitle() {
+            return activePopupTabTitle;
+          }
+        });
     this.channel = new MethodChannel(binding.getBinaryMessenger(), CHANNEL_NAME);
     this.channel.setMethodCallHandler(this);
     setupServiceWorkerShield();
     registerDownloadControlReceiver(appCtx);
+    registerMediaCommandReceiver(appCtx);
     try {
       WebView.setWebContentsDebuggingEnabled(true);
     } catch (Throwable ignored) {
@@ -579,9 +737,11 @@ public class HeavenShieldPlugin
   @Override
   public void onDetachedFromEngine(FlutterPluginBinding binding) {
     unregisterDownloadControlReceiver(binding.getApplicationContext());
-    if (this.googleBgSearch != null) {
-      this.googleBgSearch.destroy();
-      this.googleBgSearch = null;
+    unregisterMediaCommandReceiver(binding.getApplicationContext());
+    stopBackgroundMediaService();
+    if (this.chromeExtManager != null) {
+      this.chromeExtManager.shutdown();
+      this.chromeExtManager = null;
     }
     if (this.channel != null) {
       this.channel.setMethodCallHandler(null);
@@ -596,16 +756,11 @@ public class HeavenShieldPlugin
     this.activityBinding = binding;
     binding.addActivityResultListener(this);
     binding.addRequestPermissionsResultListener(this);
-    if (this.googleBgSearch != null && this.activity != null) {
-      this.googleBgSearch.attachToActivityAndPrewarm(this.activity);
-    }
+    refreshSystemAutoPipState();
   }
 
   @Override
   public void onDetachedFromActivityForConfigChanges() {
-    if (this.googleBgSearch != null) {
-      this.googleBgSearch.detachFromActivity();
-    }
     if (this.activityBinding != null) {
       this.activityBinding.removeActivityResultListener(this);
       this.activityBinding.removeRequestPermissionsResultListener(this);
@@ -620,15 +775,207 @@ public class HeavenShieldPlugin
 
   @Override
   public void onDetachedFromActivity() {
-    if (this.googleBgSearch != null) {
-      this.googleBgSearch.detachFromActivity();
-    }
     if (this.activityBinding != null) {
       this.activityBinding.removeActivityResultListener(this);
       this.activityBinding.removeRequestPermissionsResultListener(this);
       this.activityBinding = null;
     }
     this.activity = null;
+  }
+
+  public void onActivityUserLeaveHint() {
+    if (this.autoPipEnabled && this.activeVideoPlaying) {
+      enterPictureInPictureInternal();
+    }
+  }
+
+  public void onPictureInPictureChanged(final boolean inPip) {
+    mainHandler.post(
+        () -> {
+          if (pluginBinding != null && activeMediaWebViewId >= 0) {
+            WebView wv =
+                WebViewFlutterAndroidExternalApi.getWebView(pluginBinding, activeMediaWebViewId);
+            if (wv != null) {
+              wv.evaluateJavascript(
+                  inPip ? PIP_MAXIMIZE_VIDEO_SCRIPT : PIP_RESTORE_VIDEO_SCRIPT, null);
+            }
+          }
+          MethodChannel ch = this.channel;
+          if (ch != null) {
+            ch.invokeMethod("onPipModeChanged", Collections.singletonMap("inPip", inPip));
+          }
+        });
+  }
+
+  public void onActivityPaused() {
+    if (!this.backgroundMediaEnabled || !this.activeAudioOrVideoPlaying) {
+      return;
+    }
+    // Keep Chromium WebView audio/video decoder & JS timers alive when screen locks or app backgrounds!
+    startOrUpdateBackgroundMediaService();
+    mainHandler.postDelayed(this::keepActiveMediaWebViewAwake, 120L);
+    mainHandler.postDelayed(this::keepActiveMediaWebViewAwake, 650L);
+  }
+
+  public void onActivityResumed() {
+    stopBackgroundMediaService();
+  }
+
+  private void keepActiveMediaWebViewAwake() {
+    if (!this.backgroundMediaEnabled || !this.activeAudioOrVideoPlaying || pluginBinding == null) {
+      return;
+    }
+    long targetId = activeMediaWebViewId >= 0 ? activeMediaWebViewId : activeFocusedWebViewId;
+    if (targetId < 0) {
+      return;
+    }
+    try {
+      WebView wv = WebViewFlutterAndroidExternalApi.getWebView(pluginBinding, targetId);
+      if (wv != null) {
+        wv.onResume();
+        wv.resumeTimers();
+        wv.dispatchWindowVisibilityChanged(View.VISIBLE);
+        wv.evaluateJavascript(
+            "(function(){try{var m=document.querySelector('video,audio');if(m&&m.paused&&!m.ended)m.play();}catch(e){}})();",
+            null);
+      }
+    } catch (Throwable ignored) {
+    }
+  }
+
+  private void startOrUpdateBackgroundMediaService() {
+    if (!this.backgroundPlayNotifEnabled) {
+      return;
+    }
+    Context ctx = resolveContext();
+    if (ctx == null) {
+      return;
+    }
+    try {
+      Intent svc = new Intent(ctx, HeavenMediaService.class);
+      svc.setAction(HeavenMediaService.ACTION_START_OR_UPDATE);
+      svc.putExtra(HeavenMediaService.EXTRA_TITLE, activeMediaTitle);
+      svc.putExtra(HeavenMediaService.EXTRA_HOST, activeMediaHost);
+      svc.putExtra(HeavenMediaService.EXTRA_PLAYING, activeAudioOrVideoPlaying);
+      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+        ctx.startForegroundService(svc);
+      } else {
+        ctx.startService(svc);
+      }
+    } catch (Throwable ignored) {
+    }
+  }
+
+  private void stopBackgroundMediaService() {
+    Context ctx = resolveContext();
+    if (ctx == null) {
+      return;
+    }
+    try {
+      ctx.stopService(new Intent(ctx, HeavenMediaService.class));
+    } catch (Throwable ignored) {
+    }
+  }
+
+  private void registerMediaCommandReceiver(Context appContext) {
+    if (appContext == null || mediaCmdReceiver != null) {
+      return;
+    }
+    mediaCmdReceiver =
+        new BroadcastReceiver() {
+          @Override
+          public void onReceive(Context context, Intent intent) {
+            if (intent == null
+                || !HeavenMediaService.ACTION_BROADCAST_MEDIA_CMD.equals(intent.getAction())) {
+              return;
+            }
+            String cmd = intent.getStringExtra("cmd");
+            long targetId =
+                activeMediaWebViewId >= 0 ? activeMediaWebViewId : activeFocusedWebViewId;
+            if (pluginBinding == null || targetId < 0 || cmd == null) {
+              return;
+            }
+            WebView wv = WebViewFlutterAndroidExternalApi.getWebView(pluginBinding, targetId);
+            if (wv == null) {
+              return;
+            }
+            if ("pause".equals(cmd) || "stop".equals(cmd)) {
+              activeAudioOrVideoPlaying = false;
+              activeVideoPlaying = false;
+              wv.evaluateJavascript(
+                  "(function(){var l=document.querySelectorAll('video,audio');for(var i=0;i<l.length;i++){try{l[i].pause();}catch(e){}}})();",
+                  null);
+            } else if ("play".equals(cmd)) {
+              activeAudioOrVideoPlaying = true;
+              wv.onResume();
+              wv.resumeTimers();
+              wv.evaluateJavascript(
+                  "(function(){var m=document.querySelector('video,audio');if(m)try{m.play();}catch(e){}})();",
+                  null);
+            }
+          }
+        };
+    IntentFilter filter = new IntentFilter(HeavenMediaService.ACTION_BROADCAST_MEDIA_CMD);
+    if (Build.VERSION.SDK_INT >= 33) {
+      appContext.registerReceiver(mediaCmdReceiver, filter, Context.RECEIVER_NOT_EXPORTED);
+    } else {
+      appContext.registerReceiver(mediaCmdReceiver, filter);
+    }
+  }
+
+  private void unregisterMediaCommandReceiver(Context appContext) {
+    if (appContext != null && mediaCmdReceiver != null) {
+      try {
+        appContext.unregisterReceiver(mediaCmdReceiver);
+      } catch (IllegalArgumentException ignored) {
+      }
+      mediaCmdReceiver = null;
+    }
+  }
+
+  private void refreshSystemAutoPipState() {
+    Activity act = this.activity;
+    if (act == null || Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
+      return;
+    }
+    try {
+      PictureInPictureParams.Builder b = new PictureInPictureParams.Builder();
+      int w = Math.max(1, Math.min(239, activeVideoWidth));
+      int h = Math.max(1, Math.min(239, activeVideoHeight));
+      Rational ratio = new Rational(w, h);
+      if (ratio.floatValue() < 0.42f || ratio.floatValue() > 2.38f) {
+        ratio = new Rational(16, 9);
+      }
+      b.setAspectRatio(ratio);
+      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+        b.setAutoEnterEnabled(this.autoPipEnabled && this.activeVideoPlaying);
+        b.setSeamlessResizeEnabled(true);
+      }
+      act.setPictureInPictureParams(b.build());
+    } catch (Throwable ignored) {
+    }
+  }
+
+  private boolean enterPictureInPictureInternal() {
+    Activity act = this.activity;
+    if (act == null || Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
+      return false;
+    }
+    try {
+      PictureInPictureParams.Builder b = new PictureInPictureParams.Builder();
+      Rational ratio = new Rational(Math.max(1, activeVideoWidth), Math.max(1, activeVideoHeight));
+      if (ratio.floatValue() < 0.42f || ratio.floatValue() > 2.38f) {
+        ratio = new Rational(16, 9);
+      }
+      b.setAspectRatio(ratio);
+      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+        b.setAutoEnterEnabled(this.autoPipEnabled && this.activeVideoPlaying);
+        b.setSeamlessResizeEnabled(true);
+      }
+      return act.enterPictureInPictureMode(b.build());
+    } catch (Throwable ignored) {
+      return false;
+    }
   }
 
   private void registerDownloadControlReceiver(Context appContext) {
@@ -711,6 +1058,14 @@ public class HeavenShieldPlugin
             NotificationManager.IMPORTANCE_DEFAULT);
     completeChannel.setDescription("Alerts when a download finishes");
     nm.createNotificationChannel(completeChannel);
+
+    NotificationChannel alertsChannel =
+        new NotificationChannel(
+            NOTIF_CHANNEL_ALERTS,
+            "Browser Security & Media Alerts",
+            NotificationManager.IMPORTANCE_DEFAULT);
+    alertsChannel.setDescription("Security anti-redirect alerts and Heaven Browser notifications");
+    nm.createNotificationChannel(alertsChannel);
     notifChannelsReady = true;
   }
 
@@ -808,6 +1163,14 @@ public class HeavenShieldPlugin
       extCb.success(null);
       return true;
     }
+    if (requestCode == LEGACY_CREDENTIAL_REQUEST_CODE) {
+      MethodChannel.Result bioCb = this.pendingBiometricResult;
+      this.pendingBiometricResult = null;
+      if (bioCb != null) {
+        bioCb.success(resultCode == Activity.RESULT_OK);
+      }
+      return true;
+    }
     return false;
   }
 
@@ -823,6 +1186,23 @@ public class HeavenShieldPlugin
                 && grantResults.length > 0
                 && grantResults[0] == PackageManager.PERMISSION_GRANTED;
         cb.success(granted);
+      }
+      return true;
+    }
+    if (requestCode == SITE_HARDWARE_PERM_REQUEST_CODE) {
+      MethodChannel.Result cb = this.pendingSiteHardwarePermResult;
+      this.pendingSiteHardwarePermResult = null;
+      if (cb != null) {
+        boolean allGranted = grantResults != null && grantResults.length > 0;
+        if (allGranted) {
+          for (int g : grantResults) {
+            if (g != PackageManager.PERMISSION_GRANTED) {
+              allGranted = false;
+              break;
+            }
+          }
+        }
+        cb.success(allGranted);
       }
       return true;
     }
@@ -882,6 +1262,7 @@ public class HeavenShieldPlugin
         }
         if (idObj instanceof Number) {
           long wvId = ((Number) idObj).longValue();
+          this.activeFocusedWebViewId = wvId;
           if (initHost != null && !initHost.trim().isEmpty()) {
             currentPageHosts.put(wvId, normalizeHost(initHost));
           }
@@ -927,6 +1308,7 @@ public class HeavenShieldPlugin
         }
         if (wvIdObj instanceof Number) {
           long id = ((Number) wvIdObj).longValue();
+          this.activeFocusedWebViewId = id;
           if (pageHost == null || pageHost.trim().isEmpty()) {
             currentPageHosts.remove(id);
           } else {
@@ -1019,17 +1401,61 @@ public class HeavenShieldPlugin
         handleClearSiteData(targetDomain, result);
         break;
 
-      case "searchGoogleInBackground":
-        if (googleBgSearch != null) {
-          String gQuery = call.argument("query");
-          String gTab = call.argument("tab");
-          String gSafe = call.argument("safeMode");
-          String gTime = call.argument("timeCode");
-          String gRegion = call.argument("regionCode");
-          String gLang = call.argument("langHeader");
-          googleBgSearch.searchInBackground(gQuery, gTab, gSafe, gTime, gRegion, gLang, result);
+      case "sendTestNotification":
+        result.success(handleSendTestNotification());
+        break;
+
+      case "enterPictureInPicture":
+        result.success(enterPictureInPictureInternal());
+        break;
+
+      case "scanPageMediaStreams":
+        Object scanWvObj = call.argument("webViewId");
+        if (scanWvObj instanceof Number) {
+          handleScanPageMediaStreams(((Number) scanWvObj).longValue(), result);
         } else {
-          result.success(Collections.singletonMap("ok", false));
+          result.success(Collections.emptyList());
+        }
+        break;
+
+      case "isBiometricAvailable":
+        result.success(checkBiometricAvailable());
+        break;
+
+      case "authenticateBiometric":
+        String bioReason = call.argument("reason");
+        handleAuthenticateBiometric(bioReason, result);
+        break;
+
+      case "requestSiteHardwarePermissions":
+        List<String> permNames = call.argument("permissions");
+        handleRequestSiteHardwarePermissions(permNames, result);
+        break;
+
+      case "sendChromeExtensionRuntimeMessage":
+        if (chromeExtManager != null) {
+          String extId = call.argument("id");
+          String msgJson = call.argument("messageJson");
+          String senderUrl = call.argument("senderUrl");
+          chromeExtManager.dispatchRuntimeMessageToBackground(
+              extId != null ? extId : "", msgJson, senderUrl, result);
+        } else {
+          result.success("{}");
+        }
+        break;
+
+      case "triggerChromeExtensionAction":
+        if (chromeExtManager != null) {
+          String extId = call.argument("id");
+          String tabUrl = call.argument("url");
+          String tabTitle = call.argument("title");
+          chromeExtManager.dispatchExtensionActionClicked(
+              extId != null ? extId : "",
+              tabUrl != null ? tabUrl : activePopupTabUrl,
+              tabTitle != null ? tabTitle : activePopupTabTitle);
+          result.success(true);
+        } else {
+          result.success(false);
         }
         break;
 
@@ -1130,6 +1556,10 @@ public class HeavenShieldPlugin
       case "setPopupContextTab":
         String pUrl = call.argument("url");
         String pTitle = call.argument("title");
+        Object pWvId = call.argument("webViewId");
+        if (pWvId instanceof Number) {
+          activeFocusedWebViewId = ((Number) pWvId).longValue();
+        }
         if (pUrl != null && !pUrl.isEmpty()) {
           activePopupTabUrl = pUrl;
         }
@@ -1283,6 +1713,35 @@ public class HeavenShieldPlugin
     if (desktopArg != null) {
       this.desktopMode = desktopArg;
     }
+    Boolean ultraSaverArg = call.argument("ultraDataSaverMode");
+    if (ultraSaverArg != null) {
+      this.ultraDataSaverMode = ultraSaverArg;
+      applyUltraDataSaverToAttachedWebViews(ultraSaverArg);
+    }
+    Boolean bgMediaArg = call.argument("backgroundMediaEnabled");
+    if (bgMediaArg != null) {
+      this.backgroundMediaEnabled = bgMediaArg;
+      if (!bgMediaArg) {
+        stopBackgroundMediaService();
+      }
+    }
+    Boolean autoPipArg = call.argument("autoPipEnabled");
+    if (autoPipArg != null) {
+      this.autoPipEnabled = autoPipArg;
+      refreshSystemAutoPipState();
+    }
+    Boolean antiRedirectArg = call.argument("antiRedirectProtection");
+    if (antiRedirectArg != null) {
+      this.antiRedirectEnabled = antiRedirectArg;
+    }
+    Boolean webNotifArg = call.argument("webNotificationsEnabled");
+    if (webNotifArg != null) {
+      this.webNotificationsEnabled = webNotifArg;
+    }
+    Boolean bgPlayNotifArg = call.argument("backgroundPlayNotificationEnabled");
+    if (bgPlayNotifArg != null) {
+      this.backgroundPlayNotifEnabled = bgPlayNotifArg;
+    }
     List<String> domainsArg = call.argument("blockedDomains");
     if (domainsArg != null) {
       Set<String> next = new HashSet<>(domainsArg.size() * 2);
@@ -1310,11 +1769,42 @@ public class HeavenShieldPlugin
     refreshAllDocumentStartHandlers();
   }
 
-  private String buildDocumentStartBundle() {
-    if (!this.shieldEnabled) {
-      return "(function(){window.__heavenShieldDisabled=true;})();";
+  private void applyUltraDataSaverToAttachedWebViews(boolean enabled) {
+    if (pluginBinding == null) {
+      return;
     }
-    StringBuilder trustedJs = new StringBuilder("window.__heavenTrustedHosts=[");
+    for (Long id : new ArrayList<>(docStartHandlers.keySet())) {
+      if (id == null) continue;
+      try {
+        WebView wv = WebViewFlutterAndroidExternalApi.getWebView(pluginBinding, id);
+        if (wv != null) {
+          wv.getSettings().setBlockNetworkImage(enabled);
+          wv.evaluateJavascript(
+              "window.__heavenUltraDataSaver=" + enabled + ";" + ULTRA_DATA_SAVER_STYLE_SCRIPT,
+              null);
+        }
+      } catch (Throwable ignored) {
+      }
+    }
+  }
+
+  private String buildDocumentStartBundle() {
+    String flagsJs =
+        "window.__heavenBgMediaEnabled="
+            + this.backgroundMediaEnabled
+            + ";window.__heavenWebNotifsBlocked="
+            + (!this.webNotificationsEnabled)
+            + ";window.__heavenUltraDataSaver="
+            + this.ultraDataSaverMode
+            + ";";
+    if (!this.shieldEnabled) {
+      return "(function(){window.__heavenShieldDisabled=true;"
+          + flagsJs
+          + "})();"
+          + BG_MEDIA_AND_STREAM_SNIFFER_SCRIPT
+          + (this.ultraDataSaverMode ? ULTRA_DATA_SAVER_STYLE_SCRIPT : "");
+    }
+    StringBuilder trustedJs = new StringBuilder(flagsJs).append("window.__heavenTrustedHosts=[");
     boolean first = true;
     for (String h : this.trustedHosts) {
       if (h == null || h.isEmpty()) continue;
@@ -1327,7 +1817,11 @@ public class HeavenShieldPlugin
     }
     trustedJs.append("];");
     String cos = this.cosmeticScript != null ? this.cosmeticScript : "";
-    return trustedJs.toString() + EARLY_YOUTUBE_AND_REDIRECT_GUARD_SCRIPT + cos;
+    return trustedJs.toString()
+        + BG_MEDIA_AND_STREAM_SNIFFER_SCRIPT
+        + EARLY_YOUTUBE_AND_REDIRECT_GUARD_SCRIPT
+        + (this.ultraDataSaverMode ? ULTRA_DATA_SAVER_STYLE_SCRIPT : "")
+        + cos;
   }
 
   private void installOrRefreshDocumentStartShield(WebView webView, long webViewId) {
@@ -1402,6 +1896,105 @@ public class HeavenShieldPlugin
     }
   }
 
+  private final class WebViewMediaJsBridge {
+    private final long webViewId;
+
+    WebViewMediaJsBridge(long webViewId) {
+      this.webViewId = webViewId;
+    }
+
+    @JavascriptInterface
+    public void onPlaybackState(
+        boolean playing,
+        int videoWidth,
+        int videoHeight,
+        String title,
+        String host,
+        boolean isVideo) {
+      activeMediaWebViewId = webViewId;
+      activeAudioOrVideoPlaying = playing;
+      activeVideoPlaying = playing && isVideo;
+      if (videoWidth > 0 && videoHeight > 0) {
+        activeVideoWidth = videoWidth;
+        activeVideoHeight = videoHeight;
+      }
+      if (title != null && !title.trim().isEmpty()) {
+        activeMediaTitle = title.trim();
+      }
+      if (host != null && !host.trim().isEmpty()) {
+        activeMediaHost = host.trim();
+      }
+      mainHandler.post(
+          () -> {
+            refreshSystemAutoPipState();
+            MethodChannel ch = channel;
+            if (ch != null) {
+              Map<String, Object> ev = new HashMap<>(6);
+              ev.put("webViewId", webViewId);
+              ev.put("playing", playing);
+              ev.put("isVideo", isVideo);
+              ev.put("title", activeMediaTitle);
+              ch.invokeMethod("onMediaPlaybackChanged", ev);
+            }
+          });
+    }
+
+    @JavascriptInterface
+    public void onStreamFound(String streamUrl, String kind, String label) {
+      emitDetectedMediaStream(webViewId, streamUrl, kind, label);
+    }
+  }
+
+  private void emitDetectedMediaStream(
+      final long webViewId, final String rawUrl, final String kind, final String label) {
+    if (rawUrl == null
+        || rawUrl.isEmpty()
+        || (!rawUrl.startsWith("https://") && !rawUrl.startsWith("http://"))) {
+      return;
+    }
+    String key = webViewId + "|" + rawUrl;
+    if (!reportedStreamUrls.add(key)) {
+      return;
+    }
+    if (reportedStreamUrls.size() > 600) {
+      reportedStreamUrls.clear();
+    }
+    final String format = inferMediaFormatBadge(rawUrl, kind);
+    mainHandler.post(
+        () -> {
+          MethodChannel ch = this.channel;
+          if (ch != null) {
+            Map<String, Object> payload = new HashMap<>(8);
+            payload.put("webViewId", webViewId);
+            payload.put("url", rawUrl);
+            payload.put("kind", kind != null ? kind : "video");
+            payload.put("format", format);
+            payload.put("label", label != null ? label : (format + " Stream"));
+            ch.invokeMethod("onMediaStreamDetected", payload);
+          }
+        });
+  }
+
+  private static String inferMediaFormatBadge(String url, String kind) {
+    String u = url.toLowerCase(Locale.US);
+    if (u.contains(".m3u8")) return "HLS";
+    if (u.contains(".mp4") || u.contains("mime=video%2fmp4") || u.contains("mime=video/mp4")) {
+      return "MP4";
+    }
+    if (u.contains(".webm") || u.contains("mime=video%2fwebm") || u.contains("mime=video/webm")) {
+      return "WEBM";
+    }
+    if (u.contains(".mp3")) return "MP3";
+    if (u.contains(".m4a") || u.contains("mime=audio%2fmp4") || u.contains("mime=audio/mp4")) {
+      return "M4A";
+    }
+    if (u.contains(".aac")) return "AAC";
+    if (u.contains(".ogg") || u.contains(".opus")) return "OGG";
+    if (u.contains(".mkv")) return "MKV";
+    return "audio".equalsIgnoreCase(kind) ? "AUDIO" : "VIDEO";
+  }
+
+  @SuppressLint("JavascriptInterface")
   private boolean attachShieldToWebView(final long webViewId) {
     if (pluginBinding == null) {
       return false;
@@ -1410,6 +2003,14 @@ public class HeavenShieldPlugin
       WebView webView = WebViewFlutterAndroidExternalApi.getWebView(pluginBinding, webViewId);
       if (webView == null) {
         return false;
+      }
+
+      webView.getSettings().setMediaPlaybackRequiresUserGesture(false);
+      webView.getSettings().setBlockNetworkImage(this.ultraDataSaverMode);
+      try {
+        webView.addJavascriptInterface(
+            new WebViewMediaJsBridge(webViewId), "HeavenMediaBridge");
+      } catch (Throwable ignored) {
       }
 
       applyDesktopSettingsToWebView(webView, webViewId, this.desktopMode, true);
@@ -2007,6 +2608,239 @@ public class HeavenShieldPlugin
     return bmp;
   }
 
+  @SuppressWarnings("deprecation")
+  private boolean handleSendTestNotification() {
+    Context ctx = resolveContext();
+    if (ctx == null) {
+      return false;
+    }
+    ensureNotificationSetup();
+    NotificationManager nm =
+        (NotificationManager) ctx.getSystemService(Context.NOTIFICATION_SERVICE);
+    if (nm == null) {
+      return false;
+    }
+    try {
+      Intent openIntent = new Intent(Intent.ACTION_MAIN);
+      openIntent.setClassName(
+          ctx.getPackageName(), "com.hypertechlabs.heavenbrowser.MainActivity");
+      openIntent.addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP | Intent.FLAG_ACTIVITY_CLEAR_TOP);
+      PendingIntent pi =
+          PendingIntent.getActivity(
+              ctx,
+              9913,
+              openIntent,
+              PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
+      Notification.Builder b =
+          Build.VERSION.SDK_INT >= Build.VERSION_CODES.O
+              ? new Notification.Builder(ctx, NOTIF_CHANNEL_ALERTS)
+              : new Notification.Builder(ctx);
+      b.setSmallIcon(android.R.drawable.ic_popup_reminder)
+          .setContentTitle("Heaven Browser Notifications Active")
+          .setContentText("Download progress, offline media streams & shield alerts are ready.")
+          .setAutoCancel(true)
+          .setContentIntent(pi);
+      nm.notify(89130, b.build());
+      return true;
+    } catch (Throwable ignored) {
+      return false;
+    }
+  }
+
+  private void handleScanPageMediaStreams(
+      final long webViewId, final MethodChannel.Result result) {
+    if (pluginBinding == null) {
+      result.success(Collections.emptyList());
+      return;
+    }
+    WebView wv = WebViewFlutterAndroidExternalApi.getWebView(pluginBinding, webViewId);
+    if (wv == null) {
+      result.success(Collections.emptyList());
+      return;
+    }
+    String scanJs =
+        "(function(){"
+            + "var out=[];var seen={};"
+            + "function add(u,k,l){if(!u||u.indexOf('blob:')===0||u.indexOf('data:')===0||seen[u])return;"
+            + "try{var abs=new URL(u,location.href).href;if(seen[abs])return;seen[abs]=true;out.push({url:abs,kind:k,label:l});}catch(e){}}"
+            + "var vids=document.querySelectorAll('video');"
+            + "for(var i=0;i<vids.length;i++){var v=vids[i];add(v.currentSrc||v.src,'video',((v.videoHeight||720)+'p Video'));"
+            + "var ss=v.querySelectorAll('source');for(var j=0;j<ss.length;j++)add(ss[j].src,'video','Video Source');}"
+            + "var auds=document.querySelectorAll('audio');"
+            + "for(var a=0;a<auds.length;a++){var au=auds[a];add(au.currentSrc||au.src,'audio','Audio Stream');"
+            + "var as=au.querySelectorAll('source');for(var b=0;b<as.length;b++)add(as[b].src,'audio','Audio Source');}"
+            + "var links=document.querySelectorAll('a[href*=\".mp4\"],a[href*=\".webm\"],a[href*=\".m3u8\"],a[href*=\".mp3\"],a[href*=\".m4a\"]');"
+            + "for(var m=0;m<links.length;m++){var h=links[m].href||'';add(h,(h.indexOf('.mp3')>0||h.indexOf('.m4a')>0)?'audio':'video',(links[m].textContent||'Direct Media').trim().slice(0,40)||'Media File');}"
+            + "return JSON.stringify(out);"
+            + "})();";
+    wv.evaluateJavascript(
+        scanJs,
+        raw -> {
+          List<Map<String, Object>> parsed = new ArrayList<>();
+          try {
+            if (raw != null && raw.length() > 4 && !"null".equals(raw)) {
+              String jsonStr = raw;
+              if (jsonStr.startsWith("\"") && jsonStr.endsWith("\"")) {
+                jsonStr = new org.json.JSONTokener(jsonStr).nextValue().toString();
+              }
+              org.json.JSONArray arr = new org.json.JSONArray(jsonStr);
+              for (int i = 0; i < arr.length(); i++) {
+                org.json.JSONObject o = arr.optJSONObject(i);
+                if (o != null) {
+                  String u = o.optString("url", "");
+                  String k = o.optString("kind", "video");
+                  String l = o.optString("label", "Media Stream");
+                  if (!u.isEmpty()) {
+                    Map<String, Object> item = new HashMap<>(6);
+                    item.put("url", u);
+                    item.put("kind", k);
+                    item.put("format", inferMediaFormatBadge(u, k));
+                    item.put("label", l);
+                    parsed.add(item);
+                    emitDetectedMediaStream(webViewId, u, k, l);
+                  }
+                }
+              }
+            }
+          } catch (Throwable ignored) {
+          }
+          result.success(parsed);
+        });
+  }
+
+  @SuppressWarnings("deprecation")
+  private boolean checkBiometricAvailable() {
+    Context ctx = resolveContext();
+    if (ctx == null) {
+      return false;
+    }
+    try {
+      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+        BiometricManager bm = ctx.getSystemService(BiometricManager.class);
+        if (bm != null) {
+          int can =
+              bm.canAuthenticate(
+                  BiometricManager.Authenticators.BIOMETRIC_STRONG
+                      | BiometricManager.Authenticators.BIOMETRIC_WEAK
+                      | BiometricManager.Authenticators.DEVICE_CREDENTIAL);
+          return can == BiometricManager.BIOMETRIC_SUCCESS;
+        }
+      } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+        BiometricManager bm = ctx.getSystemService(BiometricManager.class);
+        if (bm != null && bm.canAuthenticate() == BiometricManager.BIOMETRIC_SUCCESS) {
+          return true;
+        }
+      }
+      KeyguardManager km = (KeyguardManager) ctx.getSystemService(Context.KEYGUARD_SERVICE);
+      return km != null && km.isKeyguardSecure();
+    } catch (Throwable ignored) {
+      return false;
+    }
+  }
+
+  @SuppressWarnings("deprecation")
+  private void handleAuthenticateBiometric(String reason, final MethodChannel.Result result) {
+    final Activity act = this.activity;
+    if (act == null) {
+      result.success(false);
+      return;
+    }
+    final String subtitle =
+        (reason != null && !reason.trim().isEmpty())
+            ? reason.trim()
+            : "Verify identity to unlock private session";
+
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+      try {
+        BiometricPrompt.Builder builder =
+            new BiometricPrompt.Builder(act)
+                .setTitle("Heaven Browser Security")
+                .setSubtitle(subtitle);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+          builder.setAllowedAuthenticators(
+              BiometricManager.Authenticators.BIOMETRIC_STRONG
+                  | BiometricManager.Authenticators.BIOMETRIC_WEAK
+                  | BiometricManager.Authenticators.DEVICE_CREDENTIAL);
+        } else if (Build.VERSION.SDK_INT == Build.VERSION_CODES.Q) {
+          builder.setDeviceCredentialAllowed(true);
+        } else {
+          builder.setNegativeButton(
+              "Cancel", act.getMainExecutor(), (dialog, which) -> result.success(false));
+        }
+
+        final AtomicLong settled = new AtomicLong(0L);
+        BiometricPrompt prompt = builder.build();
+        CancellationSignal cancelSig = new CancellationSignal();
+        prompt.authenticate(
+            cancelSig,
+            act.getMainExecutor(),
+            new BiometricPrompt.AuthenticationCallback() {
+              @Override
+              public void onAuthenticationSucceeded(BiometricPrompt.AuthenticationResult res) {
+                if (settled.compareAndSet(0L, 1L)) {
+                  mainHandler.post(() -> result.success(true));
+                }
+              }
+
+              @Override
+              public void onAuthenticationError(int errorCode, CharSequence errString) {
+                if (settled.compareAndSet(0L, 1L)) {
+                  mainHandler.post(() -> result.success(false));
+                }
+              }
+            });
+        return;
+      } catch (Throwable ignored) {
+      }
+    }
+
+    try {
+      KeyguardManager km = (KeyguardManager) act.getSystemService(Context.KEYGUARD_SERVICE);
+      if (km != null && km.isKeyguardSecure()) {
+        Intent credIntent =
+            km.createConfirmDeviceCredentialIntent("Heaven Browser Security", subtitle);
+        if (credIntent != null) {
+          this.pendingBiometricResult = result;
+          act.startActivityForResult(credIntent, LEGACY_CREDENTIAL_REQUEST_CODE);
+          return;
+        }
+      }
+    } catch (Throwable ignored) {
+    }
+    result.success(false);
+  }
+
+  private void handleRequestSiteHardwarePermissions(
+      List<String> requested, MethodChannel.Result result) {
+    if (requested == null || requested.isEmpty()) {
+      result.success(true);
+      return;
+    }
+    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) {
+      result.success(true);
+      return;
+    }
+    if (this.activity == null) {
+      result.success(false);
+      return;
+    }
+    List<String> missing = new ArrayList<>();
+    for (String perm : requested) {
+      if (perm != null
+          && !perm.isEmpty()
+          && this.activity.checkSelfPermission(perm) != PackageManager.PERMISSION_GRANTED) {
+        missing.add(perm);
+      }
+    }
+    if (missing.isEmpty()) {
+      result.success(true);
+      return;
+    }
+    this.pendingSiteHardwarePermResult = result;
+    this.activity.requestPermissions(
+        missing.toArray(new String[0]), SITE_HARDWARE_PERM_REQUEST_CODE);
+  }
+
   private void handleGetNotificationStatus(MethodChannel.Result result) {
     Context ctx = resolveContext();
     boolean systemEnabled = true;
@@ -2407,6 +3241,154 @@ public class HeavenShieldPlugin
     throw new IOException("Too many redirects");
   }
 
+  private String fetchTextFollowingRedirects(DownloadJob job, String urlStr) throws IOException {
+    String cur = urlStr;
+    for (int hop = 0; hop < 6; hop++) {
+      HttpURLConnection c = (HttpURLConnection) URI.create(cur).toURL().openConnection();
+      c.setInstanceFollowRedirects(false);
+      c.setConnectTimeout(12000);
+      c.setReadTimeout(18000);
+      c.setRequestProperty(
+          "User-Agent",
+          !job.userAgent.isEmpty() ? job.userAgent : MOBILE_CHROME_ANDROID_UA);
+      if (!job.cookies.isEmpty()) c.setRequestProperty("Cookie", job.cookies);
+      if (!job.referer.isEmpty()) c.setRequestProperty("Referer", job.referer);
+      int st = c.getResponseCode();
+      if (st == 301 || st == 302 || st == 303 || st == 307 || st == 308) {
+        String loc = c.getHeaderField("Location");
+        c.disconnect();
+        if (loc == null || loc.isEmpty()) throw new IOException("Empty HLS redirect");
+        cur = URI.create(cur).resolve(loc).toString();
+        continue;
+      }
+      if (st < 200 || st >= 300) {
+        c.disconnect();
+        throw new IOException("HLS HTTP " + st);
+      }
+      try (InputStream is = c.getInputStream();
+          ByteArrayOutputStream bos = new ByteArrayOutputStream()) {
+        byte[] b = new byte[8192];
+        int n;
+        while ((n = is.read(b)) > 0) bos.write(b, 0, n);
+        return new String(bos.toByteArray(), StandardCharsets.UTF_8);
+      } finally {
+        c.disconnect();
+      }
+    }
+    throw new IOException("Too many HLS redirects");
+  }
+
+  private void executeHlsPlaylistDownload(final DownloadJob job) throws IOException {
+    String playlistUrl = job.url;
+    String manifestText = fetchTextFollowingRedirects(job, playlistUrl);
+    if (manifestText.contains("#EXT-X-STREAM-INF")) {
+      String[] lines = manifestText.split("\\r?\\n");
+      long bestBw = -1L;
+      String bestVariant = null;
+      long nextBw = 0L;
+      for (String raw : lines) {
+        String line = raw.trim();
+        if (line.startsWith("#EXT-X-STREAM-INF:")) {
+          nextBw = 1L;
+          int idx = line.indexOf("BANDWIDTH=");
+          if (idx >= 0) {
+            int start = idx + 10;
+            int end = start;
+            while (end < line.length() && Character.isDigit(line.charAt(end))) end++;
+            try {
+              nextBw = Long.parseLong(line.substring(start, end));
+            } catch (NumberFormatException ignored) {
+            }
+          }
+        } else if (!line.isEmpty() && !line.startsWith("#") && nextBw > 0) {
+          if (nextBw >= bestBw) {
+            bestBw = nextBw;
+            bestVariant = URI.create(playlistUrl).resolve(line).toString();
+          }
+          nextBw = 0L;
+        }
+      }
+      if (bestVariant != null) {
+        playlistUrl = bestVariant;
+        manifestText = fetchTextFollowingRedirects(job, playlistUrl);
+      }
+    }
+
+    List<String> segmentUrls = new ArrayList<>();
+    for (String raw : manifestText.split("\\r?\\n")) {
+      String line = raw.trim();
+      if (!line.isEmpty() && !line.startsWith("#")) {
+        segmentUrls.add(URI.create(playlistUrl).resolve(line).toString());
+      }
+    }
+    if (segmentUrls.isEmpty()) {
+      throw new IOException("HLS playlist contained zero media segments");
+    }
+
+    job.supportsRange = false;
+    job.mimeType = "video/mp2t";
+    job.bytesDownloaded.set(0L);
+    long lastTickTime = SystemClock.elapsedRealtime();
+    long lastTickBytes = 0L;
+    long lastNotifTime = 0L;
+    byte[] buf = new byte[32 * 1024];
+
+    try (FileOutputStream out = new FileOutputStream(job.partFile, false)) {
+      for (int i = 0; i < segmentUrls.size(); i++) {
+        if (job.cancelRequested || job.pauseRequested) break;
+        HttpURLConnection segConn =
+            (HttpURLConnection) URI.create(segmentUrls.get(i)).toURL().openConnection();
+        segConn.setConnectTimeout(12000);
+        segConn.setReadTimeout(20000);
+        segConn.setRequestProperty(
+            "User-Agent",
+            !job.userAgent.isEmpty() ? job.userAgent : MOBILE_CHROME_ANDROID_UA);
+        if (!job.cookies.isEmpty()) segConn.setRequestProperty("Cookie", job.cookies);
+        if (!job.referer.isEmpty()) segConn.setRequestProperty("Referer", job.referer);
+        job.activeConn = segConn;
+        try (InputStream segIn = segConn.getInputStream()) {
+          job.activeStream = segIn;
+          int n;
+          while ((n = segIn.read(buf)) != -1) {
+            if (job.cancelRequested || job.pauseRequested) break;
+            out.write(buf, 0, n);
+            long nowBytes = job.bytesDownloaded.addAndGet(n);
+            if (i >= 0) {
+              long avgPerSeg = Math.max(1024L, nowBytes / (i + 1));
+              job.totalBytes = avgPerSeg * segmentUrls.size();
+            }
+            long nowMs = SystemClock.elapsedRealtime();
+            long elapsed = nowMs - lastTickTime;
+            if (elapsed >= 500L) {
+              job.speedBytesPerSec = ((nowBytes - lastTickBytes) * 1000L) / Math.max(1L, elapsed);
+              lastTickTime = nowMs;
+              lastTickBytes = nowBytes;
+            }
+            if (nowMs - lastNotifTime >= 900L) {
+              lastNotifTime = nowMs;
+              postDownloadNotification(job);
+            }
+          }
+        } finally {
+          segConn.disconnect();
+        }
+      }
+      out.flush();
+    }
+
+    if (job.cancelRequested) {
+      cancelNotification(job.notifId());
+      return;
+    }
+    if (job.pauseRequested) {
+      job.state = "paused";
+      job.speedBytesPerSec = 0L;
+      postDownloadNotification(job);
+      return;
+    }
+    completeDownloadFile(job);
+  }
+
   private void executeDownloadLoop(final DownloadJob job) {
     HttpURLConnection conn = null;
     InputStream in = null;
@@ -2416,6 +3398,12 @@ public class HeavenShieldPlugin
       if (parent != null && !parent.exists()) {
         //noinspection ResultOfMethodCallIgnored
         parent.mkdirs();
+      }
+      String lowerUrl = job.url.toLowerCase(Locale.US);
+      if (lowerUrl.contains(".m3u8")
+          || (job.mimeType != null && job.mimeType.toLowerCase(Locale.US).contains("mpegurl"))) {
+        executeHlsPlaylistDownload(job);
+        return;
       }
       long resumeFrom = job.partFile.exists() ? job.partFile.length() : 0L;
       job.bytesDownloaded.set(resumeFrom);
@@ -2836,8 +3824,73 @@ public class HeavenShieldPlugin
     }
   }
 
+  private static boolean looksLikePlayableMediaStream(
+      String lowerPath, String lowerQuery, String reqHost) {
+    if (lowerPath.endsWith(".m3u8")
+        || lowerPath.endsWith(".mp4")
+        || lowerPath.endsWith(".webm")
+        || lowerPath.endsWith(".mkv")
+        || lowerPath.endsWith(".mp3")
+        || lowerPath.endsWith(".m4a")
+        || lowerPath.endsWith(".aac")
+        || lowerPath.endsWith(".ogg")
+        || lowerPath.endsWith(".opus")) {
+      return !lowerPath.contains("ad") && !lowerPath.contains("banner");
+    }
+    if (reqHost.endsWith("googlevideo.com")
+        && lowerPath.contains("/videoplayback")
+        && !lowerQuery.contains("oad=")
+        && !lowerQuery.contains("range=")) {
+      return lowerQuery.contains("mime=video") || lowerQuery.contains("mime=audio");
+    }
+    return false;
+  }
+
+  private boolean shouldBlockInUltraDataSaver(
+      String reqHost, String activePageHost, String lowerPath, WebResourceRequest request) {
+    if (!this.ultraDataSaverMode || request.isForMainFrame()) {
+      return false;
+    }
+    if (HeavenChromeExtManager.EXT_VIRTUAL_HOST.equals(reqHost)
+        || "chromewebstore.google.com".equals(reqHost)) {
+      return false;
+    }
+    String accept = "";
+    Map<String, String> headers = request.getRequestHeaders();
+    if (headers != null) {
+      for (Map.Entry<String, String> e : headers.entrySet()) {
+        if ("accept".equalsIgnoreCase(e.getKey()) && e.getValue() != null) {
+          accept = e.getValue().toLowerCase(Locale.US);
+          break;
+        }
+      }
+    }
+    if (lowerPath.endsWith(".jpg")
+        || lowerPath.endsWith(".jpeg")
+        || lowerPath.endsWith(".png")
+        || lowerPath.endsWith(".webp")
+        || lowerPath.endsWith(".gif")
+        || lowerPath.endsWith(".avif")
+        || lowerPath.endsWith(".woff2")
+        || lowerPath.endsWith(".woff")
+        || lowerPath.endsWith(".ttf")
+        || accept.startsWith("image/")
+        || accept.contains("font/")) {
+      return true;
+    }
+    // Block heavy third-party scripts in Ultra Data Saver mode while keeping first-party HTML/JS
+    if ((lowerPath.endsWith(".js") || accept.contains("javascript"))
+        && activePageHost != null
+        && !activePageHost.isEmpty()
+        && !isSameRootDomain(reqHost, activePageHost)
+        && !reqHost.endsWith("gstatic.com")) {
+      return true;
+    }
+    return false;
+  }
+
   private WebResourceResponse interceptIfAdOrTracker(long webViewId, WebResourceRequest request) {
-    if (!shieldEnabled || request == null) {
+    if (request == null) {
       return null;
     }
     Uri url = request.getUrl();
@@ -2853,18 +3906,66 @@ public class HeavenShieldPlugin
       return null;
     }
     String activePageHost = webViewId >= 0 ? currentPageHosts.get(webViewId) : null;
+    String fullPath = url.getEncodedPath() != null ? url.getEncodedPath().toLowerCase(Locale.US) : "";
+    String fullQuery = url.getEncodedQuery() != null ? url.getEncodedQuery().toLowerCase(Locale.US) : "";
+
+    // 1. Ultra Data Saver (Text-Only Mode) network image/font/3P-script blocker
+    if (shouldBlockInUltraDataSaver(host, activePageHost, fullPath, request)) {
+      notifyBytesSavedOnMainThread(36800L);
+      return buildEmptyResponseForPath(fullPath, request);
+    }
+
+    // 2. MV3 Chrome Extension declarativeNetRequest block rules
+    if (chromeExtManager != null
+        && !request.isForMainFrame()
+        && chromeExtManager.shouldBlockByExtensionDnr(url, activePageHost)) {
+      notifyBlockedOnMainThread(webViewId, host, 18400L);
+      return buildEmptyResponseForPath(fullPath, request);
+    }
+
+    if (!shieldEnabled) {
+      if (webViewId >= 0 && looksLikePlayableMediaStream(fullPath, fullQuery, host)) {
+        String kind =
+            (fullPath.endsWith(".mp3")
+                    || fullPath.endsWith(".m4a")
+                    || fullPath.endsWith(".aac")
+                    || fullPath.endsWith(".ogg")
+                    || fullQuery.contains("mime=audio"))
+                ? "audio"
+                : "video";
+        emitDetectedMediaStream(webViewId, url.toString(), kind, inferMediaFormatBadge(url.toString(), kind) + " Stream");
+      }
+      return null;
+    }
+
     if (activePageHost != null && isTrustedHost(activePageHost)) {
       return null;
     }
     if (request.isForMainFrame() && isTrustedHost(host)) {
       return null;
     }
-    String fullPath = url.getEncodedPath() != null ? url.getEncodedPath().toLowerCase(Locale.US) : "";
-    String fullQuery = url.getEncodedQuery() != null ? url.getEncodedQuery().toLowerCase(Locale.US) : "";
     if (matchesBlockedDomain(host)
         || matchesAdPathSignature(host, fullPath, fullQuery, activePageHost)) {
-      notifyBlockedOnMainThread(webViewId, host);
+      long estSaved = fullPath.contains("video") || fullPath.contains("vast") ? 48000L : 18400L;
+      notifyBlockedOnMainThread(webViewId, host, estSaved);
       return buildEmptyResponseForPath(fullPath, request);
+    }
+
+    // 3. Passive stream detection for non-ad video & audio streams
+    if (webViewId >= 0 && looksLikePlayableMediaStream(fullPath, fullQuery, host)) {
+      String kind =
+          (fullPath.endsWith(".mp3")
+                  || fullPath.endsWith(".m4a")
+                  || fullPath.endsWith(".aac")
+                  || fullPath.endsWith(".ogg")
+                  || fullQuery.contains("mime=audio"))
+              ? "audio"
+              : "video";
+      emitDetectedMediaStream(
+          webViewId,
+          url.toString(),
+          kind,
+          inferMediaFormatBadge(url.toString(), kind) + " Stream");
     }
     return null;
   }
@@ -3087,14 +4188,44 @@ public class HeavenShieldPlugin
   }
 
   private void notifyBlockedOnMainThread(final long webViewId, final String domain) {
+    notifyBlockedOnMainThread(webViewId, domain, 14200L);
+  }
+
+  private void notifyBlockedOnMainThread(
+      final long webViewId, final String domain, final long bytesSaved) {
+    mainHandler.post(
+        () -> {
+          MethodChannel ch = this.channel;
+          if (ch != null) {
+            Map<String, Object> payload = new HashMap<>(6);
+            payload.put("webViewId", webViewId);
+            payload.put("domain", domain);
+            payload.put("bytesSaved", bytesSaved);
+            ch.invokeMethod("onResourceBlocked", payload);
+          }
+        });
+  }
+
+  private void notifyBytesSavedOnMainThread(final long bytesSaved) {
+    mainHandler.post(
+        () -> {
+          MethodChannel ch = this.channel;
+          if (ch != null) {
+            ch.invokeMethod("onBytesSaved", Collections.singletonMap("bytesSaved", bytesSaved));
+          }
+        });
+  }
+
+  private void notifyRedirectBlockedOnMainThread(final long webViewId, final String target) {
+    notifyBlockedOnMainThread(webViewId, target, 24000L);
     mainHandler.post(
         () -> {
           MethodChannel ch = this.channel;
           if (ch != null) {
             Map<String, Object> payload = new HashMap<>(4);
             payload.put("webViewId", webViewId);
-            payload.put("domain", domain);
-            ch.invokeMethod("onResourceBlocked", payload);
+            payload.put("target", target);
+            ch.invokeMethod("onRedirectBlocked", payload);
           }
         });
   }
@@ -3182,24 +4313,25 @@ public class HeavenShieldPlugin
           applyDesktopSettingsToWebView(view, webViewId, false, true);
         }
 
-        // 2. Native Ad / Malware / Pirated-Site & Adult-Site Redirect Firewall!
-        if (shieldEnabled && !pageTrusted) {
-          // Block intent://, market://, and app-store forced redirects
+        // 2. Native Ad / Malware / Play Store / Adult-Site Automatic Anti-Redirect Firewall!
+        if ((shieldEnabled || antiRedirectEnabled) && !pageTrusted) {
           if (!"http".equals(scheme) && !"https".equals(scheme) && !"about".equals(scheme)) {
-            notifyBlockedOnMainThread(webViewId, scheme + "-redirect");
+            if (!"mailto".equals(scheme) && !"tel".equals(scheme)) {
+              notifyRedirectBlockedOnMainThread(webViewId, scheme + "://");
+              return true;
+            }
+          }
+          if (("play.google.com".equals(destHost) || "apps.apple.com".equals(destHost))
+              && prevHost != null
+              && !prevHost.contains("google.")) {
+            notifyRedirectBlockedOnMainThread(webViewId, destHost);
             return true;
           }
-          if ("play.google.com".equals(destHost) && prevHost != null && !prevHost.contains("google.")) {
-            notifyBlockedOnMainThread(webViewId, destHost);
-            return true;
-          }
-          // Block known ad/tracker/casino/cam-spam redirect domains & #google_vignette
           if (matchesBlockedDomain(destHost) || isSuspiciousRedirectTarget(destUri, prevHost)) {
-            notifyBlockedOnMainThread(webViewId, destHost.isEmpty() ? "ad-redirect" : destHost);
+            notifyRedirectBlockedOnMainThread(
+                webViewId, destHost.isEmpty() ? "ad-redirect" : destHost);
             return true;
           }
-          // Block unapproved cross-domain JS redirects / video-player click-hijacks, while
-          // allowing user-initiated navigations from Heaven Search / Omnibox & HTTP redirects!
           Long userNavUntil = userInitiatedNavUntilMs.get(webViewId);
           boolean inUserNavGrace =
               userNavUntil != null && System.currentTimeMillis() <= userNavUntil;
@@ -3211,7 +4343,7 @@ public class HeavenShieldPlugin
               && !isSearchOrAuthPortal(prevHost)
               && !isSearchOrAuthPortal(destHost)
               && !isApprovedExternalNav(webViewId, destHost)) {
-            notifyBlockedOnMainThread(webViewId, destHost);
+            notifyRedirectBlockedOnMainThread(webViewId, destHost);
             return true;
           }
         }
@@ -3265,7 +4397,7 @@ public class HeavenShieldPlugin
       } else {
         super.onPageStarted(view, url, favicon);
       }
-      injectScripts(view, url);
+      injectScripts(view, url, "document_start");
     }
 
     @Override
@@ -3275,7 +4407,7 @@ public class HeavenShieldPlugin
       } else {
         super.onPageCommitVisible(view, url);
       }
-      injectScripts(view, url);
+      injectScripts(view, url, "document_idle");
     }
 
     @Override
@@ -3285,16 +4417,40 @@ public class HeavenShieldPlugin
       } else {
         super.onPageFinished(view, url);
       }
-      injectScripts(view, url);
+      injectScripts(view, url, "all");
     }
 
-    private void injectScripts(WebView view, String url) {
+    private void injectScripts(final WebView view, final String url, final String extStage) {
       boolean isCws = url != null && isChromeWebStoreUri(Uri.parse(url));
       if (isCws) {
         view.evaluateJavascript(CHROME_WEB_STORE_DESKTOP_SCRIPT, null);
       } else if (desktopMode) {
         view.evaluateJavascript(DESKTOP_VIEWPORT_SCRIPT, null);
       }
+      view.evaluateJavascript(
+          "window.__heavenBgMediaEnabled="
+              + backgroundMediaEnabled
+              + ";window.__heavenWebNotifsBlocked="
+              + (!webNotificationsEnabled)
+              + ";window.__heavenUltraDataSaver="
+              + ultraDataSaverMode
+              + ";"
+              + BG_MEDIA_AND_STREAM_SNIFFER_SCRIPT
+              + ULTRA_DATA_SAVER_STYLE_SCRIPT,
+          null);
+
+      // Inject enabled Chrome Extensions (.crx / MV2 & MV3) on EVERY search engine & website!
+      if (chromeExtManager != null && url != null && url.startsWith("http") && !isCws) {
+        downloadPool.execute(
+            () -> {
+              final String extBundle =
+                  chromeExtManager.buildContentScriptsBundleForUrl(url, extStage, false);
+              if (!extBundle.isEmpty()) {
+                mainHandler.post(() -> view.evaluateJavascript(extBundle, null));
+              }
+            });
+      }
+
       if (!shieldEnabled) {
         return;
       }

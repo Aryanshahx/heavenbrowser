@@ -2,23 +2,22 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
+import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../../core/utils/omnibox_parser.dart';
 import '../shield/native_shield_bridge.dart';
 
-class ChromeWebStoreCatalogItem {
-  const ChromeWebStoreCatalogItem({
+class ChromeWebStoreSearchItem {
+  const ChromeWebStoreSearchItem({
     required this.extensionId,
     required this.name,
-    required this.category,
     required this.description,
     required this.storeUrl,
   });
 
   final String extensionId;
   final String name;
-  final String category;
   final String description;
   final String storeUrl;
 }
@@ -33,6 +32,8 @@ class InstalledChromeExtension {
     required this.enabled,
     required this.source,
     required this.popupUrl,
+    this.optionsUrl = '',
+    this.hasBackground = false,
     required this.iconBase64,
     this.iconBytes,
     this.permissions = const <String>[],
@@ -48,6 +49,8 @@ class InstalledChromeExtension {
   final bool enabled;
   final String source;
   final String popupUrl;
+  final String optionsUrl;
+  final bool hasBackground;
   final String iconBase64;
   final Uint8List? iconBytes;
   final List<String> permissions;
@@ -55,6 +58,7 @@ class InstalledChromeExtension {
   final int contentScriptCount;
 
   bool get hasPopup => popupUrl.isNotEmpty;
+  bool get hasOptions => optionsUrl.isNotEmpty;
 
   InstalledChromeExtension copyWith({bool? enabled}) {
     return InstalledChromeExtension(
@@ -66,6 +70,8 @@ class InstalledChromeExtension {
       enabled: enabled ?? this.enabled,
       source: source,
       popupUrl: popupUrl,
+      optionsUrl: optionsUrl,
+      hasBackground: hasBackground,
       iconBase64: iconBase64,
       iconBytes: iconBytes,
       permissions: permissions,
@@ -106,6 +112,8 @@ class InstalledChromeExtension {
       enabled: map['enabled'] != false,
       source: map['source']?.toString() ?? 'webstore',
       popupUrl: map['popupUrl']?.toString().trim() ?? '',
+      optionsUrl: map['optionsUrl']?.toString().trim() ?? '',
+      hasBackground: map['hasBackground'] == true,
       iconBase64: rawIcon,
       iconBytes: decodedIcon,
       permissions: perms,
@@ -184,7 +192,8 @@ class ExtensionsController extends ChangeNotifier {
   ExtensionsController(
     this._prefs, {
     bool syncNativeOnInit = true,
-  }) {
+    http.Client? httpClient,
+  }) : _client = httpClient ?? http.Client() {
     _loadLocalScripts();
     if (syncNativeOnInit) {
       unawaited(refreshChromeExtensions());
@@ -196,67 +205,13 @@ class ExtensionsController extends ChangeNotifier {
   static const String _keyCustomScripts = 'hb.ext.customScripts.v9';
 
   static final RegExp _extIdPattern = RegExp(r'([a-p]{32})');
-
-  /// Real Desktop Chrome Web Store extensions (genuine 32-char IDs fetched as CRX3 from Google).
-  static const List<ChromeWebStoreCatalogItem> featuredWebStoreCatalog =
-      <ChromeWebStoreCatalogItem>[
-        ChromeWebStoreCatalogItem(
-          extensionId: 'eimadpbcbfnmbkopoojfekhnkhdbieeh',
-          name: 'Dark Reader',
-          category: 'Appearance',
-          description:
-              'Official Desktop Chrome dark theme generator for every website with brightness & contrast popup.',
-          storeUrl:
-              'https://chromewebstore.google.com/detail/dark-reader/eimadpbcbfnmbkopoojfekhnkhdbieeh',
-        ),
-        ChromeWebStoreCatalogItem(
-          extensionId: 'gebbhagfogifgggkldgodflihgfeippi',
-          name: 'Return YouTube Dislike',
-          category: 'Video',
-          description:
-              'Restores accurate dislike counts on YouTube watch pages using the official RYD API.',
-          storeUrl:
-              'https://chromewebstore.google.com/detail/return-youtube-dislike/gebbhagfogifgggkldgodflihgfeippi',
-        ),
-        ChromeWebStoreCatalogItem(
-          extensionId: 'mnjggcdmjocbbbhaepdhchncahnbgone',
-          name: 'SponsorBlock for YouTube',
-          category: 'Video',
-          description:
-              'Automatically skips sponsored segments, intros, outros, and reminders in YouTube videos.',
-          storeUrl:
-              'https://chromewebstore.google.com/detail/sponsorblock-for-youtube/mnjggcdmjocbbbhaepdhchncahnbgone',
-        ),
-        ChromeWebStoreCatalogItem(
-          extensionId: 'clngdbkpkpeebahjckkjfobafhncgmne',
-          name: 'Stylus',
-          category: 'Customization',
-          description:
-              'Redesign your favorite websites with custom desktop userstyles and themes.',
-          storeUrl:
-              'https://chromewebstore.google.com/detail/stylus/clngdbkpkpeebahjckkjfobafhncgmne',
-        ),
-        ChromeWebStoreCatalogItem(
-          extensionId: 'mdjildafknihdffpkfmmpnpoiajfjnjd',
-          name: 'Consent-O-Matic',
-          category: 'Privacy',
-          description:
-              'Automatically answers GDPR & cookie consent popups with privacy-first choices.',
-          storeUrl:
-              'https://chromewebstore.google.com/detail/consent-o-matic/mdjildafknihdffpkfmmpnpoiajfjnjd',
-        ),
-        ChromeWebStoreCatalogItem(
-          extensionId: 'jinjaccalgkegednnccohejagnlnfdag',
-          name: 'Violentmonkey',
-          category: 'Developer',
-          description:
-              'Desktop userscript manager supporting GreasyFork & OpenUserJS scripts.',
-          storeUrl:
-              'https://chromewebstore.google.com/detail/violentmonkey/jinjaccalgkegednnccohejagnlnfdag',
-        ),
-      ];
+  static final RegExp _rssItemPattern = RegExp(
+    r'<item>([\s\S]*?)</item>',
+    caseSensitive: false,
+  );
 
   final SharedPreferences _prefs;
+  final http.Client _client;
 
   List<InstalledChromeExtension> _chromeExtensions =
       <InstalledChromeExtension>[];
@@ -268,6 +223,11 @@ class ExtensionsController extends ChangeNotifier {
 
   List<InstalledChromeExtension> get chromeExtensions =>
       List<InstalledChromeExtension>.unmodifiable(_chromeExtensions);
+
+  List<InstalledChromeExtension> get enabledChromeExtensions =>
+      _chromeExtensions
+          .where((InstalledChromeExtension e) => e.enabled)
+          .toList(growable: false);
 
   List<CustomUserscriptExtension> get customScripts =>
       List<CustomUserscriptExtension>.unmodifiable(_customScripts);
@@ -320,59 +280,93 @@ class ExtensionsController extends ChangeNotifier {
     return null;
   }
 
-  /// Searches Chrome Web Store extensions directly in the background without opening
-  /// any mobile-restricted page, returning 1-tap installable CRX catalog items.
-  Future<List<ChromeWebStoreCatalogItem>> searchWebStoreExtensions(
+  /// Live Chrome Web Store search when the user explicitly types a query.
+  Future<List<ChromeWebStoreSearchItem>> searchWebStoreExtensions(
     String rawQuery,
   ) async {
     final String q = rawQuery.trim();
-    if (q.isEmpty) return const <ChromeWebStoreCatalogItem>[];
+    if (q.isEmpty) return const <ChromeWebStoreSearchItem>[];
 
-    final List<ChromeWebStoreCatalogItem> localMatches =
-        featuredWebStoreCatalog
-            .where(
-              (ChromeWebStoreCatalogItem item) =>
-                  item.name.toLowerCase().contains(q.toLowerCase()) ||
-                  item.description.toLowerCase().contains(q.toLowerCase()) ||
-                  item.category.toLowerCase().contains(q.toLowerCase()),
-            )
-            .toList();
+    try {
+      final Uri uri = Uri.https('www.bing.com', '/search', <String, String>{
+        'q': 'site:chromewebstore.google.com/detail $q',
+        'format': 'rss',
+        'count': '20',
+      });
+      final http.Response res = await _client
+          .get(
+            uri,
+            headers: const <String, String>{
+              'User-Agent':
+                  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36',
+              'Accept': 'application/rss+xml, application/xml, text/xml',
+            },
+          )
+          .timeout(const Duration(seconds: 6));
 
-    final Map<String, Object?> bg = await NativeShieldBridge.instance
-        .searchGoogleInBackground(query: q, tab: 'cws');
-    final Object? rawWeb = bg['webResults'];
-    final Set<String> seenIds = <String>{
-      for (final ChromeWebStoreCatalogItem m in localMatches) m.extensionId,
-    };
-    final List<ChromeWebStoreCatalogItem> out = <ChromeWebStoreCatalogItem>[
-      ...localMatches,
-    ];
+      if (res.statusCode < 200 || res.statusCode >= 300) {
+        return const <ChromeWebStoreSearchItem>[];
+      }
 
-    if (rawWeb is List<Object?>) {
-      for (final Object? entry in rawWeb) {
-        if (entry is! Map<Object?, Object?>) continue;
-        final String url = entry['url']?.toString().trim() ?? '';
-        final String? extId = extractChromeWebStoreId(url);
+      final String xml = utf8.decode(res.bodyBytes, allowMalformed: true);
+      final Set<String> seenIds = <String>{};
+      final List<ChromeWebStoreSearchItem> out = <ChromeWebStoreSearchItem>[];
+
+      for (final RegExpMatch match in _rssItemPattern.allMatches(xml)) {
+        final String block = match.group(1) ?? '';
+        final String link = _extractXmlTag(block, 'link');
+        final String? extId = extractChromeWebStoreId(link);
         if (extId == null || !seenIds.add(extId)) continue;
-        String title = entry['title']?.toString().trim() ?? 'Chrome Extension';
-        title = title
-            .replaceAll(RegExp(r'\s*[-–|]\s*Chrome Web Store.*$', caseSensitive: false), '')
+        String title = _unescapeXml(_extractXmlTag(block, 'title'))
+            .replaceAll(
+              RegExp(
+                r'\s*[-–|]\s*Chrome Web Store.*$',
+                caseSensitive: false,
+              ),
+              '',
+            )
             .trim();
-        final String snippet = entry['snippet']?.toString().trim() ?? '';
+        final String desc = _unescapeXml(_extractXmlTag(block, 'description'));
         out.add(
-          ChromeWebStoreCatalogItem(
+          ChromeWebStoreSearchItem(
             extensionId: extId,
             name: title.isEmpty ? 'Chrome Extension' : title,
-            category: 'Web Store',
-            description: snippet.isEmpty
-                ? 'Official Desktop Chrome Web Store (.crx) extension'
-                : snippet,
-            storeUrl: url,
+            description: desc.isEmpty
+                ? 'Official Chrome Web Store (.crx) extension'
+                : desc,
+            storeUrl: link,
           ),
         );
       }
+      return out;
+    } catch (_) {
+      return const <ChromeWebStoreSearchItem>[];
     }
-    return out;
+  }
+
+  static String _extractXmlTag(String xml, String tag) {
+    final RegExp re = RegExp(
+      '<$tag[^>]*>([\\s\\S]*?)</$tag>',
+      caseSensitive: false,
+    );
+    final RegExpMatch? m = re.firstMatch(xml);
+    if (m == null) return '';
+    return (m.group(1) ?? '')
+        .replaceAll('<![CDATA[', '')
+        .replaceAll(']]>', '')
+        .trim();
+  }
+
+  static String _unescapeXml(String s) {
+    return s
+        .replaceAll('&amp;', '&')
+        .replaceAll('&quot;', '"')
+        .replaceAll('&#39;', "'")
+        .replaceAll('&apos;', "'")
+        .replaceAll('&lt;', '<')
+        .replaceAll('&gt;', '>')
+        .replaceAll(RegExp(r'<[^>]+>'), '')
+        .trim();
   }
 
   void _loadLocalScripts() {
@@ -382,8 +376,12 @@ class ExtensionsController extends ChangeNotifier {
       final Object? decoded = jsonDecode(raw);
       if (decoded is List<Object?>) {
         _customScripts = decoded
-            .whereType<Map<String, Object?>>()
-            .map(CustomUserscriptExtension.fromJson)
+            .whereType<Map<Object?, Object?>>()
+            .map(
+              (Map<Object?, Object?> m) => CustomUserscriptExtension.fromJson(
+                Map<String, Object?>.from(m),
+              ),
+            )
             .where((CustomUserscriptExtension e) => e.id.isNotEmpty)
             .toList();
       }
@@ -465,7 +463,7 @@ class ExtensionsController extends ChangeNotifier {
       final Map<String, Object?>? res = await NativeShieldBridge.instance
           .pickChromeExtensionFile();
       if (res == null) {
-        return null; // User cancelled picker
+        return null;
       }
       if (res['ok'] != true) {
         final String err =
@@ -536,8 +534,6 @@ class ExtensionsController extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// Synchronously builds custom script injection; combine with [buildFullInjectionForUrl]
-  /// for unpacked Desktop Chrome Extensions (.crx) content_scripts.
   String buildInjectionScriptForUrl(String? rawUrl) {
     if (rawUrl == null ||
         (!rawUrl.startsWith('http://') && !rawUrl.startsWith('https://'))) {

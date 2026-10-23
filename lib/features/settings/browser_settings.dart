@@ -8,6 +8,57 @@ import '../../core/l10n/app_strings.dart';
 import '../../core/utils/omnibox_parser.dart';
 import '../shield/native_shield_bridge.dart';
 
+enum SitePermissionType {
+  location('Location', 'Access your GPS or coarse location'),
+  camera('Camera', 'Capture video or photos on this site'),
+  microphone('Microphone', 'Record audio or voice calls'),
+  notifications('Notifications', 'Show website push alerts'),
+  popups('Pop-ups & Redirects', 'Open new windows or external redirects'),
+  javascript('JavaScript', 'Run interactive scripts on this site'),
+  protectedMedia('Protected Media', 'Play DRM-encrypted video streams');
+
+  const SitePermissionType(this.label, this.description);
+  final String label;
+  final String description;
+}
+
+enum SitePermissionDecision {
+  ask('Ask'),
+  allow('Allowed'),
+  block('Blocked');
+
+  const SitePermissionDecision(this.label);
+  final String label;
+
+  static SitePermissionDecision fromName(String? raw) {
+    for (final SitePermissionDecision d in SitePermissionDecision.values) {
+      if (d.name == raw) return d;
+    }
+    return SitePermissionDecision.ask;
+  }
+}
+
+enum QuickActionItem {
+  refresh('Refresh'),
+  bookmark('Bookmark'),
+  media('Media Grabber'),
+  pip('Picture-in-Picture'),
+  dataSaver('Ultra Data Saver'),
+  desktop('Desktop Mode'),
+  permissions('Site Permissions'),
+  extensions('Extensions');
+
+  const QuickActionItem(this.label);
+  final String label;
+
+  static QuickActionItem? fromName(String raw) {
+    for (final QuickActionItem item in QuickActionItem.values) {
+      if (item.name == raw) return item;
+    }
+    return null;
+  }
+}
+
 class SiteUsageEntry {
   const SiteUsageEntry({
     required this.domain,
@@ -132,13 +183,17 @@ class HistoryItem {
 class BrowserSettingsController extends ChangeNotifier {
   BrowserSettingsController(this._prefs) {
     _load();
+    NativeShieldBridge.instance.onBytesSaved = (int bytes) {
+      unawaited(incrementBytesSaved(bytes));
+    };
   }
 
   final SharedPreferences _prefs;
 
-  static const String _keySearchEngine = 'hb.searchEngine.v3';
+  static const String _keySearchEngine = 'hb.searchEngine.v13';
+  static const String _legacyKeySearchEngine = 'hb.searchEngine.v3';
   static const String _keyThemeMode = 'hb.themeMode.v3';
-  static const String _keyBottomBar = 'hb.bottomOmnibox.v4';
+  static const String _keyBottomBar = 'hb.bottomOmnibox.v13';
   static const String _keyShieldEnabled = 'hb.shieldEnabled';
   static const String _keyHttpsUpgrade = 'hb.httpsUpgrade';
   static const String _keyBlockThirdPartyCookies = 'hb.blockThirdPartyCookies';
@@ -148,26 +203,43 @@ class BrowserSettingsController extends ChangeNotifier {
   static const String _keyDesktopMode = 'hb.desktopMode';
   static const String _keyTextScalePercent = 'hb.textScalePercent';
   static const String _keyTotalBlocked = 'hb.totalBlocked';
+  static const String _keyBytesSaved = 'hb.bytesSaved.v13';
+  static const String _keyRedirectsBlocked = 'hb.redirectsBlocked.v13';
   static const String _keyTrustedHosts = 'hb.trustedHosts';
   static const String _keyJsDisabledHosts = 'hb.jsDisabledHosts.v8';
   static const String _keyPopupAllowedHosts = 'hb.popupAllowedHosts.v8';
+  static const String _keySitePermissions = 'hb.sitePermissions.v13';
   static const String _keyRecentSearches = 'hb.recentSearches.v8';
   static const String _keyLanguage = 'hb.language.v8';
   static const String _keyGesturesEnabled = 'hb.gesturesEnabled.v8';
   static const String _keyEdgeSwipe = 'hb.edgeSwipe.v8';
   static const String _keyBarSwipeTabs = 'hb.barSwipeTabs.v8';
+  static const String _keyQuickActionEnabled = 'hb.quickActionEnabled.v13';
+  static const String _keyQuickActionLeft = 'hb.quickActionLeft.v13';
+  static const String _keyQuickActionItems = 'hb.quickActionItems.v13';
+  static const String _keyUltraDataSaver = 'hb.ultraDataSaver.v13';
+  static const String _keyBgMedia = 'hb.bgMedia.v13';
+  static const String _keyAutoPip = 'hb.autoPip.v13';
+  static const String _keyTabHibernation = 'hb.tabHibernation.v13';
+  static const String _keyTabHibernationMins = 'hb.tabHibernationMins.v13';
+  static const String _keyBiometricIncognito = 'hb.biometricIncognito.v13';
+  static const String _keyBiometricApp = 'hb.biometricApp.v13';
+  static const String _keyAntiRedirect = 'hb.antiRedirect.v13';
   static const String _keyDownloadNotifs = 'hb.downloadNotifs.v8';
+  static const String _keyMediaReadyNotifs = 'hb.mediaReadyNotifs.v13';
+  static const String _keyBgPlayNotifs = 'hb.bgPlayNotifs.v13';
+  static const String _keySecurityAlertNotifs = 'hb.securityAlertNotifs.v13';
   static const String _keyWebNotifs = 'hb.webNotifs.v8';
   static const String _keySiteUsage = 'hb.siteUsage.v3';
   static const String _keyHiddenDomains = 'hb.hiddenQuickDomains.v3';
   static const String _keyBookmarks = 'hb.bookmarks.v3';
   static const String _keyHistory = 'hb.history.v3';
 
-  // Heaven Search is ALWAYS the default search engine, and TOP dock is ALWAYS default.
-  SearchEngine _searchEngine = SearchEngine.heaven;
+  // Google is ALWAYS the default search engine, and BOTTOM navigation is ALWAYS default!
+  SearchEngine _searchEngine = SearchEngine.google;
   ThemeMode _themeMode = ThemeMode.dark;
   BrowserLanguage _language = BrowserLanguage.en;
-  bool _bottomOmnibox = false;
+  bool _bottomOmnibox = true;
   bool _shieldEnabled = true;
   bool _httpsUpgrade = true;
   bool _blockThirdPartyCookies = true;
@@ -178,14 +250,35 @@ class BrowserSettingsController extends ChangeNotifier {
   bool _gesturesEnabled = true;
   bool _edgeSwipeNavigation = true;
   bool _barSwipeSwitchTabs = true;
+  bool _quickActionEnabled = true;
+  bool _quickActionLeftHanded = false;
+  List<QuickActionItem> _quickActionItems = List<QuickActionItem>.of(
+    QuickActionItem.values,
+  );
+  bool _ultraDataSaverMode = false;
+  bool _backgroundMediaEnabled = true;
+  bool _autoPipEnabled = true;
+  bool _tabHibernationEnabled = true;
+  int _tabHibernationMinutes = 3;
+  bool _biometricLockIncognito = false;
+  bool _biometricLockApp = false;
+  bool _antiRedirectProtection = true;
   bool _downloadNotificationsEnabled = true;
+  bool _mediaReadyNotificationsEnabled = true;
+  bool _backgroundPlayNotificationEnabled = true;
+  bool _securityRedirectAlertsEnabled = true;
   bool _webNotificationsEnabled = false;
   int _textScalePercent = 100;
   int _totalTrackersBlocked = 0;
+  int _estimatedBytesSaved = 0;
+  int _antiRedirectsBlockedCount = 0;
 
   final Set<String> _trustedHosts = <String>{};
   final Set<String> _jsDisabledHosts = <String>{};
   final Set<String> _popupAllowedHosts = <String>{};
+  final Map<String, Map<SitePermissionType, SitePermissionDecision>>
+  _sitePermissions =
+      <String, Map<SitePermissionType, SitePermissionDecision>>{};
   List<String> _recentSearches = <String>[];
   final Map<String, SiteUsageEntry> _siteUsageByDomain =
       <String, SiteUsageEntry>{};
@@ -208,18 +301,46 @@ class BrowserSettingsController extends ChangeNotifier {
   bool get gesturesEnabled => _gesturesEnabled;
   bool get edgeSwipeNavigation => _edgeSwipeNavigation;
   bool get barSwipeSwitchTabs => _barSwipeSwitchTabs;
+  bool get quickActionEnabled => _quickActionEnabled;
+  bool get quickActionLeftHanded => _quickActionLeftHanded;
+  List<QuickActionItem> get quickActionItems =>
+      List<QuickActionItem>.unmodifiable(_quickActionItems);
+  bool get ultraDataSaverMode => _ultraDataSaverMode;
+  bool get backgroundMediaEnabled => _backgroundMediaEnabled;
+  bool get autoPipEnabled => _autoPipEnabled;
+  bool get tabHibernationEnabled => _tabHibernationEnabled;
+  int get tabHibernationMinutes => _tabHibernationMinutes;
+  bool get biometricLockIncognito => _biometricLockIncognito;
+  bool get biometricLockApp => _biometricLockApp;
+  bool get antiRedirectProtection => _antiRedirectProtection;
   bool get downloadNotificationsEnabled => _downloadNotificationsEnabled;
+  bool get mediaReadyNotificationsEnabled => _mediaReadyNotificationsEnabled;
+  bool get backgroundPlayNotificationEnabled =>
+      _backgroundPlayNotificationEnabled;
+  bool get securityRedirectAlertsEnabled => _securityRedirectAlertsEnabled;
   bool get webNotificationsEnabled => _webNotificationsEnabled;
   int get textScalePercent => _textScalePercent;
   int get totalTrackersBlocked => _totalTrackersBlocked;
+  int get estimatedBytesSaved => _estimatedBytesSaved;
+  int get antiRedirectsBlockedCount => _antiRedirectsBlockedCount;
   Set<String> get trustedHosts => Set<String>.unmodifiable(_trustedHosts);
   List<String> get recentSearches => List<String>.unmodifiable(_recentSearches);
   List<BookmarkItem> get bookmarks =>
       List<BookmarkItem>.unmodifiable(_bookmarks);
   List<HistoryItem> get history => List<HistoryItem>.unmodifiable(_history);
 
-  /// Returns ONLY websites actually visited or pinned by the user (zero starter clutter),
-  /// automatically ranked by pin status and visit frequency.
+  String get formattedDataSaved {
+    final int b = _estimatedBytesSaved;
+    if (b <= 0) return '0 KB';
+    if (b < 1024 * 1024) {
+      return '${(b / 1024).toStringAsFixed(1)} KB';
+    }
+    if (b < 1024 * 1024 * 1024) {
+      return '${(b / (1024 * 1024)).toStringAsFixed(1)} MB';
+    }
+    return '${(b / (1024 * 1024 * 1024)).toStringAsFixed(2)} GB';
+  }
+
   List<SiteUsageEntry> get quickLaunchSites {
     final List<SiteUsageEntry> pinned = <SiteUsageEntry>[];
     final List<SiteUsageEntry> frequent = <SiteUsageEntry>[];
@@ -253,14 +374,17 @@ class BrowserSettingsController extends ChangeNotifier {
   }
 
   void _load() {
-    _searchEngine = SearchEngine.fromName(_prefs.getString(_keySearchEngine));
+    final String? savedEngine =
+        _prefs.getString(_keySearchEngine) ??
+        _prefs.getString(_legacyKeySearchEngine);
+    _searchEngine = SearchEngine.fromName(savedEngine);
     _themeMode = switch (_prefs.getString(_keyThemeMode)) {
       'light' => ThemeMode.light,
       'system' => ThemeMode.system,
       _ => ThemeMode.dark,
     };
-    // Default false = Top Dock Bar
-    _bottomOmnibox = _prefs.getBool(_keyBottomBar) ?? false;
+    // Ergonomic Bottom Bar is ALWAYS true by default!
+    _bottomOmnibox = _prefs.getBool(_keyBottomBar) ?? true;
     _shieldEnabled = _prefs.getBool(_keyShieldEnabled) ?? true;
     _httpsUpgrade = _prefs.getBool(_keyHttpsUpgrade) ?? true;
     _blockThirdPartyCookies =
@@ -274,12 +398,46 @@ class BrowserSettingsController extends ChangeNotifier {
       175,
     );
     _totalTrackersBlocked = _prefs.getInt(_keyTotalBlocked) ?? 0;
+    _estimatedBytesSaved = _prefs.getInt(_keyBytesSaved) ?? 0;
+    _antiRedirectsBlockedCount = _prefs.getInt(_keyRedirectsBlocked) ?? 0;
     _language = BrowserLanguage.fromCode(_prefs.getString(_keyLanguage));
     _gesturesEnabled = _prefs.getBool(_keyGesturesEnabled) ?? true;
     _edgeSwipeNavigation = _prefs.getBool(_keyEdgeSwipe) ?? true;
     _barSwipeSwitchTabs = _prefs.getBool(_keyBarSwipeTabs) ?? true;
+    _quickActionEnabled = _prefs.getBool(_keyQuickActionEnabled) ?? true;
+    _quickActionLeftHanded = _prefs.getBool(_keyQuickActionLeft) ?? false;
+    final List<String>? savedQuickItems = _prefs.getStringList(
+      _keyQuickActionItems,
+    );
+    if (savedQuickItems != null && savedQuickItems.isNotEmpty) {
+      final List<QuickActionItem> parsed = savedQuickItems
+          .map(QuickActionItem.fromName)
+          .whereType<QuickActionItem>()
+          .toList();
+      if (parsed.isNotEmpty) {
+        _quickActionItems = parsed;
+      }
+    }
+    _ultraDataSaverMode = _prefs.getBool(_keyUltraDataSaver) ?? false;
+    _backgroundMediaEnabled = _prefs.getBool(_keyBgMedia) ?? true;
+    _autoPipEnabled = _prefs.getBool(_keyAutoPip) ?? true;
+    _tabHibernationEnabled = _prefs.getBool(_keyTabHibernation) ?? true;
+    _tabHibernationMinutes = (_prefs.getInt(_keyTabHibernationMins) ?? 3).clamp(
+      1,
+      30,
+    );
+    _biometricLockIncognito =
+        _prefs.getBool(_keyBiometricIncognito) ?? false;
+    _biometricLockApp = _prefs.getBool(_keyBiometricApp) ?? false;
+    _antiRedirectProtection = _prefs.getBool(_keyAntiRedirect) ?? true;
     _downloadNotificationsEnabled =
         _prefs.getBool(_keyDownloadNotifs) ?? true;
+    _mediaReadyNotificationsEnabled =
+        _prefs.getBool(_keyMediaReadyNotifs) ?? true;
+    _backgroundPlayNotificationEnabled =
+        _prefs.getBool(_keyBgPlayNotifs) ?? true;
+    _securityRedirectAlertsEnabled =
+        _prefs.getBool(_keySecurityAlertNotifs) ?? true;
     _webNotificationsEnabled = _prefs.getBool(_keyWebNotifs) ?? false;
 
     final List<String>? savedJsDisabled = _prefs.getStringList(
@@ -298,6 +456,33 @@ class BrowserSettingsController extends ChangeNotifier {
       _popupAllowedHosts
         ..clear()
         ..addAll(savedPopupAllowed);
+    }
+
+    final String? rawPerms = _prefs.getString(_keySitePermissions);
+    if (rawPerms != null && rawPerms.isNotEmpty) {
+      try {
+        final Object? decoded = jsonDecode(rawPerms);
+        if (decoded is Map<String, Object?>) {
+          for (final MapEntry<String, Object?> hostEntry in decoded.entries) {
+            final Object? permMap = hostEntry.value;
+            if (permMap is Map<String, Object?>) {
+              final Map<SitePermissionType, SitePermissionDecision> parsed =
+                  <SitePermissionType, SitePermissionDecision>{};
+              for (final SitePermissionType t in SitePermissionType.values) {
+                final String? v = permMap[t.name]?.toString();
+                if (v != null) {
+                  parsed[t] = SitePermissionDecision.fromName(v);
+                }
+              }
+              if (parsed.isNotEmpty) {
+                _sitePermissions[hostEntry.key] = parsed;
+              }
+            }
+          }
+        }
+      } on FormatException {
+        _sitePermissions.clear();
+      }
     }
 
     final List<String>? savedRecent = _prefs.getStringList(_keyRecentSearches);
@@ -383,6 +568,12 @@ class BrowserSettingsController extends ChangeNotifier {
       desktopMode: _desktopMode,
       trustedHosts: _trustedHosts,
       sendDntAndGpc: _sendDntAndGpc,
+      ultraDataSaverMode: _ultraDataSaverMode,
+      backgroundMediaEnabled: _backgroundMediaEnabled,
+      autoPipEnabled: _autoPipEnabled,
+      antiRedirectProtection: _antiRedirectProtection,
+      webNotificationsEnabled: _webNotificationsEnabled,
+      backgroundPlayNotificationEnabled: _backgroundPlayNotificationEnabled,
     );
   }
 
@@ -404,6 +595,140 @@ class BrowserSettingsController extends ChangeNotifier {
     await _prefs.setStringList(_keyTrustedHosts, _trustedHosts.toList());
     _pushNativeShieldConfig();
     notifyListeners();
+  }
+
+  SitePermissionDecision getSitePermission(
+    String? host,
+    SitePermissionType type,
+  ) {
+    final String clean = OmniboxParser.cleanDomain(host);
+    if (clean.isEmpty) {
+      return switch (type) {
+        SitePermissionType.javascript =>
+          _javascriptEnabled
+              ? SitePermissionDecision.allow
+              : SitePermissionDecision.block,
+        SitePermissionType.popups => SitePermissionDecision.block,
+        SitePermissionType.protectedMedia => SitePermissionDecision.allow,
+        SitePermissionType.notifications =>
+          _webNotificationsEnabled
+              ? SitePermissionDecision.ask
+              : SitePermissionDecision.block,
+        _ => SitePermissionDecision.ask,
+      };
+    }
+    if (type == SitePermissionType.javascript) {
+      return isJavaScriptAllowedForHost(clean)
+          ? SitePermissionDecision.allow
+          : SitePermissionDecision.block;
+    }
+    if (type == SitePermissionType.popups) {
+      return arePopupsBlockedForHost(clean)
+          ? SitePermissionDecision.block
+          : SitePermissionDecision.allow;
+    }
+    final SitePermissionDecision? explicit = _sitePermissions[clean]?[type];
+    if (explicit != null) {
+      return explicit;
+    }
+    if (type == SitePermissionType.protectedMedia) {
+      return SitePermissionDecision.allow;
+    }
+    if (type == SitePermissionType.notifications && !_webNotificationsEnabled) {
+      return SitePermissionDecision.block;
+    }
+    return SitePermissionDecision.ask;
+  }
+
+  Future<void> setSitePermission(
+    String host,
+    SitePermissionType type,
+    SitePermissionDecision decision,
+  ) async {
+    final String clean = OmniboxParser.cleanDomain(host);
+    if (clean.isEmpty) return;
+    if (type == SitePermissionType.javascript) {
+      if (decision == SitePermissionDecision.block) {
+        _jsDisabledHosts.add(clean);
+      } else {
+        _jsDisabledHosts.remove(clean);
+      }
+      await _prefs.setStringList(
+        _keyJsDisabledHosts,
+        _jsDisabledHosts.toList(),
+      );
+      notifyListeners();
+      return;
+    }
+    if (type == SitePermissionType.popups) {
+      if (decision == SitePermissionDecision.allow) {
+        _popupAllowedHosts.add(clean);
+      } else {
+        _popupAllowedHosts.remove(clean);
+      }
+      await _prefs.setStringList(
+        _keyPopupAllowedHosts,
+        _popupAllowedHosts.toList(),
+      );
+      notifyListeners();
+      return;
+    }
+    final Map<SitePermissionType, SitePermissionDecision> map =
+        _sitePermissions.putIfAbsent(
+          clean,
+          () => <SitePermissionType, SitePermissionDecision>{},
+        );
+    if (decision == SitePermissionDecision.ask) {
+      map.remove(type);
+      if (map.isEmpty) {
+        _sitePermissions.remove(clean);
+      }
+    } else {
+      map[type] = decision;
+    }
+    await _persistSitePermissions();
+    notifyListeners();
+  }
+
+  Future<void> revokeSitePermission(
+    String host,
+    SitePermissionType type,
+  ) async {
+    await setSitePermission(host, type, SitePermissionDecision.block);
+  }
+
+  Future<void> revokeAllPermissionsForSite(String host) async {
+    final String clean = OmniboxParser.cleanDomain(host);
+    if (clean.isEmpty) return;
+    _sitePermissions[clean] = <SitePermissionType, SitePermissionDecision>{
+      SitePermissionType.location: SitePermissionDecision.block,
+      SitePermissionType.camera: SitePermissionDecision.block,
+      SitePermissionType.microphone: SitePermissionDecision.block,
+      SitePermissionType.notifications: SitePermissionDecision.block,
+      SitePermissionType.protectedMedia: SitePermissionDecision.block,
+    };
+    _popupAllowedHosts.remove(clean);
+    await _prefs.setStringList(
+      _keyPopupAllowedHosts,
+      _popupAllowedHosts.toList(),
+    );
+    await _persistSitePermissions();
+    notifyListeners();
+  }
+
+  Future<void> _persistSitePermissions() async {
+    final Map<String, Map<String, String>> out =
+        <String, Map<String, String>>{};
+    for (final MapEntry<String, Map<SitePermissionType, SitePermissionDecision>>
+        e
+        in _sitePermissions.entries) {
+      out[e.key] = <String, String>{
+        for (final MapEntry<SitePermissionType, SitePermissionDecision> p
+            in e.value.entries)
+          p.key.name: p.value.name,
+      };
+    }
+    await _prefs.setString(_keySitePermissions, jsonEncode(out));
   }
 
   Future<void> recordPageVisit({
@@ -523,7 +848,7 @@ class BrowserSettingsController extends ChangeNotifier {
     required String url,
     required String title,
   }) async {
-    if (url.isEmpty || OmniboxParser.isHeavenSearchUrl(url)) {
+    if (url.isEmpty) {
       return false;
     }
     final int idx = _bookmarks.indexWhere((BookmarkItem b) => b.url == url);
@@ -604,17 +929,41 @@ class BrowserSettingsController extends ChangeNotifier {
 
   int _lastBlockedNotifyMs = 0;
 
-  Future<void> incrementBlockedCount([int delta = 1]) async {
+  Future<void> incrementBlockedCount([
+    int delta = 1,
+    int bytesSavedDelta = 14200,
+  ]) async {
     if (delta <= 0) {
       return;
     }
     _totalTrackersBlocked += delta;
+    if (bytesSavedDelta > 0) {
+      _estimatedBytesSaved += bytesSavedDelta;
+      await _prefs.setInt(_keyBytesSaved, _estimatedBytesSaved);
+    }
     await _prefs.setInt(_keyTotalBlocked, _totalTrackersBlocked);
     final int now = DateTime.now().millisecondsSinceEpoch;
     if (now - _lastBlockedNotifyMs >= 350) {
       _lastBlockedNotifyMs = now;
       notifyListeners();
     }
+  }
+
+  Future<void> incrementBytesSaved(int bytes) async {
+    if (bytes <= 0) return;
+    _estimatedBytesSaved += bytes;
+    await _prefs.setInt(_keyBytesSaved, _estimatedBytesSaved);
+    final int now = DateTime.now().millisecondsSinceEpoch;
+    if (now - _lastBlockedNotifyMs >= 500) {
+      _lastBlockedNotifyMs = now;
+      notifyListeners();
+    }
+  }
+
+  Future<void> incrementRedirectBlockedCount() async {
+    _antiRedirectsBlockedCount += 1;
+    await _prefs.setInt(_keyRedirectsBlocked, _antiRedirectsBlockedCount);
+    notifyListeners();
   }
 
   Future<void> setSearchEngine(SearchEngine engine) async {
@@ -637,6 +986,88 @@ class BrowserSettingsController extends ChangeNotifier {
   Future<void> setBottomOmnibox(bool value) async {
     _bottomOmnibox = value;
     await _prefs.setBool(_keyBottomBar, value);
+    notifyListeners();
+  }
+
+  Future<void> setQuickActionEnabled(bool value) async {
+    _quickActionEnabled = value;
+    await _prefs.setBool(_keyQuickActionEnabled, value);
+    notifyListeners();
+  }
+
+  Future<void> setQuickActionLeftHanded(bool value) async {
+    _quickActionLeftHanded = value;
+    await _prefs.setBool(_keyQuickActionLeft, value);
+    notifyListeners();
+  }
+
+  Future<void> toggleQuickActionItem(QuickActionItem item) async {
+    final List<QuickActionItem> next = List<QuickActionItem>.of(
+      _quickActionItems,
+    );
+    if (next.contains(item)) {
+      if (next.length <= 2) return;
+      next.remove(item);
+    } else {
+      next.add(item);
+    }
+    _quickActionItems = next;
+    await _prefs.setStringList(
+      _keyQuickActionItems,
+      _quickActionItems.map((QuickActionItem e) => e.name).toList(),
+    );
+    notifyListeners();
+  }
+
+  Future<void> setUltraDataSaverMode(bool value) async {
+    _ultraDataSaverMode = value;
+    await _prefs.setBool(_keyUltraDataSaver, value);
+    _pushNativeShieldConfig();
+    notifyListeners();
+  }
+
+  Future<void> setBackgroundMediaEnabled(bool value) async {
+    _backgroundMediaEnabled = value;
+    await _prefs.setBool(_keyBgMedia, value);
+    _pushNativeShieldConfig();
+    notifyListeners();
+  }
+
+  Future<void> setAutoPipEnabled(bool value) async {
+    _autoPipEnabled = value;
+    await _prefs.setBool(_keyAutoPip, value);
+    _pushNativeShieldConfig();
+    notifyListeners();
+  }
+
+  Future<void> setTabHibernationEnabled(bool value) async {
+    _tabHibernationEnabled = value;
+    await _prefs.setBool(_keyTabHibernation, value);
+    notifyListeners();
+  }
+
+  Future<void> setTabHibernationMinutes(int minutes) async {
+    _tabHibernationMinutes = minutes.clamp(1, 30);
+    await _prefs.setInt(_keyTabHibernationMins, _tabHibernationMinutes);
+    notifyListeners();
+  }
+
+  Future<void> setBiometricLockIncognito(bool value) async {
+    _biometricLockIncognito = value;
+    await _prefs.setBool(_keyBiometricIncognito, value);
+    notifyListeners();
+  }
+
+  Future<void> setBiometricLockApp(bool value) async {
+    _biometricLockApp = value;
+    await _prefs.setBool(_keyBiometricApp, value);
+    notifyListeners();
+  }
+
+  Future<void> setAntiRedirectProtection(bool value) async {
+    _antiRedirectProtection = value;
+    await _prefs.setBool(_keyAntiRedirect, value);
+    _pushNativeShieldConfig();
     notifyListeners();
   }
 
@@ -723,9 +1154,29 @@ class BrowserSettingsController extends ChangeNotifier {
     notifyListeners();
   }
 
+  Future<void> setMediaReadyNotificationsEnabled(bool value) async {
+    _mediaReadyNotificationsEnabled = value;
+    await _prefs.setBool(_keyMediaReadyNotifs, value);
+    notifyListeners();
+  }
+
+  Future<void> setBackgroundPlayNotificationEnabled(bool value) async {
+    _backgroundPlayNotificationEnabled = value;
+    await _prefs.setBool(_keyBgPlayNotifs, value);
+    _pushNativeShieldConfig();
+    notifyListeners();
+  }
+
+  Future<void> setSecurityRedirectAlertsEnabled(bool value) async {
+    _securityRedirectAlertsEnabled = value;
+    await _prefs.setBool(_keySecurityAlertNotifs, value);
+    notifyListeners();
+  }
+
   Future<void> setWebNotificationsEnabled(bool value) async {
     _webNotificationsEnabled = value;
     await _prefs.setBool(_keyWebNotifs, value);
+    _pushNativeShieldConfig();
     notifyListeners();
   }
 
@@ -744,8 +1195,7 @@ class BrowserSettingsController extends ChangeNotifier {
     final String clean = rawQuery.trim();
     if (clean.isEmpty ||
         clean.startsWith('http://') ||
-        clean.startsWith('https://') ||
-        clean.startsWith('heaven://')) {
+        clean.startsWith('https://')) {
       return;
     }
     _recentSearches = <String>[

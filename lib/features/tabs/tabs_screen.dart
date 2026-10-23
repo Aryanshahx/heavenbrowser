@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../../core/theme/app_theme.dart';
 import '../../core/utils/omnibox_parser.dart';
 import '../../core/widgets/site_logo.dart';
+import '../shield/native_shield_bridge.dart';
 import 'tab_manager.dart';
 
 class TabsScreen extends StatefulWidget {
@@ -107,11 +108,32 @@ class TabsScreen extends StatefulWidget {
 class _TabsScreenState extends State<TabsScreen> {
   late bool _viewingIncognito;
   String? _selectedGroupId;
+  bool _authenticatingIncognito = false;
 
   @override
   void initState() {
     super.initState();
     _viewingIncognito = widget.tabManager.isActiveIncognito;
+  }
+
+  Future<void> _unlockIncognitoWithBiometrics() async {
+    if (_authenticatingIncognito) return;
+    setState(() => _authenticatingIncognito = true);
+    final bool ok = await NativeShieldBridge.instance.authenticateBiometric(
+      reason: 'Unlock Private Incognito Tabs in Heaven Browser',
+    );
+    if (!mounted) return;
+    setState(() => _authenticatingIncognito = false);
+    if (ok) {
+      widget.tabManager.markIncognitoUnlocked(true);
+    } else {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Biometric authentication cancelled or failed.'),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    }
   }
 
   @override
@@ -133,6 +155,8 @@ class _TabsScreenState extends State<TabsScreen> {
                   .where((BrowserTab t) => t.groupId == _selectedGroupId)
                   .toList(growable: false)
             : allModeTabs;
+        final bool incognitoLocked =
+            _viewingIncognito && widget.tabManager.isIncognitoLocked;
 
         return Theme(
           data: theme,
@@ -145,9 +169,33 @@ class _TabsScreenState extends State<TabsScreen> {
               ),
               titleSpacing: 0,
               title: Padding(
-                padding: const EdgeInsets.only(right: 14),
+                padding: const EdgeInsets.only(right: 8),
                 child: _buildModeToggleBar(colors, isDark),
               ),
+              actions: <Widget>[
+                if (!_viewingIncognito &&
+                    widget.tabManager.normalTabs.length > 1)
+                  IconButton(
+                    tooltip: 'Hibernate Inactive Tabs Now (Save RAM)',
+                    icon: const Icon(Icons.bedtime_outlined, size: 20),
+                    onPressed: () async {
+                      final int n = await widget.tabManager
+                          .hibernateInactiveTabsNow(threshold: Duration.zero);
+                      if (context.mounted) {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          SnackBar(
+                            content: Text(
+                              n > 0
+                                  ? 'Put $n inactive tab(s) to sleep to free RAM!'
+                                  : 'Inactive tabs are already sleeping.',
+                            ),
+                            behavior: SnackBarBehavior.floating,
+                          ),
+                        );
+                      }
+                    },
+                  ),
+              ],
             ),
             body: SafeArea(
               child: Column(
@@ -168,70 +216,139 @@ class _TabsScreenState extends State<TabsScreen> {
                           color: AppTheme.incognitoCyan.withValues(alpha: 0.35),
                         ),
                       ),
-                      child: const Row(
+                      child: Row(
                         children: <Widget>[
-                          Icon(
+                          const Icon(
                             Icons.shield_moon_rounded,
                             size: 18,
                             color: AppTheme.incognitoCyan,
                           ),
-                          SizedBox(width: 10),
-                          Expanded(
+                          const SizedBox(width: 10),
+                          const Expanded(
                             child: Text(
                               'Incognito Mode: History, search queries, and site usage are never saved.',
                               style: TextStyle(fontSize: 12, height: 1.35),
                             ),
                           ),
+                          if (widget.tabManager.settings.biometricLockIncognito &&
+                              !incognitoLocked)
+                            IconButton(
+                              tooltip: 'Lock Incognito Tabs',
+                              visualDensity: VisualDensity.compact,
+                              icon: const Icon(
+                                Icons.lock_outline_rounded,
+                                size: 18,
+                                color: AppTheme.incognitoCyan,
+                              ),
+                              onPressed: () =>
+                                  widget.tabManager.markIncognitoUnlocked(false),
+                            ),
                         ],
                       ),
                     ),
                   Expanded(
-                    child: tabs.isEmpty
-                        ? _buildEmptyState(context, colors)
-                        : LayoutBuilder(
-                            builder:
-                                (
-                                  BuildContext context,
-                                  BoxConstraints constraints,
-                                ) {
-                                  final int columns =
-                                      constraints.maxWidth >= 620 ? 3 : 2;
-                                  return GridView.builder(
-                                    padding: const EdgeInsets.fromLTRB(
-                                      12,
-                                      8,
-                                      12,
-                                      18,
-                                    ),
-                                    gridDelegate:
-                                        SliverGridDelegateWithFixedCrossAxisCount(
-                                          crossAxisCount: columns,
-                                          mainAxisSpacing: 12,
-                                          crossAxisSpacing: 12,
-                                          // Tall phone-screen aspect ratio so full tab screens display!
-                                          childAspectRatio: 0.58,
-                                        ),
-                                    itemCount: tabs.length,
-                                    itemBuilder:
-                                        (BuildContext context, int index) {
-                                          return _buildFullTabWindowCard(
-                                            context,
-                                            colors,
-                                            isDark,
-                                            tabs[index],
-                                          );
-                                        },
-                                  );
-                                },
-                          ),
+                    child: incognitoLocked
+                        ? _buildBiometricLockState(colors)
+                        : (tabs.isEmpty
+                              ? _buildEmptyState(context, colors)
+                              : LayoutBuilder(
+                                  builder:
+                                      (
+                                        BuildContext context,
+                                        BoxConstraints constraints,
+                                      ) {
+                                        final int columns =
+                                            constraints.maxWidth >= 620 ? 3 : 2;
+                                        return GridView.builder(
+                                          padding: const EdgeInsets.fromLTRB(
+                                            12,
+                                            8,
+                                            12,
+                                            18,
+                                          ),
+                                          gridDelegate:
+                                              SliverGridDelegateWithFixedCrossAxisCount(
+                                                crossAxisCount: columns,
+                                                mainAxisSpacing: 12,
+                                                crossAxisSpacing: 12,
+                                                childAspectRatio: 0.58,
+                                              ),
+                                          itemCount: tabs.length,
+                                          itemBuilder:
+                                              (
+                                                BuildContext context,
+                                                int index,
+                                              ) {
+                                                return _buildFullTabWindowCard(
+                                                  context,
+                                                  colors,
+                                                  isDark,
+                                                  tabs[index],
+                                                );
+                                              },
+                                        );
+                                      },
+                                )),
                   ),
-                  _buildBottomBar(context, colors, tabs),
+                  if (!incognitoLocked) _buildBottomBar(context, colors, tabs),
                 ],
               ),
             ),
           ),
         );
       },
+    );
+  }
+
+  Widget _buildBiometricLockState(ColorScheme colors) {
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(28),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: <Widget>[
+            Container(
+              width: 72,
+              height: 72,
+              decoration: BoxDecoration(
+                color: AppTheme.incognitoCyan.withValues(alpha: 0.14),
+                borderRadius: BorderRadius.circular(22),
+              ),
+              child: const Icon(
+                Icons.fingerprint_rounded,
+                size: 38,
+                color: AppTheme.incognitoCyan,
+              ),
+            ),
+            const SizedBox(height: 16),
+            const Text(
+              'Incognito Tabs Locked',
+              style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800),
+            ),
+            const SizedBox(height: 6),
+            Text(
+              'Verify your fingerprint, face, or device PIN to view private Incognito tabs.',
+              textAlign: TextAlign.center,
+              style: TextStyle(
+                fontSize: 13,
+                color: colors.onSurfaceVariant,
+                height: 1.4,
+              ),
+            ),
+            const SizedBox(height: 18),
+            FilledButton.icon(
+              key: const Key('unlock_incognito_biometric_button'),
+              onPressed: _authenticatingIncognito
+                  ? null
+                  : _unlockIncognitoWithBiometrics,
+              icon: const Icon(Icons.fingerprint_rounded),
+              label: Text(
+                _authenticatingIncognito ? 'Verifying...' : 'Unlock Incognito',
+              ),
+            ),
+          ],
+        ),
+      ),
     );
   }
 
@@ -262,7 +379,12 @@ class _TabsScreenState extends State<TabsScreen> {
               icon: Icons.shield_moon_rounded,
               label: 'Incognito (${widget.tabManager.incognitoTabs.length})',
               accent: AppTheme.incognitoCyan,
-              onTap: () => setState(() => _viewingIncognito = true),
+              onTap: () {
+                setState(() => _viewingIncognito = true);
+                if (widget.tabManager.isIncognitoLocked) {
+                  _unlockIncognitoWithBiometrics();
+                }
+              },
             ),
           ),
         ],
@@ -324,6 +446,8 @@ class _TabsScreenState extends State<TabsScreen> {
     BrowserTab tab,
   ) {
     final bool isActive = widget.tabManager.activeTab.id == tab.id;
+    final bool isSleeping = tab.engine.isHibernated;
+    final bool isPlayingAudio = tab.engine.isMediaPlaying;
     final Color cardBg = tab.isIncognito
         ? const Color(0xFF0D1B22)
         : (isDark ? AppTheme.navySurface : Colors.white);
@@ -361,7 +485,6 @@ class _TabsScreenState extends State<TabsScreen> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: <Widget>[
-              // Compact window title bar
               Container(
                 height: 36,
                 padding: const EdgeInsets.only(left: 8, right: 2),
@@ -398,6 +521,24 @@ class _TabsScreenState extends State<TabsScreen> {
                         ),
                       ),
                     ),
+                    if (isPlayingAudio)
+                      Padding(
+                        padding: const EdgeInsets.only(right: 2),
+                        child: Icon(
+                          Icons.volume_up_rounded,
+                          size: 14,
+                          color: AppTheme.shieldEmerald,
+                        ),
+                      )
+                    else if (isSleeping)
+                      Padding(
+                        padding: const EdgeInsets.only(right: 2),
+                        child: Icon(
+                          Icons.bedtime_rounded,
+                          size: 13,
+                          color: colors.primary,
+                        ),
+                      ),
                     IconButton(
                       icon: const Icon(Icons.close_rounded, size: 16),
                       visualDensity: VisualDensity.compact,
@@ -412,7 +553,6 @@ class _TabsScreenState extends State<TabsScreen> {
                   ],
                 ),
               ),
-              // Full-screen captured viewport of the tab!
               Expanded(
                 child: Stack(
                   fit: StackFit.expand,
@@ -427,7 +567,6 @@ class _TabsScreenState extends State<TabsScreen> {
                       )
                     else
                       _buildSimulatedFullPageFrame(colors, isDark, tab),
-                    // Subtle bottom gradient bar with URL & active indicator
                     Positioned(
                       left: 0,
                       right: 0,
@@ -476,6 +615,25 @@ class _TabsScreenState extends State<TabsScreen> {
                                     color: colors.onPrimary,
                                   ),
                                 ),
+                              )
+                            else if (isSleeping)
+                              Container(
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 5,
+                                  vertical: 1.5,
+                                ),
+                                decoration: BoxDecoration(
+                                  color: Colors.blueGrey.shade800,
+                                  borderRadius: BorderRadius.circular(5),
+                                ),
+                                child: const Text(
+                                  'SLEEP',
+                                  style: TextStyle(
+                                    fontSize: 8.5,
+                                    fontWeight: FontWeight.w900,
+                                    color: Colors.white,
+                                  ),
+                                ),
                               ),
                           ],
                         ),
@@ -491,8 +649,6 @@ class _TabsScreenState extends State<TabsScreen> {
     );
   }
 
-  /// Fallback full-page miniature preview when a tab was created in the background
-  /// before painting its first live screenshot.
   Widget _buildSimulatedFullPageFrame(
     ColorScheme colors,
     bool isDark,
@@ -510,7 +666,6 @@ class _TabsScreenState extends State<TabsScreen> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: <Widget>[
-          // Miniature address bar
           Container(
             height: 20,
             padding: const EdgeInsets.symmetric(horizontal: 7),

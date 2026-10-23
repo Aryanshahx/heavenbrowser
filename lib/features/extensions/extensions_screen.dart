@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../../core/theme/app_theme.dart';
 import '../browser/engine/browser_engine.dart';
+import '../shield/native_shield_bridge.dart';
 import 'extension_popup_sheet.dart';
 import 'extensions_controller.dart';
 
@@ -27,8 +28,7 @@ class _ExtensionsScreenState extends State<ExtensionsScreen> {
   final TextEditingController _storeInputController = TextEditingController();
   bool _searchingStore = false;
   String _lastSearchQuery = '';
-  List<ChromeWebStoreCatalogItem> _searchResults =
-      <ChromeWebStoreCatalogItem>[];
+  List<ChromeWebStoreSearchItem> _searchResults = <ChromeWebStoreSearchItem>[];
 
   @override
   void dispose() {
@@ -40,18 +40,16 @@ class _ExtensionsScreenState extends State<ExtensionsScreen> {
     final String trimmed = raw.trim();
     if (trimmed.isEmpty) return;
 
-    // If user pasted a Chrome Web Store link or 32-char ID -> install .crx directly!
     if (ExtensionsController.extractChromeWebStoreId(trimmed) != null) {
       await _installFromLinkOrId(trimmed);
       return;
     }
 
-    // Otherwise search Chrome Web Store directly inside Heaven Browser!
     setState(() {
       _searchingStore = true;
       _lastSearchQuery = trimmed;
     });
-    final List<ChromeWebStoreCatalogItem> found = await widget.extensions
+    final List<ChromeWebStoreSearchItem> found = await widget.extensions
         .searchWebStoreExtensions(trimmed);
     if (!mounted) return;
     setState(() {
@@ -76,7 +74,9 @@ class _ExtensionsScreenState extends State<ExtensionsScreen> {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
-            content: Text('Desktop Chrome Extension (.crx) installed & active!'),
+            content: Text(
+              'Desktop Chrome Extension (.crx) installed & running on all search engines and sites!',
+            ),
             behavior: SnackBarBehavior.floating,
           ),
         );
@@ -97,6 +97,57 @@ class _ExtensionsScreenState extends State<ExtensionsScreen> {
       );
     } else {
       await widget.activeEngine?.reloadFullPage();
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Extension package installed and activated!'),
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      }
+    }
+  }
+
+  Future<void> _runOrOpenExtension(InstalledChromeExtension ext) async {
+    final BrowserEngine? engine = widget.activeEngine;
+    if (ext.hasPopup) {
+      await ExtensionPopupSheet.show(
+        context,
+        extension: ext,
+        activeEngine: engine,
+        onOpenNewTab: widget.onOpenUrlInNewTab,
+      );
+      return;
+    }
+    await NativeShieldBridge.instance.setPopupContextTab(
+      url: engine?.currentUrl ?? 'https://www.google.com',
+      title: engine?.pageTitle ?? 'Heaven Tab',
+      webViewId: engine?.androidWebViewId,
+    );
+    await NativeShieldBridge.instance.triggerChromeExtensionAction(
+      id: ext.id,
+      url: engine?.currentUrl ?? 'https://www.google.com',
+      title: engine?.pageTitle ?? 'Heaven Tab',
+    );
+    await engine?.reinjectActiveExtensions();
+    if (ext.hasOptions && mounted) {
+      await ExtensionPopupSheet.show(
+        context,
+        extension: ext,
+        activeEngine: engine,
+        onOpenNewTab: widget.onOpenUrlInNewTab,
+        pageUrlOverride: ext.optionsUrl,
+        customTitle: '${ext.name} • Options',
+      );
+      return;
+    }
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('${ext.name} executed on active tab!'),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
     }
   }
 
@@ -133,7 +184,7 @@ class _ExtensionsScreenState extends State<ExtensionsScreen> {
               padding: const EdgeInsets.fromLTRB(14, 8, 14, 24),
               children: <Widget>[
                 _buildWebStoreHeroCard(context, colors, isDark),
-                const SizedBox(height: 10),
+                const SizedBox(height: 14),
                 if (_searchingStore)
                   const Padding(
                     padding: EdgeInsets.symmetric(vertical: 18),
@@ -155,7 +206,7 @@ class _ExtensionsScreenState extends State<ExtensionsScreen> {
                         onPressed: () {
                           setState(() {
                             _lastSearchQuery = '';
-                            _searchResults = <ChromeWebStoreCatalogItem>[];
+                            _searchResults = <ChromeWebStoreSearchItem>[];
                             _storeInputController.clear();
                           });
                         },
@@ -167,7 +218,7 @@ class _ExtensionsScreenState extends State<ExtensionsScreen> {
                     Padding(
                       padding: const EdgeInsets.only(bottom: 12),
                       child: Text(
-                        'No direct matches found. Tap "Browse Chrome Web Store (Desktop)" above to browse all extensions.',
+                        'No direct matches found. Tap "Chrome Web Store" above to browse all extensions in Desktop View.',
                         style: TextStyle(
                           fontSize: 12.5,
                           color: colors.onSurfaceVariant,
@@ -175,16 +226,16 @@ class _ExtensionsScreenState extends State<ExtensionsScreen> {
                       ),
                     )
                   else
-                    for (final ChromeWebStoreCatalogItem item
+                    for (final ChromeWebStoreSearchItem item
                         in _searchResults) ...<Widget>[
-                      _buildFeaturedCatalogTile(context, colors, isDark, item),
+                      _buildSearchResultTile(context, colors, isDark, item),
                       const SizedBox(height: 8),
                     ],
                   const SizedBox(height: 10),
                 ],
                 if (installed.isNotEmpty) ...<Widget>[
                   Text(
-                    'Installed Desktop Extensions (${installed.length})',
+                    'Installed Extensions (${installed.length})',
                     style: const TextStyle(
                       fontSize: 15,
                       fontWeight: FontWeight.w800,
@@ -196,31 +247,51 @@ class _ExtensionsScreenState extends State<ExtensionsScreen> {
                     _buildInstalledExtensionCard(context, colors, isDark, ext),
                     const SizedBox(height: 10),
                   ],
-                  const SizedBox(height: 10),
-                ],
-                const Text(
-                  'Chrome Web Store — 1-Tap Install (.crx)',
-                  style: TextStyle(fontSize: 14.5, fontWeight: FontWeight.w800),
-                ),
-                const SizedBox(height: 2),
-                Text(
-                  'Official Desktop Chrome .crx bundles with manifest.json.',
-                  style: TextStyle(
-                    fontSize: 11.5,
-                    color: colors.onSurfaceVariant,
-                  ),
-                ),
-                const SizedBox(height: 8),
-                for (final ChromeWebStoreCatalogItem item
-                    in ExtensionsController
-                        .featuredWebStoreCatalog) ...<Widget>[
-                  _buildFeaturedCatalogTile(context, colors, isDark, item),
-                  const SizedBox(height: 8),
+                ] else if (_lastSearchQuery.isEmpty) ...<Widget>[
+                  _buildCleanEmptyState(colors, isDark),
                 ],
               ],
             );
           },
         ),
+      ),
+    );
+  }
+
+  Widget _buildCleanEmptyState(ColorScheme colors, bool isDark) {
+    return Container(
+      key: const Key('extensions_empty_state'),
+      padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 26),
+      decoration: BoxDecoration(
+        color: isDark ? AppTheme.navySurface : Colors.white,
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(
+          color: colors.outlineVariant.withValues(alpha: 0.35),
+        ),
+      ),
+      child: Column(
+        children: <Widget>[
+          Icon(
+            Icons.extension_off_rounded,
+            size: 38,
+            color: colors.primary.withValues(alpha: 0.78),
+          ),
+          const SizedBox(height: 10),
+          const Text(
+            'No Extensions Installed Yet',
+            style: TextStyle(fontSize: 15, fontWeight: FontWeight.w800),
+          ),
+          const SizedBox(height: 6),
+          Text(
+            'Open the Chrome Web Store in Desktop mode, search above, paste an extension link, or import a .crx / .zip file. Installed extensions run across Google, DuckDuckGo, Brave, Bing, and every website.',
+            textAlign: TextAlign.center,
+            style: TextStyle(
+              fontSize: 12.5,
+              height: 1.4,
+              color: colors.onSurfaceVariant,
+            ),
+          ),
+        ],
       ),
     );
   }
@@ -268,7 +339,7 @@ class _ExtensionsScreenState extends State<ExtensionsScreen> {
                       ),
                     ),
                     Text(
-                      'Desktop Chrome Web Store (.crx MV2/MV3) unlocked',
+                      'MV2 & MV3 background workers + content scripts on any engine',
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                       style: TextStyle(
@@ -319,7 +390,7 @@ class _ExtensionsScreenState extends State<ExtensionsScreen> {
                     : _pickLocalCrxFile,
                 icon: const Icon(Icons.folder_zip_outlined, size: 16),
                 label: const Text(
-                  'Import .crx',
+                  'Import .crx / .zip',
                   style: TextStyle(fontSize: 12.5),
                 ),
               ),
@@ -336,7 +407,7 @@ class _ExtensionsScreenState extends State<ExtensionsScreen> {
                   onSubmitted: _handleSearchOrInstall,
                   style: const TextStyle(fontSize: 13),
                   decoration: const InputDecoration(
-                    hintText: 'Search extensions or paste Web Store link / ID',
+                    hintText: 'Search Web Store or paste extension link / ID',
                     prefixIcon: Icon(Icons.search_rounded, size: 19),
                     border: OutlineInputBorder(),
                     isDense: true,
@@ -348,7 +419,8 @@ class _ExtensionsScreenState extends State<ExtensionsScreen> {
                 onPressed: (widget.extensions.isInstalling || _searchingStore)
                     ? null
                     : () => _handleSearchOrInstall(_storeInputController.text),
-                child: (widget.extensions.isInstalling &&
+                child:
+                    (widget.extensions.isInstalling &&
                             widget.extensions.installingId != null) ||
                         _searchingStore
                     ? const SizedBox(
@@ -476,13 +548,28 @@ class _ExtensionsScreenState extends State<ExtensionsScreen> {
             const SizedBox(height: 8),
             Wrap(
               spacing: 8,
-              runSpacing: 4,
+              runSpacing: 6,
               alignment: WrapAlignment.spaceBetween,
               crossAxisAlignment: WrapCrossAlignment.center,
               children: <Widget>[
-                if (ext.hasPopup)
-                  FilledButton.tonalIcon(
-                    style: FilledButton.styleFrom(
+                FilledButton.tonalIcon(
+                  style: FilledButton.styleFrom(
+                    visualDensity: VisualDensity.compact,
+                  ),
+                  onPressed: ext.enabled
+                      ? () => _runOrOpenExtension(ext)
+                      : null,
+                  icon: Icon(
+                    ext.hasPopup
+                        ? Icons.open_in_browser_rounded
+                        : Icons.bolt_rounded,
+                    size: 16,
+                  ),
+                  label: Text(ext.hasPopup ? 'Open Popup' : 'Run on Tab'),
+                ),
+                if (ext.hasOptions)
+                  OutlinedButton.icon(
+                    style: OutlinedButton.styleFrom(
                       visualDensity: VisualDensity.compact,
                     ),
                     onPressed: ext.enabled
@@ -491,10 +578,12 @@ class _ExtensionsScreenState extends State<ExtensionsScreen> {
                             extension: ext,
                             activeEngine: widget.activeEngine,
                             onOpenNewTab: widget.onOpenUrlInNewTab,
+                            pageUrlOverride: ext.optionsUrl,
+                            customTitle: '${ext.name} • Options',
                           )
                         : null,
-                    icon: const Icon(Icons.open_in_browser_rounded, size: 16),
-                    label: const Text('Extension Popup'),
+                    icon: const Icon(Icons.tune_rounded, size: 15),
+                    label: const Text('Options'),
                   ),
                 TextButton.icon(
                   style: TextButton.styleFrom(
@@ -516,11 +605,11 @@ class _ExtensionsScreenState extends State<ExtensionsScreen> {
     );
   }
 
-  Widget _buildFeaturedCatalogTile(
+  Widget _buildSearchResultTile(
     BuildContext context,
     ColorScheme colors,
     bool isDark,
-    ChromeWebStoreCatalogItem item,
+    ChromeWebStoreSearchItem item,
   ) {
     final bool alreadyInstalled = widget.extensions.isInstalled(
       item.extensionId,

@@ -6,9 +6,10 @@ import '../../core/constants/app_constants.dart';
 import '../../core/theme/app_theme.dart';
 
 class HelpScreen extends StatefulWidget {
-  const HelpScreen({super.key});
+  const HelpScreen({super.key, this.onOpenUrlInBrowser});
 
   static const String supportEmail = 'techlabs.hyper@gmail.com';
+  final ValueChanged<String>? onOpenUrlInBrowser;
 
   @override
   State<HelpScreen> createState() => _HelpScreenState();
@@ -21,8 +22,8 @@ class _HelpScreenState extends State<HelpScreen> {
   static const List<String> _topics = <String>[
     'Bug Report',
     'VPN / Banned Website Issue',
-    'Heaven Search Feedback',
-    'Extension Request',
+    'Chrome Extensions (.crx)',
+    'Background Media & PiP',
     'General Question',
   ];
 
@@ -30,6 +31,31 @@ class _HelpScreenState extends State<HelpScreen> {
   void dispose() {
     _messageController.dispose();
     super.dispose();
+  }
+
+  Future<void> _openPrivacyPolicy() async {
+    if (widget.onOpenUrlInBrowser != null) {
+      Navigator.pop(context);
+      widget.onOpenUrlInBrowser!(AppConstants.privacyPolicyUrl);
+      return;
+    }
+    final Uri uri = Uri.parse(AppConstants.privacyPolicyUrl);
+    try {
+      await launchUrl(uri, mode: LaunchMode.externalApplication);
+    } catch (_) {
+      if (!mounted) return;
+      await Clipboard.setData(
+        const ClipboardData(text: AppConstants.privacyPolicyUrl),
+      );
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Privacy Policy link copied to clipboard!'),
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      }
+    }
   }
 
   Future<void> _sendSupportEmail() async {
@@ -42,10 +68,7 @@ class _HelpScreenState extends State<HelpScreen> {
     final Uri mailUri = Uri(
       scheme: 'mailto',
       path: HelpScreen.supportEmail,
-      queryParameters: <String, String>{
-        'subject': subject,
-        'body': fullBody,
-      },
+      queryParameters: <String, String>{'subject': subject, 'body': fullBody},
     );
 
     bool launched = false;
@@ -141,9 +164,7 @@ class _HelpScreenState extends State<HelpScreen> {
                           );
                           ScaffoldMessenger.of(context).showSnackBar(
                             const SnackBar(
-                              content: Text(
-                                'Copied techlabs.hyper@gmail.com',
-                              ),
+                              content: Text('Copied techlabs.hyper@gmail.com'),
                               behavior: SnackBarBehavior.floating,
                             ),
                           );
@@ -159,7 +180,10 @@ class _HelpScreenState extends State<HelpScreen> {
                     children: <Widget>[
                       for (final String item in _topics)
                         ChoiceChip(
-                          label: Text(item, style: const TextStyle(fontSize: 12)),
+                          label: Text(
+                            item,
+                            style: const TextStyle(fontSize: 12),
+                          ),
                           selected: _topic == item,
                           onSelected: (_) => setState(() => _topic = item),
                           visualDensity: VisualDensity.compact,
@@ -187,6 +211,30 @@ class _HelpScreenState extends State<HelpScreen> {
                 ],
               ),
             ),
+            const SizedBox(height: 14),
+            Material(
+              color: isDark ? AppTheme.navySurface : Colors.white,
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(18),
+                side: BorderSide(
+                  color: colors.outlineVariant.withValues(alpha: 0.35),
+                ),
+              ),
+              child: ListTile(
+                key: const Key('help_privacy_policy_tile'),
+                leading: Icon(Icons.privacy_tip_rounded, color: colors.primary),
+                title: const Text(
+                  'Privacy Policy',
+                  style: TextStyle(fontWeight: FontWeight.w800),
+                ),
+                subtitle: const Text(
+                  'Read our full zero-tracking privacy policy on GitHub',
+                  style: TextStyle(fontSize: 12),
+                ),
+                trailing: const Icon(Icons.open_in_new_rounded, size: 18),
+                onTap: _openPrivacyPolicy,
+              ),
+            ),
             const SizedBox(height: 18),
             const Text(
               'Quick Answers',
@@ -196,23 +244,23 @@ class _HelpScreenState extends State<HelpScreen> {
             _buildFaqTile(
               colors,
               isDark,
-              title: 'How do I open banned or ISP-blocked websites?',
+              title: 'How do Background Video & Auto-PiP work?',
               answer:
-                  'Open Menu -> Stealth VPN and tap Connect. Stealth UDP 4500 routes all WebView + DNS traffic through encrypted WireGuard without showing any notification.',
+                  'Play any video on YouTube, Twitch, or the web. Press Home to pop into native Android Picture-in-Picture automatically, or lock your screen to keep audio playing in the background.',
             ),
             _buildFaqTile(
               colors,
               isDark,
-              title: 'How do I change where downloaded files are saved?',
+              title: 'How do One-Handed Gestures & Quick Actions work?',
               answer:
-                  'Open Downloads and tap Change on the Location banner at the top to pick Public Downloads, App Folder, or any Custom Folder.',
+                  'Swipe left or right on the bottom address bar to switch tabs instantly, swipe up on the address bar to open the full Tab Grid, or tap the corner Quick Action button for 1-tap controls.',
             ),
             _buildFaqTile(
               colors,
               isDark,
-              title: 'How do Browser Gestures work?',
+              title: 'How do I install & use Desktop Chrome Extensions?',
               answer:
-                  'Swipe horizontally on the address bar to switch tabs, swipe up on the address bar to open the Tab Switcher, or swipe from the screen edges to go Back/Forward.',
+                  'Open Menu -> Extensions, tap Chrome Web Store (Desktop View) or paste an extension link. Installed MV2/MV3 extensions run on Google, DuckDuckGo, and every website.',
             ),
           ],
         ),

@@ -450,8 +450,7 @@ class _DesktopInspectorPanelState extends State<DesktopInspectorPanel> {
           child: _domNodes.isEmpty
               ? Center(
                   child: Text(
-                    widget.engine.isShowingStartPage ||
-                            widget.engine.isShowingHeavenSearch
+                    widget.engine.isShowingStartPage
                         ? 'Open any website to inspect its live DOM tree, or use the Console tab below.'
                         : 'Tap Sync or the Pick Element icon above to inspect DOM elements.',
                     textAlign: TextAlign.center,

@@ -10,30 +10,38 @@ import '../browser/engine/browser_engine.dart';
 import '../shield/native_shield_bridge.dart';
 import 'extensions_controller.dart';
 
-/// Renders a real Desktop Chrome Extension's `action.default_popup` (`popup.html`)
+/// Renders a real Desktop Chrome Extension's `popup.html` or `options.html`
 /// over `https://chrome-ext.heaven.local/<extId>/...` with live `chrome.storage`,
-/// `chrome.tabs`, and `chrome.scripting` bridged to the active browser tab.
+/// `chrome.runtime` (background service worker / event page), `chrome.tabs`,
+/// and `chrome.scripting` bridged directly to the active browser tab.
 class ExtensionPopupSheet extends StatefulWidget {
   const ExtensionPopupSheet({
     super.key,
     required this.extension,
     this.activeEngine,
     this.onOpenNewTab,
+    this.pageUrlOverride,
+    this.customTitle,
   });
 
   final InstalledChromeExtension extension;
   final BrowserEngine? activeEngine;
   final ValueChanged<String>? onOpenNewTab;
+  final String? pageUrlOverride;
+  final String? customTitle;
 
   static Future<void> show(
     BuildContext context, {
     required InstalledChromeExtension extension,
     BrowserEngine? activeEngine,
     ValueChanged<String>? onOpenNewTab,
+    String? pageUrlOverride,
+    String? customTitle,
   }) async {
     await NativeShieldBridge.instance.setPopupContextTab(
       url: activeEngine?.currentUrl ?? 'https://www.google.com',
       title: activeEngine?.pageTitle ?? 'Heaven Tab',
+      webViewId: activeEngine?.androidWebViewId,
     );
     if (!context.mounted) return;
     await showModalBottomSheet<void>(
@@ -44,6 +52,8 @@ class ExtensionPopupSheet extends StatefulWidget {
         extension: extension,
         activeEngine: activeEngine,
         onOpenNewTab: onOpenNewTab,
+        pageUrlOverride: pageUrlOverride,
+        customTitle: customTitle,
       ),
     );
   }
@@ -64,6 +74,17 @@ class _ExtensionPopupSheetState extends State<ExtensionPopupSheet> {
   }
 
   void _initPopupWebView() {
+    final String targetUrl =
+        (widget.pageUrlOverride != null && widget.pageUrlOverride!.isNotEmpty)
+        ? widget.pageUrlOverride!
+        : (widget.extension.popupUrl.isNotEmpty
+              ? widget.extension.popupUrl
+              : widget.extension.optionsUrl);
+    if (targetUrl.isEmpty) {
+      _loading = false;
+      return;
+    }
+
     final WebViewController ctrl = WebViewController();
     _popupController = ctrl;
     unawaited(ctrl.setJavaScriptMode(JavaScriptMode.unrestricted));
@@ -94,7 +115,7 @@ class _ExtensionPopupSheetState extends State<ExtensionPopupSheet> {
           webViewId: androidCtrl.webViewIdentifier,
           desktopMode: false,
           pageHost: 'chrome-ext.heaven.local',
-          onBlocked: (_, _) {},
+          onBlocked: (_, _, _) {},
           onPullProgress: (_) {},
           onPullRefresh: () {},
           onDownloadIntercepted: (_) {},
@@ -102,7 +123,7 @@ class _ExtensionPopupSheetState extends State<ExtensionPopupSheet> {
       );
     }
 
-    unawaited(ctrl.loadRequest(Uri.parse(widget.extension.popupUrl)));
+    unawaited(ctrl.loadRequest(Uri.parse(targetUrl)));
   }
 
   void _handleChromeExtBridgeMessage(String raw) {
@@ -126,6 +147,8 @@ class _ExtensionPopupSheetState extends State<ExtensionPopupSheet> {
           if (mounted) Navigator.pop(context);
           widget.onOpenNewTab?.call(url);
         }
+      } else if (op == 'reload_tab') {
+        unawaited(widget.activeEngine?.reloadFullPage());
       } else if (op == 'exec_js' && data is Map<Object?, Object?>) {
         final String code = data['code']?.toString() ?? '';
         if (code.isNotEmpty) {
@@ -162,7 +185,7 @@ class _ExtensionPopupSheetState extends State<ExtensionPopupSheet> {
 
     return SafeArea(
       child: SizedBox(
-        height: MediaQuery.sizeOf(context).height * 0.72,
+        height: MediaQuery.sizeOf(context).height * 0.74,
         child: Column(
           children: <Widget>[
             Padding(
@@ -186,7 +209,7 @@ class _ExtensionPopupSheetState extends State<ExtensionPopupSheet> {
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: <Widget>[
                         Text(
-                          widget.extension.name,
+                          widget.customTitle ?? widget.extension.name,
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
                           style: const TextStyle(
@@ -195,7 +218,7 @@ class _ExtensionPopupSheetState extends State<ExtensionPopupSheet> {
                           ),
                         ),
                         Text(
-                          'Chrome Extension Popup • v${widget.extension.version}',
+                          'Chrome Extension • MV${widget.extension.manifestVersion} v${widget.extension.version}',
                           style: TextStyle(
                             fontSize: 11,
                             color: colors.onSurfaceVariant,
@@ -204,6 +227,23 @@ class _ExtensionPopupSheetState extends State<ExtensionPopupSheet> {
                       ],
                     ),
                   ),
+                  if (widget.extension.hasOptions &&
+                      widget.pageUrlOverride != widget.extension.optionsUrl)
+                    IconButton(
+                      tooltip: 'Extension Options',
+                      icon: const Icon(Icons.tune_rounded, size: 20),
+                      onPressed: () {
+                        Navigator.pop(context);
+                        ExtensionPopupSheet.show(
+                          context,
+                          extension: widget.extension,
+                          activeEngine: widget.activeEngine,
+                          onOpenNewTab: widget.onOpenNewTab,
+                          pageUrlOverride: widget.extension.optionsUrl,
+                          customTitle: '${widget.extension.name} • Options',
+                        );
+                      },
+                    ),
                   IconButton(
                     icon: const Icon(Icons.close_rounded),
                     onPressed: () => Navigator.pop(context),

@@ -96,23 +96,30 @@ class ShieldSheet extends StatelessWidget {
                   children: <Widget>[
                     Expanded(
                       child: _MetricTile(
-                        label: 'Blocked on Page',
+                        label: 'Page Blocked',
                         value: '${engine.pageBlockedCount}',
                         accent: AppTheme.shieldEmerald,
                       ),
                     ),
-                    const SizedBox(width: 12),
+                    const SizedBox(width: 8),
                     Expanded(
                       child: _MetricTile(
-                        label: 'Lifetime Blocked',
+                        label: 'Total Blocked',
                         value: '${settings.totalTrackersBlocked}',
                         accent: colors.primary,
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: _MetricTile(
+                        label: 'Data Saved',
+                        value: settings.formattedDataSaved,
+                        accent: Colors.cyan,
                       ),
                     ),
                   ],
                 ),
                 const SizedBox(height: 12),
-                // Heaven VPN Quick Banner inside Shield Sheet
                 Container(
                   padding: const EdgeInsets.symmetric(
                     horizontal: 12,
@@ -255,11 +262,33 @@ class ShieldSheet extends StatelessWidget {
                   value: settings.shieldEnabled,
                   onChanged: (bool value) async {
                     await settings.setShieldEnabled(value);
-                    if (!engine.isShowingStartPage &&
-                        !engine.isShowingHeavenSearch) {
+                    if (!engine.isShowingStartPage) {
                       await engine.reloadOrStop();
                     }
                   },
+                ),
+                SwitchListTile.adaptive(
+                  contentPadding: EdgeInsets.zero,
+                  title: const Text('Ultra Data Saver (Text-Only Mode)'),
+                  subtitle: const Text(
+                    'Blocks images, video thumbnails & heavy fonts on slow cellular',
+                  ),
+                  value: settings.ultraDataSaverMode,
+                  onChanged: (bool value) async {
+                    await settings.setUltraDataSaverMode(value);
+                    if (!engine.isShowingStartPage) {
+                      await engine.reloadOrStop();
+                    }
+                  },
+                ),
+                SwitchListTile.adaptive(
+                  contentPadding: EdgeInsets.zero,
+                  title: const Text('Automatic Anti-Redirects'),
+                  subtitle: Text(
+                    'Blocks Play Store & spam redirects (${settings.antiRedirectsBlockedCount} stopped)',
+                  ),
+                  value: settings.antiRedirectProtection,
+                  onChanged: settings.setAntiRedirectProtection,
                 ),
                 SwitchListTile.adaptive(
                   contentPadding: EdgeInsets.zero,
@@ -294,7 +323,7 @@ class _MetricTile extends StatelessWidget {
   Widget build(BuildContext context) {
     final ColorScheme colors = Theme.of(context).colorScheme;
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 11),
       decoration: BoxDecoration(
         color: colors.surfaceContainerHighest.withValues(alpha: 0.45),
         borderRadius: BorderRadius.circular(16),
@@ -304,16 +333,24 @@ class _MetricTile extends StatelessWidget {
         children: <Widget>[
           Text(
             value,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
             style: TextStyle(
-              fontSize: 22,
-              fontWeight: FontWeight.w800,
+              fontSize: 18,
+              fontWeight: FontWeight.w900,
               color: accent,
             ),
           ),
           const SizedBox(height: 2),
           Text(
             label,
-            style: TextStyle(fontSize: 12, color: colors.onSurfaceVariant),
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: TextStyle(
+              fontSize: 10.5,
+              fontWeight: FontWeight.w700,
+              color: colors.onSurfaceVariant,
+            ),
           ),
         ],
       ),
