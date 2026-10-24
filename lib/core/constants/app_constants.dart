@@ -12,7 +12,7 @@ class AppConstants {
   static const String logoAssetPath = 'assets/images/heaven_logo.png';
 
   static const String mobileUserAgent =
-      'Mozilla/5.0 (Linux; Android 15; Mobile) AppleWebKit/537.36 '
+      'Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 '
       '(KHTML, like Gecko) Chrome/134.0.0.0 Mobile Safari/537.36';
 
   static const String desktopUserAgent =

@@ -28,6 +28,14 @@ class AppTheme {
     end: Alignment.bottomRight,
   );
 
+  static const PageTransitionsTheme _smoothTransitions = PageTransitionsTheme(
+    builders: <TargetPlatform, PageTransitionsBuilder>{
+      TargetPlatform.android: ZoomPageTransitionsBuilder(),
+      TargetPlatform.iOS: ZoomPageTransitionsBuilder(),
+      TargetPlatform.linux: ZoomPageTransitionsBuilder(),
+    },
+  );
+
   static ThemeData get lightTheme {
     final ColorScheme scheme = ColorScheme.fromSeed(
       seedColor: sapphireBlue,
@@ -40,6 +48,7 @@ class AppTheme {
     return ThemeData(
       useMaterial3: true,
       colorScheme: scheme,
+      pageTransitionsTheme: _smoothTransitions,
       scaffoldBackgroundColor: const Color(0xFFF3F7FD),
       appBarTheme: AppBarTheme(
         centerTitle: false,
@@ -74,6 +83,7 @@ class AppTheme {
     return ThemeData(
       useMaterial3: true,
       colorScheme: scheme,
+      pageTransitionsTheme: _smoothTransitions,
       scaffoldBackgroundColor: deepNavyBg,
       appBarTheme: AppBarTheme(
         centerTitle: false,
@@ -108,6 +118,7 @@ class AppTheme {
     return ThemeData(
       useMaterial3: true,
       colorScheme: scheme,
+      pageTransitionsTheme: _smoothTransitions,
       scaffoldBackgroundColor: const Color(0xFF061015),
       appBarTheme: AppBarTheme(
         centerTitle: false,

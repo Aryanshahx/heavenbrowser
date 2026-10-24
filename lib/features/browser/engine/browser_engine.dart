@@ -10,7 +10,6 @@ import 'package:webview_flutter_android/webview_flutter_android.dart';
 import '../../../core/constants/app_constants.dart';
 import '../../../core/utils/omnibox_parser.dart';
 import '../../devtools/devtools_models.dart';
-import '../../extensions/extensions_controller.dart';
 import '../../settings/browser_settings.dart';
 import '../../shield/heaven_shield.dart';
 import '../../shield/native_shield_bridge.dart';
@@ -34,14 +33,13 @@ class BrowserEngine extends ChangeNotifier {
   BrowserEngine({
     required this.settings,
     required this.isIncognito,
-    this.extensions,
-    this.onOpenNewTabFromExtension,
     this.enablePlatformWebView = true,
+    this.onPageLoadedForPreview,
     String? initialPersistedUrl,
     String? initialPersistedTitle,
   }) {
+    _lastAppliedSettingsRevision = settings.webViewConfigRevision;
     settings.addListener(_onSettingsChanged);
-    extensions?.addListener(_onExtensionsChanged);
 
     final String cleanInitialUrl = (initialPersistedUrl ?? '').trim();
     if (cleanInitialUrl.isNotEmpty) {
@@ -68,9 +66,7 @@ class BrowserEngine extends ChangeNotifier {
   }
 
   final BrowserSettingsController settings;
-  final ExtensionsController? extensions;
-  final ValueChanged<String>? onOpenNewTabFromExtension;
-  ValueChanged<String>? onWebStoreInstallMessage;
+  VoidCallback? onPageLoadedForPreview;
   SitePermissionPromptCallback? onSitePermissionPrompt;
   final bool isIncognito;
   final bool enablePlatformWebView;
@@ -78,6 +74,8 @@ class BrowserEngine extends ChangeNotifier {
   WebViewController? _controller;
   int? _androidWebViewId;
   String? _pageIconUrl;
+  Timer? _previewCaptureTimer;
+  int _lastAppliedSettingsRevision = -1;
 
   final List<String> _virtualHistory = <String>[''];
   int _virtualIndex = 0;
@@ -88,7 +86,6 @@ class BrowserEngine extends ChangeNotifier {
   double _pullProgress = 0;
   bool _isLoading = false;
   bool _isNavBarVisible = true;
-  double _lastScrollY = 0;
   bool _webViewCanGoBack = false;
   bool _webViewCanGoForward = false;
   int _pageBlockedCount = 0;
@@ -106,7 +103,6 @@ class BrowserEngine extends ChangeNotifier {
   String? _appliedUserAgent;
   int? _appliedTextScale;
   bool? _appliedEffectiveDesktop;
-  bool? _appliedForceDesktopStore;
   bool? _appliedAllow3pCookies;
   bool _mediaGestureConfigured = false;
   int _lastBlockedUiNotifyMs = 0;
@@ -164,18 +160,8 @@ class BrowserEngine extends ChangeNotifier {
     return (parsed != null && parsed.host.isNotEmpty) ? parsed.host : null;
   }
 
-  static bool _isChromeWebStoreHostOrUrl(String? host, String? fullUrl) {
-    final String h = (host ?? '').toLowerCase();
-    return h == 'chromewebstore.google.com' ||
-        (h == 'chrome.google.com' &&
-            (fullUrl?.toLowerCase().contains('/webstore') ?? false)) ||
-        ExtensionsController.isChromeWebStoreUrl(fullUrl);
-  }
-
   Map<String, String> _headersForTarget({String? host, String? fullUrl}) {
-    final bool desktop =
-        settings.desktopMode || _isChromeWebStoreHostOrUrl(host, fullUrl);
-    if (desktop) {
+    if (settings.desktopMode) {
       return <String, String>{
         'Sec-CH-UA':
             '"Chromium";v="134", "Not:A-Brand";v="24", "Google Chrome";v="134"',
@@ -196,13 +182,12 @@ class BrowserEngine extends ChangeNotifier {
     _appliedUserAgent = null;
     _appliedTextScale = null;
     _appliedEffectiveDesktop = null;
-    _appliedForceDesktopStore = null;
     _appliedAllow3pCookies = null;
     _mediaGestureConfigured = false;
   }
 
   void setNavBarVisible(bool visible) {
-    final bool next = isShowingStartPage ? true : visible;
+    final bool next = (isShowingStartPage || _isLoading) ? true : visible;
     if (_isNavBarVisible != next) {
       _isNavBarVisible = next;
       notifyListeners();
@@ -212,14 +197,20 @@ class BrowserEngine extends ChangeNotifier {
   /// Updates top navigation bar visibility from scroll position & vertical delta:
   /// scrolling down hides the bar; scrolling up (or near top) reveals it.
   void handleWebScrollDelta(double scrollY, double deltaY) {
-    if (isShowingStartPage) {
+    if (isShowingStartPage || _isLoading) {
       setNavBarVisible(true);
       return;
     }
-    if (scrollY <= 16 || deltaY <= -12) {
+    if (scrollY <= 18 || deltaY <= -28) {
       setNavBarVisible(true);
-    } else if (deltaY >= 16 && scrollY > 42) {
+    } else if (deltaY >= 44 && scrollY > 90) {
       setNavBarVisible(false);
+    }
+  }
+
+  Future<void> focusNativeWebView() async {
+    if (_androidWebViewId != null) {
+      await NativeShieldBridge.instance.focusWebView(_androidWebViewId!);
     }
   }
 
@@ -242,10 +233,7 @@ class BrowserEngine extends ChangeNotifier {
       );
     }
     await _applyControllerSettings(forHost: uri.host);
-    await _controller?.loadRequest(
-      uri,
-      headers: _headersForTarget(host: uri.host, fullUrl: uri.toString()),
-    );
+    await _controller?.loadRequest(uri, headers: _headersForTarget());
   }
 
   void _initializeController() {
@@ -274,15 +262,6 @@ class BrowserEngine extends ChangeNotifier {
             return;
           }
           _recordBlockedResource(payload);
-        },
-      ),
-    );
-
-    unawaited(
-      webController.addJavaScriptChannel(
-        'HeavenChromeExtChannel',
-        onMessageReceived: (JavaScriptMessage msg) {
-          _handleChromeExtChannelMessage(msg.message);
         },
       ),
     );
@@ -318,16 +297,6 @@ class BrowserEngine extends ChangeNotifier {
     );
 
     unawaited(
-      webController
-          .setOnScrollPositionChange((ScrollPositionChange pos) {
-            final double dy = pos.y - _lastScrollY;
-            _lastScrollY = pos.y;
-            handleWebScrollDelta(pos.y, dy);
-          })
-          .catchError((Object _) {}),
-    );
-
-    unawaited(
       webController.setNavigationDelegate(
         NavigationDelegate(
           onNavigationRequest: _handleNavigationRequest,
@@ -335,16 +304,17 @@ class BrowserEngine extends ChangeNotifier {
             if (url == 'about:blank' && isShowingStartPage) {
               return;
             }
+            _previewCaptureTimer?.cancel();
             final String? nextHost = Uri.tryParse(url)?.host;
             _currentUrl = url;
             _isNavBarVisible = true;
-            _lastScrollY = 0;
             _pageIconUrl = null;
             _elementPickerActive = false;
             _pageDesignMode = false;
             _networkEntries.clear();
             _isLoading = true;
             _progress = 0.1;
+            _lastNotifiedProgress = 0.1;
             _pullProgress = 0;
             _errorMessage = null;
             _pageBlockedCount = 0;
@@ -368,7 +338,7 @@ class BrowserEngine extends ChangeNotifier {
             final bool nextLoading = value < 100;
             final bool loadingChanged = _isLoading != nextLoading;
             final bool significantStep =
-                (nextProgress - _lastNotifiedProgress).abs() >= 0.04 ||
+                (nextProgress - _lastNotifiedProgress).abs() >= 0.08 ||
                 value >= 100;
             _progress = nextProgress;
             _isLoading = nextLoading;
@@ -398,19 +368,16 @@ class BrowserEngine extends ChangeNotifier {
               await settings.recordPageVisit(url: url, title: _pageTitle);
             }
             notifyListeners();
+            _scheduleAutoPreviewCapture();
           },
           onUrlChange: (UrlChange change) {
             final String? nextUrl = change.url;
             if (nextUrl != null &&
                 nextUrl.isNotEmpty &&
                 nextUrl != 'about:blank') {
-              final bool changed = _currentUrl != nextUrl;
               _currentUrl = nextUrl;
               _syncVirtualEntryWithWebUrl(nextUrl);
               unawaited(_refreshNavigationState());
-              if (changed) {
-                unawaited(reinjectActiveExtensions());
-              }
             }
           },
           onWebResourceError: (WebResourceError error) {
@@ -461,8 +428,12 @@ class BrowserEngine extends ChangeNotifier {
           webViewId: androidCtrl.webViewIdentifier,
           desktopMode: settings.desktopMode,
           pageHost: currentHost,
-          onBlocked: (int _, String domain, int bytesSaved) {
-            _recordBlockedResource(domain, bytesSaved: bytesSaved);
+          onBlocked: (int _, String domain, int count, int bytesSaved) {
+            _recordBlockedResource(
+              domain,
+              count: count,
+              bytesSaved: bytesSaved,
+            );
           },
           onPullProgress: (double value) {
             if ((_pullProgress - value).abs() >= 0.02 || value == 0.0) {
@@ -666,8 +637,25 @@ class BrowserEngine extends ChangeNotifier {
     _virtualIndex = _virtualHistory.length - 1;
   }
 
-  void _recordBlockedResource(String domainOrTag, {int bytesSaved = 14200}) {
-    _pageBlockedCount += 1;
+  void _scheduleAutoPreviewCapture() {
+    _previewCaptureTimer?.cancel();
+    if (!enablePlatformWebView || isShowingStartPage) {
+      return;
+    }
+    _previewCaptureTimer = Timer(const Duration(milliseconds: 680), () {
+      if (!isShowingStartPage) {
+        onPageLoadedForPreview?.call();
+      }
+    });
+  }
+
+  void _recordBlockedResource(
+    String domainOrTag, {
+    int count = 1,
+    int bytesSaved = 14200,
+  }) {
+    final int safeCount = count < 1 ? 1 : count;
+    _pageBlockedCount += safeCount;
     if (domainOrTag.isNotEmpty) {
       _pageBlockedDomains.add(domainOrTag);
       if (_networkEntries.length < 250) {
@@ -684,9 +672,12 @@ class BrowserEngine extends ChangeNotifier {
         );
       }
     }
-    unawaited(settings.incrementBlockedCount(1, bytesSaved));
+    unawaited(settings.incrementBlockedCount(safeCount, bytesSaved));
+    if (_isLoading) {
+      return;
+    }
     final int now = DateTime.now().millisecondsSinceEpoch;
-    if (now - _lastBlockedUiNotifyMs >= 240 || _pageBlockedCount <= 2) {
+    if (now - _lastBlockedUiNotifyMs >= 950) {
       _lastBlockedUiNotifyMs = now;
       notifyListeners();
     }
@@ -702,21 +693,6 @@ class BrowserEngine extends ChangeNotifier {
 
     if (uri.scheme == 'about' || uri.scheme == 'data' || uri.scheme == 'blob') {
       return NavigationDecision.navigate;
-    }
-
-    // Rewrite Chrome/Firefox extension scheme URLs to virtual extension host — NEVER block them!
-    final String lowerScheme = uri.scheme.toLowerCase();
-    if (lowerScheme == 'chrome-extension' || lowerScheme == 'moz-extension') {
-      final String extPath = uri.path.isEmpty ? '/' : uri.path;
-      final Uri mapped = Uri(
-        scheme: 'https',
-        host: 'chrome-ext.heaven.local',
-        path: '/${uri.host}$extPath',
-        query: uri.hasQuery ? uri.query : null,
-        fragment: uri.hasFragment ? uri.fragment : null,
-      );
-      await _controller?.loadRequest(mapped);
-      return NavigationDecision.prevent;
     }
 
     if (uri.scheme != 'http' && uri.scheme != 'https') {
@@ -737,12 +713,6 @@ class BrowserEngine extends ChangeNotifier {
     final String destLowerHost = uri.host.toLowerCase();
     final String prevLowerHost = (currentHost ?? '').toLowerCase();
 
-    // Always allow Chrome Extension virtual pages and any redirect initiated from an extension!
-    if (destLowerHost == 'chrome-ext.heaven.local' ||
-        prevLowerHost == 'chrome-ext.heaven.local') {
-      return NavigationDecision.navigate;
-    }
-
     // Automatic Anti-Redirect protection against unsolicited Play Store hijacks
     if (request.isMainFrame &&
         settings.antiRedirectProtection &&
@@ -762,10 +732,7 @@ class BrowserEngine extends ChangeNotifier {
         await _applyControllerSettings(forHost: unwrappedGoogle.host);
         await _controller?.loadRequest(
           unwrappedGoogle,
-          headers: _headersForTarget(
-            host: unwrappedGoogle.host,
-            fullUrl: unwrappedGoogle.toString(),
-          ),
+          headers: _headersForTarget(),
         );
         return NavigationDecision.prevent;
       }
@@ -777,10 +744,7 @@ class BrowserEngine extends ChangeNotifier {
       if (desktopUri != uri) {
         await _controller?.loadRequest(
           desktopUri,
-          headers: _headersForTarget(
-            host: desktopUri.host,
-            fullUrl: desktopUri.toString(),
-          ),
+          headers: _headersForTarget(),
         );
         return NavigationDecision.prevent;
       }
@@ -805,10 +769,7 @@ class BrowserEngine extends ChangeNotifier {
         await settings.incrementBlockedCount(stripped.removedCount);
         await _controller?.loadRequest(
           stripped.uri,
-          headers: _headersForTarget(
-            host: stripped.uri.host,
-            fullUrl: stripped.uri.toString(),
-          ),
+          headers: _headersForTarget(),
         );
         notifyListeners();
         return NavigationDecision.prevent;
@@ -820,13 +781,7 @@ class BrowserEngine extends ChangeNotifier {
         uri.scheme == 'http' &&
         !OmniboxParser.isLocalOrPrivateHost(uri.host)) {
       final Uri httpsUri = uri.replace(scheme: 'https');
-      await _controller?.loadRequest(
-        httpsUri,
-        headers: _headersForTarget(
-          host: httpsUri.host,
-          fullUrl: httpsUri.toString(),
-        ),
-      );
+      await _controller?.loadRequest(httpsUri, headers: _headersForTarget());
       return NavigationDecision.prevent;
     }
 
@@ -853,14 +808,11 @@ class BrowserEngine extends ChangeNotifier {
   }
 
   void _onSettingsChanged() {
-    unawaited(_applyControllerSettings());
-  }
-
-  void _onExtensionsChanged() {
-    final String? url = _currentUrl;
-    if (url != null && !isShowingStartPage) {
-      unawaited(reinjectActiveExtensions());
+    if (_lastAppliedSettingsRevision == settings.webViewConfigRevision) {
+      return;
     }
+    _lastAppliedSettingsRevision = settings.webViewConfigRevision;
+    unawaited(_applyControllerSettings());
   }
 
   Future<void> _prewarmGoogleSearchConnection() async {
@@ -891,11 +843,7 @@ class BrowserEngine extends ChangeNotifier {
     }
 
     final String? host = forHost ?? currentHost;
-    final bool forceDesktopStore = _isChromeWebStoreHostOrUrl(
-      host,
-      _currentUrl,
-    );
-    final bool effectiveDesktop = settings.desktopMode || forceDesktopStore;
+    final bool effectiveDesktop = settings.desktopMode;
 
     final bool allowJs = settings.isJavaScriptAllowedForHost(host);
     if (force || _appliedAllowJs != allowJs) {
@@ -925,21 +873,12 @@ class BrowserEngine extends ChangeNotifier {
         _appliedTextScale = desiredScale;
         await androidCtrl.setTextZoom(desiredScale);
       }
-      if (force ||
-          _appliedEffectiveDesktop != effectiveDesktop ||
-          _appliedForceDesktopStore != forceDesktopStore) {
+      if (force || _appliedEffectiveDesktop != effectiveDesktop) {
         _appliedEffectiveDesktop = effectiveDesktop;
-        _appliedForceDesktopStore = forceDesktopStore;
-        if (forceDesktopStore) {
-          await NativeShieldBridge.instance.prepareChromeWebStoreView(
-            androidCtrl.webViewIdentifier,
-          );
-        } else {
-          await NativeShieldBridge.instance.applyDesktopViewport(
-            webViewId: androidCtrl.webViewIdentifier,
-            desktopMode: effectiveDesktop,
-          );
-        }
+        await NativeShieldBridge.instance.applyDesktopViewport(
+          webViewId: androidCtrl.webViewIdentifier,
+          desktopMode: effectiveDesktop,
+        );
       }
 
       final bool allow3p = !isIncognito && !settings.blockThirdPartyCookies;
@@ -969,90 +908,14 @@ class BrowserEngine extends ChangeNotifier {
         _isLoading = true;
         _errorMessage = null;
         notifyListeners();
-        await _controller!.loadRequest(
-          parsed,
-          headers: _headersForTarget(
-            host: parsed.host,
-            fullUrl: parsed.toString(),
-          ),
-        );
+        await _controller!.loadRequest(parsed, headers: _headersForTarget());
       }
-    }
-  }
-
-  void _handleChromeExtChannelMessage(String raw) {
-    try {
-      final Object? decoded = jsonDecode(raw);
-      if (decoded is! Map<Object?, Object?>) return;
-      final String extId = decoded['extId']?.toString() ?? '';
-      final String op = decoded['op']?.toString() ?? '';
-      final Object? data = decoded['data'];
-      if (op == 'storage_set' && extId.isNotEmpty && data != null) {
-        unawaited(
-          NativeShieldBridge.instance.updateChromeExtensionStorage(
-            extId,
-            jsonEncode(data),
-          ),
-        );
-      } else if (op == 'open_tab' && data is Map<Object?, Object?>) {
-        final String target = data['url']?.toString() ?? '';
-        if (target.isNotEmpty) {
-          onOpenNewTabFromExtension?.call(target);
-        }
-      } else if (op == 'reload_tab') {
-        unawaited(reloadFullPage());
-      } else if (op == 'install_cws' && extensions != null) {
-        final String cwsUrl = (data is Map<Object?, Object?>)
-            ? (data['url']?.toString() ?? extId)
-            : extId;
-        unawaited(() async {
-          final String? err = await extensions!.installFromWebStore(cwsUrl);
-          if (err == null) {
-            await _controller?.runJavaScript(
-              '(function(){var bs=document.querySelectorAll("button");for(var i=0;i<bs.length;i++){if(bs[i].textContent&&bs[i].textContent.indexOf("Installing in Heaven")!==-1){bs[i].textContent="Added to Heaven";}}})();',
-            );
-          }
-          onWebStoreInstallMessage?.call(
-            err ?? 'Chrome Extension (.crx) installed in Heaven!',
-          );
-        }());
-      }
-    } catch (_) {
-      // Ignore malformed messages.
-    }
-  }
-
-  Future<void> reinjectActiveExtensions() async {
-    final WebViewController? webController = _controller;
-    final String? url = _currentUrl;
-    if (webController == null ||
-        extensions == null ||
-        url == null ||
-        isShowingStartPage) {
-      return;
-    }
-    final Uri? parsed = Uri.tryParse(url);
-    if (!settings.isJavaScriptAllowedForHost(parsed?.host)) {
-      return;
-    }
-    final String crxAndScripts = await extensions!.buildFullInjectionForUrl(
-      url,
-    );
-    if (crxAndScripts.isNotEmpty) {
-      try {
-        await webController.runJavaScript(crxAndScripts);
-      } catch (_) {}
     }
   }
 
   Future<void> _injectProtectionAndZoom(String url) async {
     final WebViewController? webController = _controller;
     final Uri? parsed = Uri.tryParse(url);
-    final String lowerHost = (parsed?.host ?? '').toLowerCase();
-    // Never overwrite window.open or run ad-blocker scripts inside Chrome Extension tabs!
-    if (lowerHost == 'chrome-ext.heaven.local') {
-      return;
-    }
     if (webController == null ||
         !settings.isJavaScriptAllowedForHost(parsed?.host)) {
       return;
@@ -1083,8 +946,6 @@ class BrowserEngine extends ChangeNotifier {
     } catch (_) {
       // Ignore JS errors on non-HTML responses.
     }
-
-    await reinjectActiveExtensions();
 
     try {
       final Object rawIcon = await webController.runJavaScriptReturningResult(
@@ -1144,39 +1005,22 @@ class BrowserEngine extends ChangeNotifier {
     _pageBlockedDomains.clear();
     _pullProgress = 0;
     _isNavBarVisible = true;
-    _lastScrollY = 0;
 
-    // Rewrite chrome-extension:// or moz-extension:// to https://chrome-ext.heaven.local/...
     Uri migratedUri = uri;
-    final String lowerScheme = migratedUri.scheme.toLowerCase();
-    if (lowerScheme == 'chrome-extension' || lowerScheme == 'moz-extension') {
-      final String extPath = migratedUri.path.isEmpty ? '/' : migratedUri.path;
-      migratedUri = Uri(
-        scheme: 'https',
-        host: 'chrome-ext.heaven.local',
-        path: '/${migratedUri.host}$extPath',
-        query: migratedUri.hasQuery ? migratedUri.query : null,
-        fragment: migratedUri.hasFragment ? migratedUri.fragment : null,
-      );
-    } else if (OmniboxParser.isLegacyHeavenUrl(migratedUri.toString())) {
+    if (OmniboxParser.isLegacyHeavenUrl(migratedUri.toString())) {
       final String q = OmniboxParser.extractLegacyHeavenQuery(
         migratedUri.toString(),
       );
       migratedUri = SearchEngine.google.buildSearchUri(q);
     }
 
-    final bool isExtTarget =
-        migratedUri.host.toLowerCase() == 'chrome-ext.heaven.local';
-    Uri finalUri = isExtTarget
-        ? migratedUri
-        : (OmniboxParser.unwrapGoogleRedirectUri(migratedUri) ?? migratedUri);
-    if (!isExtTarget && settings.desktopMode) {
+    Uri finalUri =
+        OmniboxParser.unwrapGoogleRedirectUri(migratedUri) ?? migratedUri;
+    if (settings.desktopMode) {
       finalUri = rewriteMobileToDesktopUri(finalUri);
     }
     final bool shieldActive =
-        !isExtTarget &&
-        settings.shieldEnabled &&
-        !settings.isHostTrusted(finalUri.host);
+        settings.shieldEnabled && !settings.isHostTrusted(finalUri.host);
     if (shieldActive) {
       final ({Uri uri, int removedCount}) stripped =
           HeavenShield.stripTrackingParameters(finalUri);
@@ -1218,13 +1062,7 @@ class BrowserEngine extends ChangeNotifier {
     }
 
     await _applyControllerSettings(forHost: finalUri.host);
-    await _controller?.loadRequest(
-      finalUri,
-      headers: _headersForTarget(
-        host: finalUri.host,
-        fullUrl: finalUri.toString(),
-      ),
-    );
+    await _controller?.loadRequest(finalUri, headers: _headersForTarget());
     if (_controller == null) {
       _isLoading = false;
       if (!isIncognito &&
@@ -1242,7 +1080,6 @@ class BrowserEngine extends ChangeNotifier {
     _pageTitle = isIncognito ? 'Incognito Tab' : 'New Tab';
     _isLoading = false;
     _isNavBarVisible = true;
-    _lastScrollY = 0;
     _progress = 0;
     _pullProgress = 0;
     _errorMessage = null;
@@ -1990,8 +1827,8 @@ class BrowserEngine extends ChangeNotifier {
 
   @override
   void dispose() {
+    _previewCaptureTimer?.cancel();
     settings.removeListener(_onSettingsChanged);
-    extensions?.removeListener(_onExtensionsChanged);
     if (_androidWebViewId != null) {
       NativeShieldBridge.instance.detachWebView(_androidWebViewId!);
     }

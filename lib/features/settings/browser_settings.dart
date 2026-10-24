@@ -241,6 +241,8 @@ class BrowserSettingsController extends ChangeNotifier {
   List<BookmarkItem> _bookmarks = <BookmarkItem>[];
   List<HistoryItem> _history = <HistoryItem>[];
 
+  int _webViewConfigRevision = 0;
+  int get webViewConfigRevision => _webViewConfigRevision;
   SharedPreferences get prefs => _prefs;
   SearchEngine get searchEngine => _searchEngine;
   ThemeMode get themeMode => _themeMode;
@@ -508,6 +510,7 @@ class BrowserSettingsController extends ChangeNotifier {
       _trustedHosts.add(normalized);
     }
     await _prefs.setStringList(_keyTrustedHosts, _trustedHosts.toList());
+    _webViewConfigRevision += 1;
     _pushNativeShieldConfig();
     notifyListeners();
   }
@@ -572,6 +575,7 @@ class BrowserSettingsController extends ChangeNotifier {
         _keyJsDisabledHosts,
         _jsDisabledHosts.toList(),
       );
+      _webViewConfigRevision += 1;
       notifyListeners();
       return;
     }
@@ -858,7 +862,7 @@ class BrowserSettingsController extends ChangeNotifier {
     }
     await _prefs.setInt(_keyTotalBlocked, _totalTrackersBlocked);
     final int now = DateTime.now().millisecondsSinceEpoch;
-    if (now - _lastBlockedNotifyMs >= 350) {
+    if (now - _lastBlockedNotifyMs >= 1100) {
       _lastBlockedNotifyMs = now;
       notifyListeners();
     }
@@ -869,7 +873,7 @@ class BrowserSettingsController extends ChangeNotifier {
     _estimatedBytesSaved += bytes;
     await _prefs.setInt(_keyBytesSaved, _estimatedBytesSaved);
     final int now = DateTime.now().millisecondsSinceEpoch;
-    if (now - _lastBlockedNotifyMs >= 500) {
+    if (now - _lastBlockedNotifyMs >= 1100) {
       _lastBlockedNotifyMs = now;
       notifyListeners();
     }
@@ -878,7 +882,11 @@ class BrowserSettingsController extends ChangeNotifier {
   Future<void> incrementRedirectBlockedCount() async {
     _antiRedirectsBlockedCount += 1;
     await _prefs.setInt(_keyRedirectsBlocked, _antiRedirectsBlockedCount);
-    notifyListeners();
+    final int now = DateTime.now().millisecondsSinceEpoch;
+    if (now - _lastBlockedNotifyMs >= 900) {
+      _lastBlockedNotifyMs = now;
+      notifyListeners();
+    }
   }
 
   Future<void> setSearchEngine(SearchEngine engine) async {
@@ -900,6 +908,7 @@ class BrowserSettingsController extends ChangeNotifier {
 
   Future<void> setUltraDataSaverMode(bool value) async {
     _ultraDataSaverMode = value;
+    _webViewConfigRevision += 1;
     await _prefs.setBool(_keyUltraDataSaver, value);
     _pushNativeShieldConfig();
     notifyListeners();
@@ -933,6 +942,7 @@ class BrowserSettingsController extends ChangeNotifier {
 
   Future<void> setShieldEnabled(bool value) async {
     _shieldEnabled = value;
+    _webViewConfigRevision += 1;
     await _prefs.setBool(_keyShieldEnabled, value);
     _pushNativeShieldConfig();
     notifyListeners();
@@ -946,6 +956,7 @@ class BrowserSettingsController extends ChangeNotifier {
 
   Future<void> setBlockThirdPartyCookies(bool value) async {
     _blockThirdPartyCookies = value;
+    _webViewConfigRevision += 1;
     await _prefs.setBool(_keyBlockThirdPartyCookies, value);
     notifyListeners();
   }
@@ -965,12 +976,14 @@ class BrowserSettingsController extends ChangeNotifier {
 
   Future<void> setJavascriptEnabled(bool value) async {
     _javascriptEnabled = value;
+    _webViewConfigRevision += 1;
     await _prefs.setBool(_keyJavascriptEnabled, value);
     notifyListeners();
   }
 
   Future<void> setDesktopMode(bool value) async {
     _desktopMode = value;
+    _webViewConfigRevision += 1;
     await _prefs.setBool(_keyDesktopMode, value);
     _pushNativeShieldConfig();
     notifyListeners();
@@ -978,6 +991,7 @@ class BrowserSettingsController extends ChangeNotifier {
 
   Future<void> setTextScalePercent(int value) async {
     _textScalePercent = value.clamp(75, 175);
+    _webViewConfigRevision += 1;
     await _prefs.setInt(_keyTextScalePercent, _textScalePercent);
     notifyListeners();
   }
@@ -1070,6 +1084,7 @@ class BrowserSettingsController extends ChangeNotifier {
     if (!_jsDisabledHosts.remove(clean)) {
       _jsDisabledHosts.add(clean);
     }
+    _webViewConfigRevision += 1;
     await _prefs.setStringList(_keyJsDisabledHosts, _jsDisabledHosts.toList());
     notifyListeners();
   }

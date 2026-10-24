@@ -15,8 +15,6 @@ import '../../../core/widgets/site_logo.dart';
 import '../../devtools/desktop_inspector_panel.dart';
 import '../../downloads/downloads_controller.dart';
 import '../../downloads/downloads_screen.dart';
-import '../../extensions/extensions_controller.dart';
-import '../../extensions/extensions_screen.dart';
 import '../../news/interest_news_service.dart';
 import '../../search/heaven_search_service.dart';
 import '../../settings/browser_settings.dart';
@@ -46,7 +44,6 @@ class BrowserScreen extends StatefulWidget {
     required this.newsService,
     required this.interests,
     required this.vpn,
-    this.extensions,
   });
 
   final BrowserSettingsController settings;
@@ -56,7 +53,6 @@ class BrowserScreen extends StatefulWidget {
   final HeavenNewsFeedService newsService;
   final InterestProfileController interests;
   final VpnController vpn;
-  final ExtensionsController? extensions;
 
   @override
   State<BrowserScreen> createState() => _BrowserScreenState();
@@ -116,7 +112,6 @@ class _BrowserScreenState extends State<BrowserScreen>
     }
     NativeShieldBridge.instance.onRedirectBlocked = null;
     for (final BrowserTab tab in widget.tabManager.allTabs) {
-      tab.engine.onWebStoreInstallMessage = null;
       tab.engine.onSitePermissionPrompt = null;
     }
     WidgetsBinding.instance.removeObserver(this);
@@ -282,140 +277,6 @@ class _BrowserScreenState extends State<BrowserScreen>
     await _submitOmnibox(clean);
   }
 
-  void _openExtensionsScreen() {
-    if (widget.extensions == null) return;
-    final BrowserTab? targetTab = widget.tabManager.lastActiveWebsiteTab;
-    Navigator.of(context).push(
-      MaterialPageRoute<void>(
-        builder: (_) => ExtensionsScreen(
-          extensions: widget.extensions!,
-          activeEngine: targetTab?.engine ?? _activeEngine,
-          onOpenWebStoreInBrowser: () => _activeEngine.loadUserEntry(
-            ExtensionsController.chromeWebStoreHomeUrl,
-          ),
-          onOpenUrlInNewTab: (String url) => widget.tabManager.openNewTab(
-            incognito: widget.tabManager.isActiveIncognito,
-            initialInput: url,
-          ),
-        ),
-      ),
-    );
-  }
-
-  Future<void> _openQuickExtensionToolbarMenu(
-    BuildContext context,
-    BrowserEngine engine,
-  ) async {
-    final ExtensionsController? extCtrl = widget.extensions;
-    if (extCtrl == null) return;
-    final List<InstalledChromeExtension> enabled =
-        extCtrl.enabledChromeExtensions;
-    if (enabled.isEmpty) {
-      _openExtensionsScreen();
-      return;
-    }
-    if (enabled.length == 1) {
-      await _triggerToolbarExtension(context, enabled.first, engine);
-      return;
-    }
-    await showModalBottomSheet<void>(
-      context: context,
-      showDragHandle: true,
-      builder: (BuildContext sheetContext) {
-        return SafeArea(
-          child: Padding(
-            padding: const EdgeInsets.fromLTRB(16, 4, 16, 18),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: <Widget>[
-                Row(
-                  children: <Widget>[
-                    const Expanded(
-                      child: Text(
-                        'Active Extensions on This Tab',
-                        style: TextStyle(
-                          fontSize: 15.5,
-                          fontWeight: FontWeight.w800,
-                        ),
-                      ),
-                    ),
-                    TextButton(
-                      onPressed: () {
-                        Navigator.pop(sheetContext);
-                        _openExtensionsScreen();
-                      },
-                      child: const Text('Manage'),
-                    ),
-                  ],
-                ),
-                for (final InstalledChromeExtension ext in enabled)
-                  ListTile(
-                    dense: true,
-                    leading: ext.iconBytes != null
-                        ? ClipRRect(
-                            borderRadius: BorderRadius.circular(6),
-                            child: Image.memory(
-                              ext.iconBytes!,
-                              width: 24,
-                              height: 24,
-                            ),
-                          )
-                        : const Icon(Icons.extension_rounded),
-                    title: Text(
-                      ext.name,
-                      style: const TextStyle(fontWeight: FontWeight.w700),
-                    ),
-                    subtitle: const Text(
-                      'Open extension in new tab',
-                      style: TextStyle(fontSize: 11.5),
-                    ),
-                    trailing: Icon(
-                      Icons.open_in_new_rounded,
-                      size: 17,
-                      color: Theme.of(sheetContext).colorScheme.primary,
-                    ),
-                    onTap: () {
-                      Navigator.pop(sheetContext);
-                      _triggerToolbarExtension(context, ext, engine);
-                    },
-                  ),
-              ],
-            ),
-          ),
-        );
-      },
-    );
-  }
-
-  Future<void> _triggerToolbarExtension(
-    BuildContext context,
-    InstalledChromeExtension ext,
-    BrowserEngine engine,
-  ) async {
-    final BrowserTab? contextTab = widget.tabManager.lastActiveWebsiteTab;
-    final BrowserEngine targetEngine = contextTab?.engine ?? engine;
-    await NativeShieldBridge.instance.setPopupContextTab(
-      url: targetEngine.currentUrl ?? 'https://www.google.com',
-      title: targetEngine.pageTitle,
-      webViewId: targetEngine.androidWebViewId,
-    );
-    if (!ext.hasPopup &&
-        !ext.hasOptions &&
-        !targetEngine.isShowingStartPage) {
-      await NativeShieldBridge.instance.triggerChromeExtensionAction(
-        id: ext.id,
-        url: targetEngine.currentUrl ?? 'https://www.google.com',
-        title: targetEngine.pageTitle,
-      );
-      await targetEngine.reinjectActiveExtensions();
-    }
-    await widget.tabManager.openNewTab(
-      incognito: widget.tabManager.isActiveIncognito,
-      initialInput: ext.effectiveLaunchUrl,
-    );
-  }
-
   @override
   Widget build(BuildContext context) {
     final BrowserEngine active = _activeEngine;
@@ -426,7 +287,6 @@ class _BrowserScreenState extends State<BrowserScreen>
         widget.downloads,
         widget.vpn,
         active,
-        if (widget.extensions != null) widget.extensions!,
       ]),
       builder: (BuildContext context, _) {
         final bool incognito = widget.tabManager.isActiveIncognito;
@@ -436,12 +296,6 @@ class _BrowserScreenState extends State<BrowserScreen>
         final ColorScheme colors = effectiveTheme.colorScheme;
         final BrowserEngine engine = _activeEngine;
 
-        engine.onWebStoreInstallMessage ??= (String msg) {
-          if (!mounted) return;
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text(msg), behavior: SnackBarBehavior.floating),
-          );
-        };
         engine.onSitePermissionPrompt ??= _promptSitePermission;
 
         final bool showLinkActions =
@@ -515,20 +369,23 @@ class _BrowserScreenState extends State<BrowserScreen>
                     Expanded(
                       child: Stack(
                         children: <Widget>[
-                          _buildTabsViewport(colors),
+                          RepaintBoundary(child: _buildTabsViewport(colors)),
                           if (engine.isLoading)
                             Positioned(
                               top: 0,
                               left: 0,
                               right: 0,
-                              child: IgnorePointer(
-                                child: LinearProgressIndicator(
-                                  value:
-                                      engine.progress > 0 && engine.progress < 1
-                                      ? engine.progress
-                                      : null,
-                                  minHeight: 2.5,
-                                  backgroundColor: Colors.transparent,
+                              child: RepaintBoundary(
+                                child: IgnorePointer(
+                                  child: LinearProgressIndicator(
+                                    value:
+                                        engine.progress > 0 &&
+                                            engine.progress < 1
+                                        ? engine.progress
+                                        : null,
+                                    minHeight: 2.5,
+                                    backgroundColor: Colors.transparent,
+                                  ),
                                 ),
                               ),
                             ),
@@ -544,20 +401,6 @@ class _BrowserScreenState extends State<BrowserScreen>
                                 ),
                               ),
                             ),
-                          if (widget.extensions != null &&
-                              ExtensionsController.extractChromeWebStoreId(
-                                    engine.currentUrl,
-                                  ) !=
-                                  null)
-                            Positioned(
-                              right: 14,
-                              bottom: 14,
-                              child: _buildChromeWebStoreInstallPill(
-                                context,
-                                colors,
-                                engine,
-                              ),
-                            ),
                           if (incognito && widget.tabManager.isIncognitoLocked)
                             Positioned.fill(
                               child: _buildIncognitoLockOverlay(colors),
@@ -568,8 +411,12 @@ class _BrowserScreenState extends State<BrowserScreen>
                                 key: const Key('omnibox_outside_dismiss_scrim'),
                                 behavior: HitTestBehavior.opaque,
                                 onTap: _closeOmniboxOverlay,
-                                child: Container(
-                                  color: Colors.black.withValues(alpha: 0.18),
+                                child: AnimatedOpacity(
+                                  duration: const Duration(milliseconds: 160),
+                                  opacity: 1,
+                                  child: Container(
+                                    color: Colors.black.withValues(alpha: 0.18),
+                                  ),
                                 ),
                               ),
                             ),
@@ -578,11 +425,30 @@ class _BrowserScreenState extends State<BrowserScreen>
                               left: 10,
                               right: 10,
                               top: 8,
-                              child: _buildOmniboxOverlayPanel(
-                                context,
-                                colors,
-                                engine,
-                                showLinkActions: showLinkActions,
+                              child: TweenAnimationBuilder<double>(
+                                duration: const Duration(milliseconds: 180),
+                                curve: Curves.easeOutCubic,
+                                tween: Tween<double>(begin: 0.0, end: 1.0),
+                                builder:
+                                    (
+                                      BuildContext context,
+                                      double t,
+                                      Widget? child,
+                                    ) {
+                                      return Opacity(
+                                        opacity: t,
+                                        child: Transform.translate(
+                                          offset: Offset(0, (1 - t) * -8),
+                                          child: child,
+                                        ),
+                                      );
+                                    },
+                                child: _buildOmniboxOverlayPanel(
+                                  context,
+                                  colors,
+                                  engine,
+                                  showLinkActions: showLinkActions,
+                                ),
                               ),
                             ),
                         ],
@@ -776,17 +642,24 @@ class _BrowserScreenState extends State<BrowserScreen>
           );
     }
 
+    // Keep WebViewWidget onstage (never Offstage) so Android's SurfaceTexture &
+    // MediaCodec pipeline are already attached and initialized on FIRST load —
+    // ensuring YouTube and HTML5 videos play immediately without needing refresh!
     return Stack(
       fit: StackFit.expand,
       children: <Widget>[
-        Offstage(
-          offstage: overlayChild != null,
+        IgnorePointer(
+          ignoring: overlayChild != null,
           child: WebViewWidget(
             key: ValueKey<String>('wv_${tab.id}'),
             controller: engine.controller!,
           ),
         ),
-        overlayChild ?? const SizedBox.shrink(),
+        if (overlayChild != null)
+          ColoredBox(
+            color: Theme.of(context).scaffoldBackgroundColor,
+            child: overlayChild,
+          ),
       ],
     );
   }
@@ -1286,10 +1159,6 @@ class _BrowserScreenState extends State<BrowserScreen>
     BrowserEngine engine,
     bool incognito,
   ) {
-    final bool hasActiveExtensions =
-        widget.extensions != null &&
-        widget.extensions!.enabledChromeExtensions.isNotEmpty;
-
     return Row(
       children: <Widget>[
         const SizedBox(width: 4),
@@ -1361,24 +1230,13 @@ class _BrowserScreenState extends State<BrowserScreen>
             ),
           ),
         ),
-        if (hasActiveExtensions && !engine.isShowingStartPage)
-          InkWell(
-            key: const Key('omnibox_extension_button'),
-            borderRadius: BorderRadius.circular(14),
-            onTap: () => _openQuickExtensionToolbarMenu(context, engine),
-            child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 4),
-              child: Icon(
-                Icons.extension_rounded,
-                size: 17,
-                color: colors.primary,
-              ),
-            ),
-          ),
         if (engine.pageBlockedCount > 0)
           GestureDetector(
+            key: const Key('omnibox_shield_badge_button'),
             onTap: () => _openShieldSheet(context),
-            child: Container(
+            child: AnimatedContainer(
+              duration: const Duration(milliseconds: 200),
+              curve: Curves.easeOutCubic,
               margin: const EdgeInsets.only(right: 4),
               padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
               decoration: BoxDecoration(
@@ -1508,6 +1366,12 @@ class _BrowserScreenState extends State<BrowserScreen>
     await showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,
+      enableDrag: true,
+      useSafeArea: true,
+      showDragHandle: true,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+      ),
       builder: (_) => ShieldSheet(
         engine: _activeEngine,
         settings: widget.settings,
@@ -1751,12 +1615,14 @@ class _BrowserScreenState extends State<BrowserScreen>
                           },
                         ),
                         5 => _DeckActionTile(
-                          icon: Icons.extension_outlined,
-                          label: 'Extensions',
-                          accent: colors.primary,
+                          icon: widget.settings.shieldEnabled
+                              ? Icons.shield_rounded
+                              : Icons.shield_outlined,
+                          label: 'Shield',
+                          accent: AppTheme.shieldEmerald,
                           onTap: () {
                             Navigator.pop(sheetContext);
-                            _openExtensionsScreen();
+                            _openShieldSheet(context);
                           },
                         ),
                         6 => _DeckActionTile(
@@ -1780,7 +1646,6 @@ class _BrowserScreenState extends State<BrowserScreen>
                                 builder: (_) => SettingsScreen(
                                   settings: widget.settings,
                                   tabManager: widget.tabManager,
-                                  extensions: widget.extensions,
                                   downloads: widget.downloads,
                                 ),
                               ),
@@ -1864,29 +1729,6 @@ class _BrowserScreenState extends State<BrowserScreen>
                       );
                     },
                   ),
-                  if (widget.extensions != null)
-                    ListTile(
-                      dense: true,
-                      contentPadding: const EdgeInsets.symmetric(horizontal: 8),
-                      leading: Icon(
-                        Icons.extension_outlined,
-                        size: 20,
-                        color: colors.primary,
-                      ),
-                      title: const Text('Chrome Extensions'),
-                      trailing: Text(
-                        '${widget.extensions!.enabledCount} ON',
-                        style: TextStyle(
-                          fontSize: 11.5,
-                          fontWeight: FontWeight.w800,
-                          color: colors.primary,
-                        ),
-                      ),
-                      onTap: () {
-                        Navigator.pop(sheetContext);
-                        _openExtensionsScreen();
-                      },
-                    ),
                   ListTile(
                     dense: true,
                     contentPadding: const EdgeInsets.symmetric(horizontal: 8),
@@ -2119,95 +1961,6 @@ class _BrowserScreenState extends State<BrowserScreen>
                 ],
               ),
             ),
-          ),
-        );
-      },
-    );
-  }
-
-  Widget _buildChromeWebStoreInstallPill(
-    BuildContext context,
-    ColorScheme colors,
-    BrowserEngine engine,
-  ) {
-    final ExtensionsController extCtrl = widget.extensions!;
-    final String? extId = ExtensionsController.extractChromeWebStoreId(
-      engine.currentUrl,
-    );
-    if (extId == null) return const SizedBox.shrink();
-
-    return ListenableBuilder(
-      listenable: extCtrl,
-      builder: (BuildContext context, _) {
-        final bool installed = extCtrl.isInstalled(extId);
-        final bool installing =
-            extCtrl.isInstalling && extCtrl.installingId == extId;
-
-        if (installed) {
-          return Material(
-            elevation: 6,
-            borderRadius: BorderRadius.circular(999),
-            color: AppTheme.shieldEmerald,
-            child: InkWell(
-              borderRadius: BorderRadius.circular(999),
-              onTap: _openExtensionsScreen,
-              child: const Padding(
-                padding: EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: <Widget>[
-                    Icon(
-                      Icons.check_circle_rounded,
-                      size: 18,
-                      color: Colors.white,
-                    ),
-                    SizedBox(width: 7),
-                    Text(
-                      'Added to Heaven',
-                      style: TextStyle(
-                        color: Colors.white,
-                        fontWeight: FontWeight.w800,
-                        fontSize: 13,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ),
-          );
-        }
-
-        return FloatingActionButton.extended(
-          heroTag: 'cws_install_pill',
-          onPressed: installing
-              ? null
-              : () async {
-                  final String? err = await extCtrl.installFromWebStore(
-                    engine.currentUrl ?? extId,
-                  );
-                  if (!context.mounted) return;
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    SnackBar(
-                      content: Text(
-                        err ?? 'Chrome Extension (.crx) installed in Heaven!',
-                      ),
-                      behavior: SnackBarBehavior.floating,
-                    ),
-                  );
-                },
-          icon: installing
-              ? const SizedBox(
-                  width: 18,
-                  height: 18,
-                  child: CircularProgressIndicator(
-                    strokeWidth: 2,
-                    color: Colors.white,
-                  ),
-                )
-              : const Icon(Icons.extension_rounded, size: 19),
-          label: Text(
-            installing ? 'Installing .crx...' : 'Add to Heaven (.crx)',
-            style: const TextStyle(fontWeight: FontWeight.w800),
           ),
         );
       },

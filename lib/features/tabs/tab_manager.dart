@@ -9,7 +9,6 @@ import 'package:webview_flutter/webview_flutter.dart';
 
 import '../../core/utils/omnibox_parser.dart';
 import '../browser/engine/browser_engine.dart';
-import '../extensions/extensions_controller.dart';
 import '../settings/browser_settings.dart';
 
 class TabGroup {
@@ -57,6 +56,7 @@ class BrowserTab {
     required this.createdAt,
     DateTime? lastActiveAt,
     this.groupId,
+    this.previewBytes,
   }) : lastActiveAt = lastActiveAt ?? createdAt,
        repaintKey = GlobalKey();
 
@@ -87,7 +87,6 @@ class BrowserTab {
 class TabManagerController extends ChangeNotifier {
   TabManagerController({
     required this.settings,
-    this.extensions,
     this.enablePlatformWebView = true,
   }) {
     _restoreOrInitializeSession();
@@ -96,9 +95,12 @@ class TabManagerController extends ChangeNotifier {
   static const String _keySavedTabs = 'hb.openTabs.v13';
   static const String _keySavedGroups = 'hb.tabGroups.v13';
   static const String _keySavedActiveTab = 'hb.activeTabId.v13';
+  static const String _keyTabPreviewPrefix = 'hb.tabPreview.v15.';
+
+  static String _previewStorageKey(String tabId) =>
+      '$_keyTabPreviewPrefix$tabId';
 
   final BrowserSettingsController settings;
-  final ExtensionsController? extensions;
   final bool enablePlatformWebView;
 
   final List<BrowserTab> _tabs = <BrowserTab>[];
@@ -196,12 +198,23 @@ class TabManagerController extends ChangeNotifier {
               final String? title = entry['title']?.toString().trim();
               final String? groupId = entry['groupId']?.toString().trim();
 
+              Uint8List? restoredPreview;
+              final String? rawPrevB64 = settings.prefs.getString(
+                _previewStorageKey(id),
+              );
+              if (rawPrevB64 != null && rawPrevB64.isNotEmpty) {
+                try {
+                  final Uint8List decodedBytes = base64Decode(rawPrevB64);
+                  if (decodedBytes.isNotEmpty) {
+                    restoredPreview = decodedBytes;
+                  }
+                } on FormatException {
+                  // Ignore malformed cached preview.
+                }
+              }
+
               final BrowserEngine engine = BrowserEngine(
                 settings: settings,
-                extensions: extensions,
-                onOpenNewTabFromExtension: (String extUrl) {
-                  unawaited(openNewTab(incognito: false, initialInput: extUrl));
-                },
                 isIncognito: false,
                 enablePlatformWebView: enablePlatformWebView,
                 initialPersistedUrl: (url != null && url.isNotEmpty)
@@ -211,17 +224,20 @@ class TabManagerController extends ChangeNotifier {
               );
               engine.addListener(_onTabEngineChanged);
 
-              _tabs.add(
-                BrowserTab(
-                  id: id,
-                  isIncognito: false,
-                  engine: engine,
-                  createdAt: DateTime.now(),
-                  groupId: (groupId != null && groupId.isNotEmpty)
-                      ? groupId
-                      : null,
-                ),
+              final BrowserTab restoredTab = BrowserTab(
+                id: id,
+                isIncognito: false,
+                engine: engine,
+                createdAt: DateTime.now(),
+                groupId: (groupId != null && groupId.isNotEmpty)
+                    ? groupId
+                    : null,
+                previewBytes: restoredPreview,
               );
+              engine.onPageLoadedForPreview = () {
+                unawaited(captureTabPreview(restoredTab));
+              };
+              _tabs.add(restoredTab);
             }
             _activeTabId = targetActive;
             return;
@@ -273,24 +289,6 @@ class TabManagerController extends ChangeNotifier {
     if (activeStdId.isNotEmpty) {
       unawaited(settings.prefs.setString(_keySavedActiveTab, activeStdId));
     }
-  }
-
-  /// Returns the most recently active non-extension web tab so extensions
-  /// opened in a New Tab still target the website the user was browsing!
-  BrowserTab? get lastActiveWebsiteTab {
-    final List<BrowserTab> candidates = _tabs
-        .where(
-          (BrowserTab t) =>
-              !t.engine.isShowingStartPage &&
-              (t.engine.currentHost?.toLowerCase() ?? '') !=
-                  'chrome-ext.heaven.local',
-        )
-        .toList();
-    if (candidates.isEmpty) return null;
-    candidates.sort(
-      (BrowserTab a, BrowserTab b) => b.lastActiveAt.compareTo(a.lastActiveAt),
-    );
-    return candidates.first;
   }
 
   TabGroup? groupById(String? groupId) {
@@ -390,14 +388,36 @@ class TabManagerController extends ChangeNotifier {
   BrowserEngine get activeEngine => activeTab.engine;
   bool get isActiveIncognito => activeTab.isIncognito;
 
+  void _persistTabPreviewBytes(BrowserTab tab, Uint8List bytes) {
+    if (tab.isIncognito || settings.clearOnExit || bytes.isEmpty) {
+      return;
+    }
+    unawaited(
+      settings.prefs.setString(_previewStorageKey(tab.id), base64Encode(bytes)),
+    );
+  }
+
+  void _removePersistedTabPreview(String tabId) {
+    unawaited(settings.prefs.remove(_previewStorageKey(tabId)));
+  }
+
   Future<void> captureTabPreview(BrowserTab tab) async {
     if (!enablePlatformWebView) {
+      return;
+    }
+    if (tab.engine.isShowingStartPage) {
+      if (tab.previewBytes != null) {
+        tab.previewBytes = null;
+        _removePersistedTabPreview(tab.id);
+        notifyListeners();
+      }
       return;
     }
     try {
       final Uint8List? webShot = await tab.engine.captureNativeWebViewPreview();
       if (webShot != null && webShot.isNotEmpty) {
         tab.previewBytes = webShot;
+        _persistTabPreviewBytes(tab, webShot);
         notifyListeners();
         return;
       }
@@ -405,18 +425,22 @@ class TabManagerController extends ChangeNotifier {
       if (ctx == null || !ctx.mounted) return;
       final RenderObject? ro = ctx.findRenderObject();
       if (ro is RenderRepaintBoundary && !ro.debugNeedsPaint) {
-        final ui.Image img = await ro.toImage(pixelRatio: 1.25);
+        final ui.Image img = await ro.toImage(pixelRatio: 1.15);
         final ByteData? byteData = await img.toByteData(
           format: ui.ImageByteFormat.png,
         );
         img.dispose();
         if (byteData != null) {
-          tab.previewBytes = byteData.buffer.asUint8List();
-          notifyListeners();
+          final Uint8List pngBytes = byteData.buffer.asUint8List();
+          if (pngBytes.isNotEmpty) {
+            tab.previewBytes = pngBytes;
+            _persistTabPreviewBytes(tab, pngBytes);
+            notifyListeners();
+          }
         }
       }
     } catch (_) {
-      // Non-fatal fallback if surface isn't ready yet.
+      // Non-fatal fallback if surface isn't ready yet; existing previewBytes stay intact!
     }
   }
 
@@ -424,10 +448,6 @@ class TabManagerController extends ChangeNotifier {
     final String id = 'tab_${_nextIdCounter++}';
     final BrowserEngine engine = BrowserEngine(
       settings: settings,
-      extensions: extensions,
-      onOpenNewTabFromExtension: (String url) {
-        unawaited(openNewTab(incognito: incognito, initialInput: url));
-      },
       isIncognito: incognito,
       enablePlatformWebView: enablePlatformWebView,
     );
@@ -439,6 +459,9 @@ class TabManagerController extends ChangeNotifier {
       engine: engine,
       createdAt: DateTime.now(),
     );
+    engine.onPageLoadedForPreview = () {
+      unawaited(captureTabPreview(tab));
+    };
     _tabs.add(tab);
     if (switchTo) {
       _activeTabId = id;
@@ -473,6 +496,7 @@ class TabManagerController extends ChangeNotifier {
   void switchToTab(String tabId) {
     if (_activeTabId == tabId) {
       activeTab.lastActiveAt = DateTime.now();
+      unawaited(activeTab.engine.focusNativeWebView());
       return;
     }
     BrowserTab? target;
@@ -489,6 +513,7 @@ class TabManagerController extends ChangeNotifier {
     unawaited(captureTabPreview(activeTab));
     _activeTabId = tabId;
     target.lastActiveAt = DateTime.now();
+    unawaited(target.engine.focusNativeWebView());
     _persistSessionSnapshot(force: true);
     notifyListeners();
   }
@@ -500,6 +525,7 @@ class TabManagerController extends ChangeNotifier {
     }
     final BrowserTab removed = _tabs.removeAt(idx);
     removed.engine.removeListener(_onTabEngineChanged);
+    _removePersistedTabPreview(removed.id);
 
     if (removed.isIncognito) {
       final bool moreIncognito = _tabs.any((BrowserTab t) => t.isIncognito);
@@ -540,6 +566,7 @@ class TabManagerController extends ChangeNotifier {
 
     for (final BrowserTab tab in targets) {
       tab.engine.removeListener(_onTabEngineChanged);
+      _removePersistedTabPreview(tab.id);
       tab.engine.dispose();
       _tabs.remove(tab);
     }
@@ -559,6 +586,7 @@ class TabManagerController extends ChangeNotifier {
     }
     for (final BrowserTab tab in _tabs) {
       tab.engine.removeListener(_onTabEngineChanged);
+      _removePersistedTabPreview(tab.id);
       tab.engine.dispose();
     }
     _tabs.clear();

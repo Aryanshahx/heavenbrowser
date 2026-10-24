@@ -3,7 +3,7 @@ import 'package:flutter/services.dart';
 import 'heaven_shield.dart';
 
 typedef NativeBlockedCallback =
-    void Function(int webViewId, String domain, int bytesSaved);
+    void Function(int webViewId, String domain, int count, int bytesSaved);
 typedef NativePullProgressCallback = void Function(double progress);
 typedef NativePullRefreshCallback = void Function();
 typedef NativeDownloadStartedCallback =
@@ -46,8 +46,6 @@ class NativeShieldBridge {
   NativeDownloadStartedCallback? onDownloadStarted;
   void Function(String target)? onRedirectBlocked;
   void Function(int bytesSaved)? onBytesSaved;
-  void Function(String url)? onExtensionOpenNewTab;
-  void Function(Map<String, Object?> result)? onWebStoreExtensionInstalled;
 
   Future<dynamic> _handleNativeCall(MethodCall call) async {
     final Object? rawArgs = call.arguments;
@@ -56,10 +54,13 @@ class NativeShieldBridge {
       final Object? idVal = rawArgs['webViewId'];
       final int webViewId = idVal is num ? idVal.toInt() : -1;
       final String domain = (rawArgs['domain']?.toString() ?? 'tracker').trim();
+      final int count = (rawArgs['count'] is num)
+          ? (rawArgs['count']! as num).toInt().clamp(1, 500)
+          : 1;
       final int bytesSaved = (rawArgs['bytesSaved'] is num)
           ? (rawArgs['bytesSaved']! as num).toInt()
-          : 14200;
-      _blockedListeners[webViewId]?.call(webViewId, domain, bytesSaved);
+          : (14200 * count);
+      _blockedListeners[webViewId]?.call(webViewId, domain, count, bytesSaved);
     } else if (call.method == 'onBytesSaved' &&
         rawArgs is Map<Object?, Object?>) {
       final int bytes = (rawArgs['bytesSaved'] is num)
@@ -73,18 +74,6 @@ class NativeShieldBridge {
       final String target = (rawArgs['target']?.toString() ?? 'redirect')
           .trim();
       onRedirectBlocked?.call(target);
-    } else if (call.method == 'onExtensionOpenNewTab' &&
-        rawArgs is Map<Object?, Object?>) {
-      final String url = (rawArgs['url']?.toString() ?? '').trim();
-      if (url.isNotEmpty) {
-        onExtensionOpenNewTab?.call(url);
-      }
-    } else if (call.method == 'onWebStoreExtensionInstalled' &&
-        rawArgs is Map<Object?, Object?>) {
-      onWebStoreExtensionInstalled?.call(<String, Object?>{
-        for (final MapEntry<Object?, Object?> e in rawArgs.entries)
-          if (e.key != null) e.key.toString(): e.value,
-      });
     } else if (call.method == 'onMediaPlaybackChanged' &&
         rawArgs is Map<Object?, Object?>) {
       final int webViewId = (rawArgs['webViewId'] as num?)?.toInt() ?? -1;
@@ -314,50 +303,23 @@ class NativeShieldBridge {
     }
   }
 
+  Future<void> focusWebView(int webViewId) async {
+    try {
+      await _channel.invokeMethod<bool>(
+        'focusWebView',
+        <String, Object>{'webViewId': webViewId},
+      );
+    } on MissingPluginException {
+      // Expected in widget tests.
+    } on PlatformException {
+      // Non-fatal.
+    }
+  }
+
   Future<bool> sendTestNotification() async {
     try {
       final bool? ok = await _channel.invokeMethod<bool>(
         'sendTestNotification',
-      );
-      return ok ?? false;
-    } on MissingPluginException {
-      return true;
-    } on PlatformException {
-      return false;
-    }
-  }
-
-  Future<String> sendChromeExtensionRuntimeMessage({
-    required String id,
-    required String messageJson,
-    String? senderUrl,
-  }) async {
-    try {
-      final String? reply = await _channel.invokeMethod<String>(
-        'sendChromeExtensionRuntimeMessage',
-        <String, Object?>{
-          'id': id,
-          'messageJson': messageJson,
-          'senderUrl': senderUrl ?? '',
-        },
-      );
-      return reply ?? '{}';
-    } on MissingPluginException {
-      return '{}';
-    } on PlatformException {
-      return '{}';
-    }
-  }
-
-  Future<bool> triggerChromeExtensionAction({
-    required String id,
-    required String url,
-    required String title,
-  }) async {
-    try {
-      final bool? ok = await _channel.invokeMethod<bool>(
-        'triggerChromeExtensionAction',
-        <String, Object>{'id': id, 'url': url, 'title': title},
       );
       return ok ?? false;
     } on MissingPluginException {
@@ -375,19 +337,6 @@ class NativeShieldBridge {
       await _channel.invokeMethod<bool>(
         'approveExternalNavigation',
         <String, Object>{'webViewId': webViewId, 'host': host},
-      );
-    } on MissingPluginException {
-      // Expected in widget tests.
-    } on PlatformException {
-      // Ignore platform channel errors.
-    }
-  }
-
-  Future<void> prepareChromeWebStoreView(int webViewId) async {
-    try {
-      await _channel.invokeMethod<bool>(
-        'prepareChromeWebStoreView',
-        <String, Object>{'webViewId': webViewId},
       );
     } on MissingPluginException {
       // Expected in widget tests.
@@ -446,7 +395,7 @@ class NativeShieldBridge {
         return <String, Object?>{
           'downloadId': DateTime.now().millisecondsSinceEpoch,
           'url': url,
-          'fileName': fileName ?? 'download.bin',
+          'fileName': fileName ?? _guessFallbackNameFromUrl(url),
           'mimeType': mimeType ?? '',
           'state': 'running',
           'bytesDownloaded': 0,
@@ -461,7 +410,7 @@ class NativeShieldBridge {
       return <String, Object?>{
         'downloadId': DateTime.now().millisecondsSinceEpoch,
         'url': url,
-        'fileName': fileName ?? 'download.bin',
+        'fileName': fileName ?? _guessFallbackNameFromUrl(url),
         'mimeType': mimeType ?? '',
         'state': 'running',
         'bytesDownloaded': 0,
@@ -470,6 +419,17 @@ class NativeShieldBridge {
     } on PlatformException {
       return null;
     }
+  }
+
+  static String _guessFallbackNameFromUrl(String rawUrl) {
+    final Uri? u = Uri.tryParse(rawUrl.trim());
+    if (u != null && u.pathSegments.isNotEmpty) {
+      final String last = Uri.decodeComponent(u.pathSegments.last).trim();
+      if (last.isNotEmpty && !last.toLowerCase().endsWith('.bin')) {
+        return last;
+      }
+    }
+    return 'download';
   }
 
   Future<void> restoreDownload({
@@ -868,153 +828,6 @@ class NativeShieldBridge {
       return true;
     } on PlatformException {
       return false;
-    }
-  }
-
-  Future<List<Map<String, Object?>>> listChromeExtensions() async {
-    try {
-      final Object? raw = await _channel.invokeMethod<Object?>(
-        'listChromeExtensions',
-      );
-      if (raw is List<Object?>) {
-        return raw
-            .whereType<Map<Object?, Object?>>()
-            .map(
-              (Map<Object?, Object?> m) => <String, Object?>{
-                for (final MapEntry<Object?, Object?> e in m.entries)
-                  if (e.key != null) e.key.toString(): e.value,
-              },
-            )
-            .toList(growable: false);
-      }
-      return const <Map<String, Object?>>[];
-    } on MissingPluginException {
-      return const <Map<String, Object?>>[];
-    } on PlatformException {
-      return const <Map<String, Object?>>[];
-    }
-  }
-
-  Future<Map<String, Object?>> installWebStoreExtension(String urlOrId) async {
-    try {
-      final Map<Object?, Object?>? raw = await _channel
-          .invokeMethod<Map<Object?, Object?>>(
-            'installWebStoreExtension',
-            <String, Object>{'urlOrId': urlOrId},
-          );
-      if (raw == null) {
-        return const <String, Object?>{
-          'ok': false,
-          'error': 'Extension installer unavailable.',
-        };
-      }
-      return <String, Object?>{
-        for (final MapEntry<Object?, Object?> e in raw.entries)
-          if (e.key != null) e.key.toString(): e.value,
-      };
-    } on MissingPluginException {
-      return const <String, Object?>{
-        'ok': false,
-        'error': 'Extension installer unavailable in headless environment.',
-      };
-    } on PlatformException catch (e) {
-      return <String, Object?>{
-        'ok': false,
-        'error': e.message ?? 'Chrome Web Store installation failed.',
-      };
-    }
-  }
-
-  Future<Map<String, Object?>?> pickChromeExtensionFile() async {
-    try {
-      final Map<Object?, Object?>? raw = await _channel
-          .invokeMethod<Map<Object?, Object?>>('pickChromeExtensionFile');
-      if (raw == null) {
-        return null;
-      }
-      return <String, Object?>{
-        for (final MapEntry<Object?, Object?> e in raw.entries)
-          if (e.key != null) e.key.toString(): e.value,
-      };
-    } on MissingPluginException {
-      return null;
-    } on PlatformException {
-      return null;
-    }
-  }
-
-  Future<bool> toggleChromeExtension(String id, bool enabled) async {
-    try {
-      final bool? ok = await _channel.invokeMethod<bool>(
-        'toggleChromeExtension',
-        <String, Object>{'id': id, 'enabled': enabled},
-      );
-      return ok ?? false;
-    } on MissingPluginException {
-      return true;
-    } on PlatformException {
-      return false;
-    }
-  }
-
-  Future<bool> uninstallChromeExtension(String id) async {
-    try {
-      final bool? ok = await _channel.invokeMethod<bool>(
-        'uninstallChromeExtension',
-        <String, Object>{'id': id},
-      );
-      return ok ?? false;
-    } on MissingPluginException {
-      return true;
-    } on PlatformException {
-      return false;
-    }
-  }
-
-  Future<String> getChromeExtensionScriptsForUrl(String url) async {
-    try {
-      final String? js = await _channel.invokeMethod<String>(
-        'getChromeExtensionScriptsForUrl',
-        <String, Object>{'url': url},
-      );
-      return js ?? '';
-    } on MissingPluginException {
-      return '';
-    } on PlatformException {
-      return '';
-    }
-  }
-
-  Future<void> updateChromeExtensionStorage(
-    String id,
-    String patchJson,
-  ) async {
-    try {
-      await _channel.invokeMethod<bool>(
-        'updateChromeExtensionStorage',
-        <String, Object>{'id': id, 'patchJson': patchJson},
-      );
-    } on MissingPluginException {
-      // Expected in widget tests.
-    } on PlatformException {
-      // Non-fatal.
-    }
-  }
-
-  Future<void> setPopupContextTab({
-    required String url,
-    required String title,
-    int? webViewId,
-  }) async {
-    try {
-      await _channel.invokeMethod<bool>(
-        'setPopupContextTab',
-        <String, Object?>{'url': url, 'title': title, 'webViewId': webViewId},
-      );
-    } on MissingPluginException {
-      // Expected in widget tests.
-    } on PlatformException {
-      // Non-fatal.
     }
   }
 

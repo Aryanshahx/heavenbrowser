@@ -51,7 +51,6 @@ import android.webkit.MimeTypeMap;
 import android.webkit.ServiceWorkerClient;
 import android.webkit.ServiceWorkerController;
 import android.webkit.SslErrorHandler;
-import android.webkit.URLUtil;
 import android.webkit.WebResourceError;
 import android.webkit.WebResourceRequest;
 import android.webkit.WebResourceResponse;
@@ -77,6 +76,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.net.HttpURLConnection;
 import java.net.URI;
+import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -110,7 +110,6 @@ public class HeavenShieldPlugin
   private static final int VOICE_SEARCH_REQUEST_CODE = 49021;
   private static final int NOTIF_PERM_REQUEST_CODE = 49022;
   private static final int FOLDER_PICKER_REQUEST_CODE = 49025;
-  private static final int EXT_FILE_PICKER_REQUEST_CODE = 49026;
   private static final int SITE_HARDWARE_PERM_REQUEST_CODE = 49027;
   private static final int LEGACY_CREDENTIAL_REQUEST_CODE = 49028;
 
@@ -155,74 +154,14 @@ public class HeavenShieldPlugin
           + "}catch(_){}"
           + "})();";
 
-  private static final String CHROME_WEB_STORE_DESKTOP_SCRIPT =
-      "(function(){"
-          + "try{"
-          + "var dUa='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36';"
-          + "Object.defineProperty(navigator,'userAgent',{get:()=>dUa,configurable:true});"
-          + "Object.defineProperty(navigator,'appVersion',{get:()=>dUa.slice(8),configurable:true});"
-          + "Object.defineProperty(navigator,'platform',{get:()=>'Win32',configurable:true});"
-          + "Object.defineProperty(navigator,'vendor',{get:()=>'Google Inc.',configurable:true});"
-          + "Object.defineProperty(navigator,'maxTouchPoints',{get:()=>0,configurable:true});"
-          + "Object.defineProperty(navigator,'userAgentData',{get:()=>({"
-          + "brands:[{brand:'Chromium',version:'134'},{brand:'Google Chrome',version:'134'},{brand:'Not:A-Brand',version:'24'}],"
-          + "mobile:false,platform:'Windows',"
-          + "getHighEntropyValues:function(){return Promise.resolve({architecture:'x86',bitness:'64',mobile:false,model:'',platform:'Windows',platformVersion:'15.0.0',uaFullVersion:'134.0.6998.89'});}"
-          + "}),configurable:true});"
-          + "var m=document.querySelector('meta[name=\"viewport\"]');"
-          + "if(!m&&document.head){m=document.createElement('meta');m.name='viewport';document.head.appendChild(m);}"
-          + "if(m){m.setAttribute('content','width=1160, initial-scale=0.36, minimum-scale=0.2, maximum-scale=4.0, user-scalable=yes');}"
-          + "function cleanStoreUi(){"
-          + "  var nodes=document.querySelectorAll('div, section, aside, p, span');"
-          + "  for(var i=0;i<nodes.length;i++){"
-          + "    var el=nodes[i];"
-          + "    if(el.children&&el.children.length>4)continue;"
-          + "    var t=(el.textContent||'').trim();"
-          + "    if(t.indexOf('only available on desktop')!==-1||t.indexOf('open this page on your desktop browser')!==-1){"
-          + "      var box=el.closest('[role=\"alert\"], [role=\"banner\"], aside')||el;"
-          + "      box.style.setProperty('display','none','important');"
-          + "    }"
-          + "  }"
-          + "  var btns=document.querySelectorAll('button');"
-          + "  for(var b=0;b<btns.length;b++){"
-          + "    var btn=btns[b];"
-          + "    var bt=(btn.textContent||'').trim();"
-          + "    if((bt==='Add to Chrome'||bt==='Install')&&!btn.__heavenHooked){"
-          + "      btn.__heavenHooked=true;"
-          + "      btn.removeAttribute('disabled');"
-          + "      btn.setAttribute('aria-disabled','false');"
-          + "      btn.addEventListener('click',function(ev){"
-          + "        ev.preventDefault();ev.stopPropagation();"
-          + "        var mId=(location.href||'').match(/([a-p]{32})/);"
-          + "        if(mId){"
-          + "          this.textContent='Installing in Heaven...';"
-          + "          if(window.HeavenExtNative&&window.HeavenExtNative.installWebStore){"
-          + "            window.HeavenExtNative.installWebStore(location.href);"
-          + "          }else if(window.HeavenChromeExtChannel){"
-          + "            window.HeavenChromeExtChannel.postMessage(JSON.stringify({extId:mId[1],op:'install_cws',data:{url:location.href}}));"
-          + "          }"
-          + "        }"
-          + "      },true);"
-          + "    }"
-          + "  }"
-          + "}"
-          + "cleanStoreUi();"
-          + "if(!window.__heavenCwsObs&&document.documentElement){"
-          + "  window.__heavenCwsObs=new MutationObserver(cleanStoreUi);"
-          + "  window.__heavenCwsObs.observe(document.documentElement,{childList:true,subtree:true});"
-          + "}"
-          + "}catch(_){}"
-          + "})();";
-
   private static final String EARLY_YOUTUBE_AND_REDIRECT_GUARD_SCRIPT =
       "(function(){"
           + "try{"
-          + "if(window.__heavenShieldDocStartV12)return;"
-          + "window.__heavenShieldDocStartV12=true;"
+          + "if(window.__heavenShieldDocStartV15)return;"
+          + "window.__heavenShieldDocStartV15=true;"
           + "function notify(tag){try{if(window.HeavenShieldChannel&&window.HeavenShieldChannel.postMessage)window.HeavenShieldChannel.postMessage(tag);}catch(e){}}"
           + "var trustedList=window.__heavenTrustedHosts||[];"
           + "var hn=(location.hostname||'').toLowerCase().replace(/^www\\./,'');"
-          + "if(hn==='chrome-ext.heaven.local'||location.protocol==='chrome-extension:')return;"
           + "for(var ti=0;ti<trustedList.length;ti++){"
           + "  var th=trustedList[ti];"
           + "  if(th&&(hn===th||hn.slice(-(th.length+1))==='.'+th))return;"
@@ -335,7 +274,9 @@ public class HeavenShieldPlugin
           + "            var data=origParse(rawTxt);"
           + "            pruneYtAds(data,0);"
           + "            notify('youtube-ad');"
-          + "            return new Response(JSON.stringify(data),{status:resp.status,statusText:resp.statusText,headers:resp.headers});"
+          + "            var cleanResp=new Response(JSON.stringify(data),{status:resp.status,statusText:resp.statusText,headers:{'Content-Type':'application/json; charset=UTF-8'}});"
+          + "            try{Object.defineProperty(cleanResp,'url',{value:resp.url});}catch(_){}"
+          + "            return cleanResp;"
           + "          }catch(e){return resp;}"
           + "        }).catch(function(){return resp;});"
           + "      });"
@@ -424,8 +365,8 @@ public class HeavenShieldPlugin
   private static final String BG_AUDIO_AND_SCROLL_SCRIPT =
       "(function(){"
           + "try{"
-          + "if(window.__heavenMediaHookV14)return;"
-          + "window.__heavenMediaHookV14=true;"
+          + "if(window.__heavenMediaHookV15)return;"
+          + "window.__heavenMediaHookV15=true;"
           + "window.__hbInBg=window.__hbInBg||false;"
           + "if(window.__heavenWebNotifsBlocked&&window.Notification){"
           + "  try{"
@@ -436,29 +377,19 @@ public class HeavenShieldPlugin
           + "var isGoogleSerp=(location.hostname||'').indexOf('www.google.')===0&&location.pathname==='/search';"
           + "if(window.__heavenBgMediaEnabled&&!isGoogleSerp){"
           + "  try{"
-          + "    Object.defineProperty(Document.prototype,'hidden',{configurable:true,get:function(){return false;}});"
-          + "    Object.defineProperty(Document.prototype,'webkitHidden',{configurable:true,get:function(){return false;}});"
-          + "    Object.defineProperty(Document.prototype,'visibilityState',{configurable:true,get:function(){return 'visible';}});"
-          + "    Object.defineProperty(Document.prototype,'webkitVisibilityState',{configurable:true,get:function(){return 'visible';}});"
-          + "    Object.defineProperty(document,'hidden',{configurable:true,get:function(){return false;}});"
-          + "    Object.defineProperty(document,'visibilityState',{configurable:true,get:function(){return 'visible';}});"
-          + "    var blockVis=function(ev){if(ev){ev.stopImmediatePropagation();ev.stopPropagation();}};"
-          + "    window.addEventListener('visibilitychange',blockVis,true);"
-          + "    window.addEventListener('webkitvisibilitychange',blockVis,true);"
-          + "    document.addEventListener('visibilitychange',blockVis,true);"
-          + "    document.addEventListener('webkitvisibilitychange',blockVis,true);"
-          + "    document.addEventListener('freeze',blockVis,true);"
-          + "    window.addEventListener('pagehide',blockVis,true);"
-          + "    var origDocAdd=Document.prototype.addEventListener;"
-          + "    Document.prototype.addEventListener=function(type,fn,opts){"
-          + "      if(type==='visibilitychange'||type==='webkitvisibilitychange'||type==='freeze')return;"
-          + "      return origDocAdd.apply(this,arguments);"
-          + "    };"
-          + "    var origWinAdd=Window.prototype.addEventListener;"
-          + "    Window.prototype.addEventListener=function(type,fn,opts){"
-          + "      if(type==='visibilitychange'||type==='webkitvisibilitychange'||type==='freeze')return;"
-          + "      return origWinAdd.apply(this,arguments);"
-          + "    };"
+          + "    var origHiddenDesc=Object.getOwnPropertyDescriptor(Document.prototype,'hidden');"
+          + "    var origVisDesc=Object.getOwnPropertyDescriptor(Document.prototype,'visibilityState');"
+          + "    Object.defineProperty(Document.prototype,'hidden',{configurable:true,get:function(){return window.__hbInBg?false:(origHiddenDesc&&origHiddenDesc.get?origHiddenDesc.get.call(this):false);}});"
+          + "    Object.defineProperty(Document.prototype,'webkitHidden',{configurable:true,get:function(){return window.__hbInBg?false:(origHiddenDesc&&origHiddenDesc.get?origHiddenDesc.get.call(this):false);}});"
+          + "    Object.defineProperty(Document.prototype,'visibilityState',{configurable:true,get:function(){return window.__hbInBg?'visible':(origVisDesc&&origVisDesc.get?origVisDesc.get.call(this):'visible');}});"
+          + "    Object.defineProperty(Document.prototype,'webkitVisibilityState',{configurable:true,get:function(){return window.__hbInBg?'visible':(origVisDesc&&origVisDesc.get?origVisDesc.get.call(this):'visible');}});"
+          + "    var guardBgVis=function(ev){if(window.__hbInBg&&ev){ev.stopImmediatePropagation();ev.stopPropagation();}};"
+          + "    window.addEventListener('visibilitychange',guardBgVis,true);"
+          + "    window.addEventListener('webkitvisibilitychange',guardBgVis,true);"
+          + "    document.addEventListener('visibilitychange',guardBgVis,true);"
+          + "    document.addEventListener('webkitvisibilitychange',guardBgVis,true);"
+          + "    document.addEventListener('freeze',guardBgVis,true);"
+          + "    window.addEventListener('pagehide',guardBgVis,true);"
           + "    var origPause=HTMLMediaElement.prototype.pause;"
           + "    HTMLMediaElement.prototype.pause=function(){"
           + "      if(window.__hbInBg&&this.__hbShouldPlayInBg&&!window.__hbMediaCmdPause&&!this.ended){"
@@ -466,7 +397,7 @@ public class HeavenShieldPlugin
           + "      }"
           + "      return origPause.apply(this,arguments);"
           + "    };"
-          + "    setInterval(function(){try{window._lact=Date.now();}catch(e){}},5000);"
+          + "    setInterval(function(){if(window.__hbInBg){try{window._lact=Date.now();}catch(e){}}},5000);"
           + "  }catch(e){}"
           + "}"
           + "function reportMedia(el,playing,ended){"
@@ -488,25 +419,6 @@ public class HeavenShieldPlugin
           + "  t.__hbShouldPlayInBg=false;"
           + "  reportMedia(t,false,!!t.ended);"
           + "},true);"
-          + "var lastScTop=0;var lastScTarget=null;"
-          + "window.addEventListener('scroll',function(ev){"
-          + "  try{"
-          + "    if(!window.HeavenMediaBridge||!window.HeavenMediaBridge.onScroll)return;"
-          + "    var tgt=ev&&ev.target;"
-          + "    var st=0;"
-          + "    if(!tgt||tgt===document||tgt===document.documentElement||tgt===document.body){"
-          + "      st=window.pageYOffset||document.documentElement.scrollTop||0;"
-          + "      tgt=document;"
-          + "    }else if(typeof tgt.scrollTop==='number'&&tgt.scrollHeight>tgt.clientHeight+80){"
-          + "      st=tgt.scrollTop;"
-          + "    }else{return;}"
-          + "    if(lastScTarget!==tgt){lastScTarget=tgt;lastScTop=st;return;}"
-          + "    var dy=st-lastScTop;"
-          + "    if(Math.abs(dy)<14&&st>12)return;"
-          + "    lastScTop=st;"
-          + "    window.HeavenMediaBridge.onScroll(Math.round(st),Math.round(dy));"
-          + "  }catch(e){}"
-          + "},{passive:true,capture:true});"
           + "}catch(_){}"
           + "})();";
 
@@ -525,13 +437,14 @@ public class HeavenShieldPlugin
   private static final class DownloadJob {
     final long id;
     final String url;
-    final String fileName;
+    volatile String resolvedUrl;
+    volatile String fileName;
     volatile String mimeType;
     final String userAgent;
     final String cookies;
     final String referer;
-    final File targetFile;
-    final File partFile;
+    volatile File targetFile;
+    volatile File partFile;
 
     volatile String state = "running"; // running, paused, completed, failed, canceled
     final AtomicLong bytesDownloaded = new AtomicLong(0L);
@@ -556,6 +469,7 @@ public class HeavenShieldPlugin
         File partFile) {
       this.id = id;
       this.url = url;
+      this.resolvedUrl = url;
       this.fileName = fileName;
       this.mimeType = mimeType != null ? mimeType : "";
       this.userAgent = userAgent != null ? userAgent : "";
@@ -593,15 +507,11 @@ public class HeavenShieldPlugin
   private MethodChannel channel;
   private MethodChannel.Result pendingVoiceResult;
   private MethodChannel.Result pendingFolderResult;
-  private MethodChannel.Result pendingExtFileResult;
   private MethodChannel.Result pendingNotifPermResult;
   private MethodChannel.Result pendingSiteHardwarePermResult;
   private MethodChannel.Result pendingBiometricResult;
   private HeavenVpnManager vpnManager;
-  private HeavenChromeExtManager chromeExtManager;
   private volatile long activeFocusedWebViewId = -1L;
-  private volatile String activePopupTabUrl = "https://www.google.com";
-  private volatile String activePopupTabTitle = "Google";
 
   private final ExecutorService downloadPool = Executors.newCachedThreadPool();
   private final Map<Long, DownloadJob> downloadJobs = new ConcurrentHashMap<>();
@@ -627,6 +537,46 @@ public class HeavenShieldPlugin
   private volatile String activeMediaTitle = "Heaven";
   private volatile String activeMediaHost = "Heaven";
   private final Map<Long, Boolean> lastNavBarVisibleByWv = new ConcurrentHashMap<>();
+  private final Map<Long, Long> lastNavToggleMsByWv = new ConcurrentHashMap<>();
+  private final Map<Long, Integer> accumulatedScrollDyByWv = new ConcurrentHashMap<>();
+  private final Map<Long, Long> pageLoadingUntilMsByWv = new ConcurrentHashMap<>();
+  private final Map<Long, Integer> pendingBlockedCountByWv = new ConcurrentHashMap<>();
+  private final Map<Long, String> pendingBlockedDomainByWv = new ConcurrentHashMap<>();
+  private final Map<Long, Long> pendingBlockedBytesByWv = new ConcurrentHashMap<>();
+  private final AtomicLong pendingExtraBytesSaved = new AtomicLong(0L);
+  private volatile boolean blockedBatchScheduled = false;
+  private final Runnable flushBlockedStatsRunnable =
+      new Runnable() {
+        @Override
+        public void run() {
+          blockedBatchScheduled = false;
+          MethodChannel ch = channel;
+          if (ch == null) {
+            pendingBlockedCountByWv.clear();
+            pendingBlockedDomainByWv.clear();
+            pendingBlockedBytesByWv.clear();
+            pendingExtraBytesSaved.set(0L);
+            return;
+          }
+          for (Long wvId : new ArrayList<>(pendingBlockedCountByWv.keySet())) {
+            Integer cnt = pendingBlockedCountByWv.remove(wvId);
+            String dom = pendingBlockedDomainByWv.remove(wvId);
+            Long bSaved = pendingBlockedBytesByWv.remove(wvId);
+            if (cnt != null && cnt > 0) {
+              Map<String, Object> payload = new HashMap<>(8);
+              payload.put("webViewId", wvId);
+              payload.put("domain", dom != null ? dom : "");
+              payload.put("count", cnt);
+              payload.put("bytesSaved", bSaved != null ? bSaved : 0L);
+              ch.invokeMethod("onResourceBlocked", payload);
+            }
+          }
+          long extraSaved = pendingExtraBytesSaved.getAndSet(0L);
+          if (extraSaved > 0L) {
+            ch.invokeMethod("onBytesSaved", Collections.singletonMap("bytesSaved", extraSaved));
+          }
+        }
+      };
   private final Runnable bgKeepAliveLoop =
       new Runnable() {
         @Override
@@ -706,124 +656,6 @@ public class HeavenShieldPlugin
     this.customDownloadPath = sp.getString(PREF_DOWNLOAD_PATH, "");
     this.downloadNotificationsEnabled = sp.getBoolean(PREF_DL_NOTIFS_ENABLED, true);
     this.vpnManager = new HeavenVpnManager(appCtx);
-    this.chromeExtManager = new HeavenChromeExtManager(appCtx);
-    this.chromeExtManager.setOnExtensionsChangedListener(this::refreshAllDocumentStartHandlers);
-    this.chromeExtManager.setActiveTabBridge(
-        new HeavenChromeExtManager.ActiveTabExtensionBridge() {
-          @Override
-          public void evalInActiveTab(final String jsCode) {
-            mainHandler.post(
-                () -> {
-                  if (pluginBinding == null || activeFocusedWebViewId < 0) {
-                    return;
-                  }
-                  WebView wv =
-                      WebViewFlutterAndroidExternalApi.getWebView(
-                          pluginBinding, activeFocusedWebViewId);
-                  if (wv != null && jsCode != null && !jsCode.isEmpty()) {
-                    wv.evaluateJavascript(jsCode, null);
-                  }
-                });
-          }
-
-          @Override
-          public void evalInAllWebViews(final String jsCode) {
-            mainHandler.post(
-                () -> {
-                  if (pluginBinding == null || jsCode == null || jsCode.isEmpty()) {
-                    return;
-                  }
-                  for (Long id : new ArrayList<>(docStartHandlers.keySet())) {
-                    if (id == null) continue;
-                    try {
-                      WebView wv = WebViewFlutterAndroidExternalApi.getWebView(pluginBinding, id);
-                      if (wv != null) {
-                        wv.evaluateJavascript(jsCode, null);
-                      }
-                    } catch (Throwable ignored) {
-                    }
-                  }
-                });
-          }
-
-          @Override
-          public void evalInWebView(final long webViewId, final String jsCode) {
-            mainHandler.post(
-                () -> {
-                  if (pluginBinding == null || webViewId < 0 || jsCode == null || jsCode.isEmpty()) {
-                    return;
-                  }
-                  try {
-                    WebView wv =
-                        WebViewFlutterAndroidExternalApi.getWebView(pluginBinding, webViewId);
-                    if (wv != null) {
-                      wv.evaluateJavascript(jsCode, null);
-                    }
-                  } catch (Throwable ignored) {
-                  }
-                });
-          }
-
-          @Override
-          public void openNewTab(final String url) {
-            mainHandler.post(
-                () -> {
-                  MethodChannel ch = channel;
-                  if (ch != null && url != null && !url.isEmpty()) {
-                    ch.invokeMethod("onExtensionOpenNewTab", Collections.singletonMap("url", url));
-                  }
-                });
-          }
-
-          @Override
-          public void navigateTargetTab(final String url) {
-            mainHandler.post(
-                () -> {
-                  if (url == null || url.isEmpty()) return;
-                  if (pluginBinding != null && activeFocusedWebViewId >= 0) {
-                    WebView wv =
-                        WebViewFlutterAndroidExternalApi.getWebView(
-                            pluginBinding, activeFocusedWebViewId);
-                    if (wv != null) {
-                      wv.loadUrl(url);
-                      return;
-                    }
-                  }
-                  MethodChannel ch = channel;
-                  if (ch != null) {
-                    ch.invokeMethod("onExtensionOpenNewTab", Collections.singletonMap("url", url));
-                  }
-                });
-          }
-
-          @Override
-          public void onWebStoreInstalledFromPage(final Map<String, Object> res) {
-            mainHandler.post(
-                () -> {
-                  String doneJs =
-                      "(function(){var bs=document.querySelectorAll('button');for(var i=0;i<bs.length;i++){if(bs[i].textContent&&bs[i].textContent.indexOf('Installing in Heaven')!==-1){bs[i].textContent='Added to Heaven';}}})();";
-                  for (Long id : new ArrayList<>(docStartHandlers.keySet())) {
-                    if (id == null || pluginBinding == null) continue;
-                    WebView wv = WebViewFlutterAndroidExternalApi.getWebView(pluginBinding, id);
-                    if (wv != null) wv.evaluateJavascript(doneJs, null);
-                  }
-                  MethodChannel ch = channel;
-                  if (ch != null && res != null) {
-                    ch.invokeMethod("onWebStoreExtensionInstalled", res);
-                  }
-                });
-          }
-
-          @Override
-          public String getActiveTabUrl() {
-            return activePopupTabUrl;
-          }
-
-          @Override
-          public String getActiveTabTitle() {
-            return activePopupTabTitle;
-          }
-        });
     this.channel = new MethodChannel(binding.getBinaryMessenger(), CHANNEL_NAME);
     this.channel.setMethodCallHandler(this);
     setupServiceWorkerShield();
@@ -837,13 +669,10 @@ public class HeavenShieldPlugin
 
   @Override
   public void onDetachedFromEngine(FlutterPluginBinding binding) {
+    mainHandler.removeCallbacks(flushBlockedStatsRunnable);
     unregisterDownloadControlReceiver(binding.getApplicationContext());
     unregisterMediaCommandReceiver(binding.getApplicationContext());
     stopBackgroundMediaService();
-    if (this.chromeExtManager != null) {
-      this.chromeExtManager.shutdown();
-      this.chromeExtManager = null;
-    }
     if (this.channel != null) {
       this.channel.setMethodCallHandler(null);
       this.channel = null;
@@ -1223,45 +1052,6 @@ public class HeavenShieldPlugin
       folderCb.success(null);
       return true;
     }
-    if (requestCode == EXT_FILE_PICKER_REQUEST_CODE) {
-      MethodChannel.Result extCb = this.pendingExtFileResult;
-      this.pendingExtFileResult = null;
-      if (extCb == null) {
-        return true;
-      }
-      if (resultCode == Activity.RESULT_OK && data != null && data.getData() != null) {
-        final Uri docUri = data.getData();
-        final Context ctx = resolveContext();
-        if (ctx != null && chromeExtManager != null) {
-          downloadPool.execute(
-              () -> {
-                try (InputStream is = ctx.getContentResolver().openInputStream(docUri);
-                    ByteArrayOutputStream bos = new ByteArrayOutputStream()) {
-                  if (is == null) {
-                    mainHandler.post(() -> extCb.success(null));
-                    return;
-                  }
-                  byte[] buf = new byte[16384];
-                  int n;
-                  while ((n = is.read(buf)) > 0) {
-                    bos.write(buf, 0, n);
-                  }
-                  String seg = docUri.getLastPathSegment();
-                  chromeExtManager.installFromLocalBytes(
-                      seg != null ? seg : "extension.crx", bos.toByteArray(), extCb);
-                } catch (Throwable t) {
-                  Map<String, Object> err = new HashMap<>();
-                  err.put("ok", false);
-                  err.put("error", "Could not read selected extension file");
-                  mainHandler.post(() -> extCb.success(err));
-                }
-              });
-          return true;
-        }
-      }
-      extCb.success(null);
-      return true;
-    }
     if (requestCode == LEGACY_CREDENTIAL_REQUEST_CODE) {
       MethodChannel.Result bioCb = this.pendingBiometricResult;
       this.pendingBiometricResult = null;
@@ -1318,14 +1108,6 @@ public class HeavenShieldPlugin
           new ServiceWorkerClient() {
             @Override
             public WebResourceResponse shouldInterceptRequest(WebResourceRequest request) {
-              if (request != null && chromeExtManager != null) {
-                WebResourceResponse extRes =
-                    chromeExtManager.interceptExtensionRequest(
-                        request.getUrl(), activePopupTabUrl, activePopupTabTitle);
-                if (extRes != null) {
-                  return extRes;
-                }
-              }
               return interceptIfAdOrTracker(-1L, request);
             }
           });
@@ -1362,14 +1144,31 @@ public class HeavenShieldPlugin
         if (idObj instanceof Number) {
           long wvId = ((Number) idObj).longValue();
           String normInit = initHost != null ? normalizeHost(initHost) : "";
-          if (!HeavenChromeExtManager.EXT_VIRTUAL_HOST.equals(normInit)) {
-            this.activeFocusedWebViewId = wvId;
-          }
+          this.activeFocusedWebViewId = wvId;
           if (!normInit.isEmpty()) {
             currentPageHosts.put(wvId, normInit);
           }
           boolean attached = attachShieldToWebView(wvId);
           result.success(attached);
+        } else {
+          result.success(false);
+        }
+        break;
+
+      case "focusWebView":
+        Object focusObj = call.argument("webViewId");
+        if (focusObj instanceof Number && pluginBinding != null) {
+          long fWvId = ((Number) focusObj).longValue();
+          this.activeFocusedWebViewId = fWvId;
+          try {
+            WebView wv = WebViewFlutterAndroidExternalApi.getWebView(pluginBinding, fWvId);
+            if (wv != null) {
+              wv.onResume();
+              wv.resumeTimers();
+            }
+          } catch (Throwable ignored) {
+          }
+          result.success(true);
         } else {
           result.success(false);
         }
@@ -1414,9 +1213,7 @@ public class HeavenShieldPlugin
             currentPageHosts.remove(id);
           } else {
             String normHost = normalizeHost(pageHost);
-            if (!HeavenChromeExtManager.EXT_VIRTUAL_HOST.equals(normHost)) {
-              this.activeFocusedWebViewId = id;
-            }
+            this.activeFocusedWebViewId = id;
             currentPageHosts.put(id, normHost);
             userInitiatedNavUntilMs.put(id, System.currentTimeMillis() + 4500L);
           }
@@ -1524,75 +1321,6 @@ public class HeavenShieldPlugin
         handleRequestSiteHardwarePermissions(permNames, result);
         break;
 
-      case "sendChromeExtensionRuntimeMessage":
-        if (chromeExtManager != null) {
-          String extId = call.argument("id");
-          String msgJson = call.argument("messageJson");
-          String senderUrl = call.argument("senderUrl");
-          chromeExtManager.dispatchRuntimeMessageToBackground(
-              extId != null ? extId : "", msgJson, senderUrl, result);
-        } else {
-          result.success("{}");
-        }
-        break;
-
-      case "triggerChromeExtensionAction":
-        if (chromeExtManager != null) {
-          String extId = call.argument("id");
-          String tabUrl = call.argument("url");
-          String tabTitle = call.argument("title");
-          chromeExtManager.dispatchExtensionActionClicked(
-              extId != null ? extId : "",
-              tabUrl != null ? tabUrl : activePopupTabUrl,
-              tabTitle != null ? tabTitle : activePopupTabTitle);
-          result.success(true);
-        } else {
-          result.success(false);
-        }
-        break;
-
-      case "listChromeExtensions":
-        if (chromeExtManager != null) {
-          result.success(chromeExtManager.listInstalledExtensions());
-        } else {
-          result.success(Collections.emptyList());
-        }
-        break;
-
-      case "installWebStoreExtension":
-        if (chromeExtManager != null) {
-          String urlOrId = call.argument("urlOrId");
-          chromeExtManager.installFromWebStore(urlOrId != null ? urlOrId : "", result);
-        } else {
-          result.success(Collections.singletonMap("ok", false));
-        }
-        break;
-
-      case "pickChromeExtensionFile":
-        handlePickChromeExtensionFile(result);
-        break;
-
-      case "toggleChromeExtension":
-        if (chromeExtManager != null) {
-          String extId = call.argument("id");
-          Boolean en = call.argument("enabled");
-          result.success(
-              chromeExtManager.setExtensionEnabled(
-                  extId != null ? extId : "", en == null || en));
-        } else {
-          result.success(false);
-        }
-        break;
-
-      case "uninstallChromeExtension":
-        if (chromeExtManager != null) {
-          String extId = call.argument("id");
-          result.success(chromeExtManager.uninstallExtension(extId != null ? extId : ""));
-        } else {
-          result.success(false);
-        }
-        break;
-
       case "approveExternalNavigation":
         Object navWvObj = call.argument("webViewId");
         String navHost = call.argument("host");
@@ -1601,62 +1329,6 @@ public class HeavenShieldPlugin
           String key = navWvId + "|" + normalizeHost(navHost);
           approvedExternalNavUntilMs.put(key, System.currentTimeMillis() + 5000L);
           userInitiatedNavUntilMs.put(navWvId, System.currentTimeMillis() + 4500L);
-        }
-        result.success(true);
-        break;
-
-      case "prepareChromeWebStoreView":
-        Object cwsWvObj = call.argument("webViewId");
-        if (cwsWvObj instanceof Number && pluginBinding != null) {
-          WebView cwsWv =
-              WebViewFlutterAndroidExternalApi.getWebView(
-                  pluginBinding, ((Number) cwsWvObj).longValue());
-          if (cwsWv != null) {
-            cwsWv.getSettings().setUserAgentString(DESKTOP_CHROME_WIN_UA);
-            cwsWv.getSettings().setUseWideViewPort(true);
-            cwsWv.getSettings().setLoadWithOverviewMode(true);
-            result.success(true);
-            return;
-          }
-        }
-        result.success(false);
-        break;
-
-      case "getChromeExtensionScriptsForUrl":
-        if (chromeExtManager != null) {
-          String pageUrl = call.argument("url");
-          String u = pageUrl != null ? pageUrl : "";
-          downloadPool.execute(
-              () -> {
-                String bundle = chromeExtManager.buildContentScriptsBundleForUrl(u);
-                mainHandler.post(() -> result.success(bundle));
-              });
-        } else {
-          result.success("");
-        }
-        break;
-
-      case "updateChromeExtensionStorage":
-        if (chromeExtManager != null) {
-          String extId = call.argument("id");
-          String patchJson = call.argument("patchJson");
-          chromeExtManager.updateExtensionStorage(extId, patchJson);
-        }
-        result.success(true);
-        break;
-
-      case "setPopupContextTab":
-        String pUrl = call.argument("url");
-        String pTitle = call.argument("title");
-        Object pWvId = call.argument("webViewId");
-        if (pWvId instanceof Number) {
-          activeFocusedWebViewId = ((Number) pWvId).longValue();
-        }
-        if (pUrl != null && !pUrl.isEmpty()) {
-          activePopupTabUrl = pUrl;
-        }
-        if (pTitle != null && !pTitle.isEmpty()) {
-          activePopupTabTitle = pTitle;
         }
         result.success(true);
         break;
@@ -1750,6 +1422,7 @@ public class HeavenShieldPlugin
 
       Bitmap bitmap = Bitmap.createBitmap(targetW, targetH, Bitmap.Config.ARGB_8888);
       Canvas canvas = new Canvas(bitmap);
+      canvas.drawColor(Color.WHITE);
       canvas.scale(scale, scale);
       canvas.translate(-webView.getScrollX(), -webView.getScrollY());
       webView.draw(canvas);
@@ -1757,6 +1430,11 @@ public class HeavenShieldPlugin
       downloadPool.execute(
           () -> {
             try {
+              if (isUniformBlankBitmap(bitmap)) {
+                bitmap.recycle();
+                mainHandler.post(() -> result.success(null));
+                return;
+              }
               ByteArrayOutputStream out = new ByteArrayOutputStream(28 * 1024);
               bitmap.compress(Bitmap.CompressFormat.JPEG, 82, out);
               bitmap.recycle();
@@ -1770,6 +1448,26 @@ public class HeavenShieldPlugin
     } catch (Throwable t) {
       result.success(null);
     }
+  }
+
+  private static boolean isUniformBlankBitmap(Bitmap bmp) {
+    if (bmp == null || bmp.getWidth() < 8 || bmp.getHeight() < 8) {
+      return true;
+    }
+    int w = bmp.getWidth();
+    int h = bmp.getHeight();
+    int first = bmp.getPixel(w / 2, h / 2) & 0x00FFFFFF;
+    int[] xs = {w / 8, w / 4, w / 2, (w * 3) / 4, (w * 7) / 8};
+    int[] ys = {h / 8, h / 4, h / 2, (h * 3) / 4, (h * 7) / 8};
+    for (int y : ys) {
+      for (int x : xs) {
+        int px = bmp.getPixel(x, y) & 0x00FFFFFF;
+        if (px != first) {
+          return false;
+        }
+      }
+    }
+    return true;
   }
 
   private void startVoiceSearch(MethodChannel.Result result) {
@@ -1877,8 +1575,6 @@ public class HeavenShieldPlugin
   }
 
   private String buildDocumentStartBundle() {
-    String extDocStart =
-        this.chromeExtManager != null ? this.chromeExtManager.getDocumentStartExtensionsJs() : "";
     String flagsJs =
         "window.__heavenBgMediaEnabled="
             + this.backgroundMediaEnabled
@@ -1894,8 +1590,7 @@ public class HeavenShieldPlugin
           + flagsJs
           + "})();"
           + BG_AUDIO_AND_SCROLL_SCRIPT
-          + (this.ultraDataSaverMode ? ULTRA_DATA_SAVER_STYLE_SCRIPT : "")
-          + extDocStart;
+          + (this.ultraDataSaverMode ? ULTRA_DATA_SAVER_STYLE_SCRIPT : "");
     }
     StringBuilder trustedJs = new StringBuilder(flagsJs).append("window.__heavenTrustedHosts=[");
     boolean first = true;
@@ -1914,8 +1609,7 @@ public class HeavenShieldPlugin
         + BG_AUDIO_AND_SCROLL_SCRIPT
         + EARLY_YOUTUBE_AND_REDIRECT_GUARD_SCRIPT
         + (this.ultraDataSaverMode ? ULTRA_DATA_SAVER_STYLE_SCRIPT : "")
-        + cos
-        + extDocStart;
+        + cos;
   }
 
   private void installOrRefreshDocumentStartShield(WebView webView, long webViewId) {
@@ -1981,7 +1675,8 @@ public class HeavenShieldPlugin
         settings.setUserAgentString(DESKTOP_CHROME_WIN_UA);
         webView.setInitialScale(0);
         webView.evaluateJavascript(DESKTOP_VIEWPORT_SCRIPT, null);
-      } else {
+      } else if (prev != null && prev) {
+        // Only reset UA/scale when actually transitioning back from Desktop -> Mobile!
         settings.setUserAgentString(MOBILE_CHROME_ANDROID_UA);
         webView.setInitialScale(0);
         webView.evaluateJavascript(MOBILE_VIEWPORT_RESET_SCRIPT, null);
@@ -1996,6 +1691,8 @@ public class HeavenShieldPlugin
       return;
     }
     lastNavBarVisibleByWv.put(webViewId, visible);
+    lastNavToggleMsByWv.put(webViewId, SystemClock.elapsedRealtime());
+    accumulatedScrollDyByWv.put(webViewId, 0);
     mainHandler.post(
         () -> {
           MethodChannel ch = channel;
@@ -2055,15 +1752,6 @@ public class HeavenShieldPlugin
             }
           });
     }
-
-    @JavascriptInterface
-    public void onScroll(int scrollTop, int deltaY) {
-      if (scrollTop <= 16 || deltaY <= -14) {
-        emitNavBarVisibility(webViewId, true);
-      } else if (deltaY >= 18 && scrollTop > 42) {
-        emitNavBarVisibility(webViewId, false);
-      }
-    }
   }
 
   @SuppressLint("JavascriptInterface")
@@ -2077,34 +1765,59 @@ public class HeavenShieldPlugin
         return false;
       }
 
-      webView.getSettings().setMediaPlaybackRequiresUserGesture(false);
-      webView.getSettings().setBlockNetworkImage(this.ultraDataSaverMode);
+      WebSettings ws = webView.getSettings();
+      ws.setMediaPlaybackRequiresUserGesture(false);
+      ws.setDomStorageEnabled(true);
+      ws.setMixedContentMode(WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE);
+      ws.setBlockNetworkImage(this.ultraDataSaverMode);
+      webView.onResume();
+      webView.resumeTimers();
       try {
         webView.addJavascriptInterface(
             new WebViewMediaJsBridge(webViewId), "HeavenMediaBridge");
       } catch (Throwable ignored) {
       }
-      if (this.chromeExtManager != null) {
-        try {
-          webView.addJavascriptInterface(
-              this.chromeExtManager.createWebViewJsBridge(webViewId), "HeavenExtNative");
-        } catch (Throwable ignored) {
-        }
-      }
 
       if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
         webView.setOnScrollChangeListener(
             (v, scrollX, scrollY, oldScrollX, oldScrollY) -> {
-              int dy = scrollY - oldScrollY;
-              if (scrollY <= 16 || dy <= -12) {
+              if (scrollY <= 18) {
+                accumulatedScrollDyByWv.put(webViewId, 0);
                 emitNavBarVisibility(webViewId, true);
-              } else if (dy >= 16 && scrollY > 42) {
+                return;
+              }
+              long nowMs = SystemClock.elapsedRealtime();
+              Long loadingLockUntil = pageLoadingUntilMsByWv.get(webViewId);
+              if (loadingLockUntil != null && nowMs < loadingLockUntil) {
+                return;
+              }
+              Long lastToggle = lastNavToggleMsByWv.get(webViewId);
+              if (lastToggle != null && (nowMs - lastToggle) < 380L) {
+                accumulatedScrollDyByWv.put(webViewId, 0);
+                return;
+              }
+              int dy = scrollY - oldScrollY;
+              if (Math.abs(dy) > 420) {
+                // Ignore programmatic layout / anchor jumps during search & SPA hydration
+                return;
+              }
+              Integer prevAcc = accumulatedScrollDyByWv.get(webViewId);
+              int acc = prevAcc != null ? prevAcc : 0;
+              if ((acc > 0 && dy < 0) || (acc < 0 && dy > 0)) {
+                acc = dy;
+              } else {
+                acc += dy;
+              }
+              accumulatedScrollDyByWv.put(webViewId, acc);
+              if (acc <= -34) {
+                emitNavBarVisibility(webViewId, true);
+              } else if (acc >= 54 && scrollY > 96) {
                 emitNavBarVisibility(webViewId, false);
               }
             });
       }
 
-      applyDesktopSettingsToWebView(webView, webViewId, this.desktopMode, true);
+      applyDesktopSettingsToWebView(webView, webViewId, this.desktopMode, false);
       installOrRefreshDocumentStartShield(webView, webViewId);
       installPullToRefreshListener(webView, webViewId);
       installDownloadListener(webView, webViewId);
@@ -2263,7 +1976,7 @@ public class HeavenShieldPlugin
                 // Prevent WebView from staying stuck on an aborted binary stream navigation!
                 webView.stopLoading();
 
-                String guessedName = URLUtil.guessFileName(url, contentDisposition, mimeType);
+                String guessedName = resolveSmartFileName(url, contentDisposition, mimeType);
                 DownloadJob job =
                     createAndStartJob(
                         url,
@@ -2457,24 +2170,6 @@ public class HeavenShieldPlugin
     }
     File fallback = ctx.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS);
     return fallback != null ? fallback.getAbsolutePath() : null;
-  }
-
-  private void handlePickChromeExtensionFile(MethodChannel.Result result) {
-    if (this.activity == null) {
-      result.success(null);
-      return;
-    }
-    this.pendingExtFileResult = result;
-    Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
-    intent.addCategory(Intent.CATEGORY_OPENABLE);
-    intent.setType("*/*");
-    intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
-    try {
-      this.activity.startActivityForResult(intent, EXT_FILE_PICKER_REQUEST_CODE);
-    } catch (ActivityNotFoundException e) {
-      this.pendingExtFileResult = null;
-      result.success(null);
-    }
   }
 
   @SuppressWarnings("deprecation")
@@ -2993,10 +2688,10 @@ public class HeavenShieldPlugin
   }
 
   private File uniqueTargetFile(File dir, String rawName) {
-    String safe =
-        rawName == null || rawName.trim().isEmpty()
-            ? "download.bin"
-            : rawName.replaceAll("[\\\\/:*?\"<>|]", "_").trim();
+    String safe = sanitizeDownloadFileName(rawName);
+    if (safe.isEmpty()) {
+      safe = "download";
+    }
     File candidate = new File(dir, safe);
     if (!candidate.exists() && !new File(dir, safe + ".part").exists()) {
       return candidate;
@@ -3014,6 +2709,428 @@ public class HeavenShieldPlugin
     return new File(dir, System.currentTimeMillis() + "_" + safe);
   }
 
+  private static String sanitizeDownloadFileName(String raw) {
+    if (raw == null) return "";
+    String s = raw.trim();
+    int slash = Math.max(s.lastIndexOf('/'), s.lastIndexOf('\\'));
+    if (slash >= 0 && slash + 1 < s.length()) {
+      s = s.substring(slash + 1);
+    }
+    s = s.replaceAll("[\\\\/:*?\"<>|\\p{Cntrl}]", "_").trim();
+    while (s.startsWith(".")) {
+      s = s.substring(1).trim();
+    }
+    if (s.length() > 180) {
+      int dot = s.lastIndexOf('.');
+      if (dot > 0 && s.length() - dot <= 12) {
+        String ext = s.substring(dot);
+        s = s.substring(0, 180 - ext.length()) + ext;
+      } else {
+        s = s.substring(0, 180);
+      }
+    }
+    return s;
+  }
+
+  private static String extractValidExtension(String name) {
+    if (name == null) return "";
+    int dot = name.lastIndexOf('.');
+    if (dot <= 0 || dot + 1 >= name.length()) {
+      return "";
+    }
+    String ext = name.substring(dot + 1).trim().toLowerCase(Locale.US);
+    if (ext.isEmpty() || ext.length() > 10 || !ext.matches("[a-z0-9]+")) {
+      return "";
+    }
+    if ("bin".equals(ext)
+        || "download".equals(ext)
+        || "tmp".equals(ext)
+        || "part".equals(ext)
+        || "php".equals(ext)
+        || "ashx".equals(ext)
+        || "aspx".equals(ext)
+        || "jsp".equals(ext)
+        || "cgi".equals(ext)) {
+      return "";
+    }
+    return ext;
+  }
+
+  private static String stripTrailingBinOrGenericExt(String name) {
+    if (name == null || name.isEmpty()) return "download";
+    int dot = name.lastIndexOf('.');
+    if (dot > 0 && dot + 1 < name.length()) {
+      String ext = name.substring(dot + 1).toLowerCase(Locale.US);
+      if ("bin".equals(ext)
+          || "download".equals(ext)
+          || "php".equals(ext)
+          || "ashx".equals(ext)
+          || "aspx".equals(ext)
+          || "jsp".equals(ext)) {
+        return name.substring(0, dot);
+      }
+    }
+    return name;
+  }
+
+  private static String decodePercentSafe(String raw) {
+    if (raw == null || raw.isEmpty()) return "";
+    try {
+      return URLDecoder.decode(raw.replace("+", "%2B"), "UTF-8");
+    } catch (Throwable ignored) {
+      return raw;
+    }
+  }
+
+  private static String extractDispositionFileName(String contentDisposition) {
+    if (contentDisposition == null || contentDisposition.trim().isEmpty()) {
+      return "";
+    }
+    String cd = contentDisposition.trim();
+    // 1. RFC 5987 filename*=UTF-8''encoded_name.ext
+    String lower = cd.toLowerCase(Locale.US);
+    int starIdx = lower.indexOf("filename*=");
+    if (starIdx >= 0) {
+      String rest = cd.substring(starIdx + 10).trim();
+      int semi = rest.indexOf(';');
+      if (semi >= 0) {
+        rest = rest.substring(0, semi).trim();
+      }
+      if ((rest.startsWith("\"") && rest.endsWith("\""))
+          || (rest.startsWith("'") && rest.endsWith("'"))) {
+        rest = rest.substring(1, rest.length() - 1);
+      }
+      int dblQuote = rest.indexOf("''");
+      if (dblQuote >= 0 && dblQuote + 2 < rest.length()) {
+        rest = rest.substring(dblQuote + 2);
+      }
+      String decoded = sanitizeDownloadFileName(decodePercentSafe(rest));
+      if (!decoded.isEmpty()) {
+        return decoded;
+      }
+    }
+    // 2. Standard filename="name.ext" or filename=name.ext
+    int fnIdx = lower.indexOf("filename=");
+    if (fnIdx >= 0) {
+      String rest = cd.substring(fnIdx + 9).trim();
+      if (rest.startsWith("\"")) {
+        int endQ = rest.indexOf('"', 1);
+        rest = endQ > 1 ? rest.substring(1, endQ) : rest.substring(1);
+      } else if (rest.startsWith("'")) {
+        int endQ = rest.indexOf('\'', 1);
+        rest = endQ > 1 ? rest.substring(1, endQ) : rest.substring(1);
+      } else {
+        int semi = rest.indexOf(';');
+        if (semi >= 0) {
+          rest = rest.substring(0, semi).trim();
+        }
+      }
+      String decoded = sanitizeDownloadFileName(decodePercentSafe(rest));
+      if (!decoded.isEmpty()) {
+        return decoded;
+      }
+    }
+    return "";
+  }
+
+  private static String extractUrlFileName(String rawUrl) {
+    if (rawUrl == null || rawUrl.trim().isEmpty()) {
+      return "";
+    }
+    try {
+      Uri u = Uri.parse(rawUrl.trim());
+      String rcd = u.getQueryParameter("response-content-disposition");
+      if (rcd != null && !rcd.isEmpty()) {
+        String fromRcd = extractDispositionFileName(rcd);
+        if (!fromRcd.isEmpty()) return fromRcd;
+      }
+      String[] hintParams = {"filename", "file", "name", "download", "attachment", "title"};
+      for (String p : hintParams) {
+        String val = u.getQueryParameter(p);
+        if (val != null && !val.trim().isEmpty() && val.contains(".")) {
+          String clean = sanitizeDownloadFileName(decodePercentSafe(val));
+          if (!extractValidExtension(clean).isEmpty()) {
+            return clean;
+          }
+        }
+      }
+      String seg = u.getLastPathSegment();
+      if (seg != null && !seg.trim().isEmpty()) {
+        String cleanSeg = sanitizeDownloadFileName(decodePercentSafe(seg));
+        if (!cleanSeg.isEmpty()) {
+          return cleanSeg;
+        }
+      }
+    } catch (Throwable ignored) {
+    }
+    return "";
+  }
+
+  private static String extensionFromMimeOrMagic(
+      String rawMime, String urlHint, byte[] magic, int magicLen) {
+    // 1. Magic byte signatures (100% ground-truth file content when server sends octet-stream!)
+    if (magic != null && magicLen >= 4) {
+      int b0 = magic[0] & 0xFF;
+      int b1 = magic[1] & 0xFF;
+      int b2 = magic[2] & 0xFF;
+      int b3 = magic[3] & 0xFF;
+      if (b0 == 0x25 && b1 == 0x50 && b2 == 0x44 && b3 == 0x46) {
+        return "pdf";
+      }
+      if (b0 == 0x50 && b1 == 0x4B && b2 == 0x03 && b3 == 0x04) {
+        String asciiHead =
+            new String(magic, 0, Math.min(magicLen, 16384), StandardCharsets.ISO_8859_1);
+        String lowerUrl = urlHint != null ? urlHint.toLowerCase(Locale.US) : "";
+        String lowerMime = rawMime != null ? rawMime.toLowerCase(Locale.US) : "";
+        if (asciiHead.contains("AndroidManifest.xml")
+            || asciiHead.contains("classes.dex")
+            || lowerMime.contains("android.package-archive")
+            || lowerUrl.contains(".apk")) {
+          return "apk";
+        }
+        if (asciiHead.contains("word/document.xml")) return "docx";
+        if (asciiHead.contains("xl/workbook.xml")) return "xlsx";
+        if (asciiHead.contains("ppt/presentation.xml")) return "pptx";
+        if (asciiHead.contains("META-INF/MANIFEST.MF") && lowerUrl.contains(".jar")) return "jar";
+        if (asciiHead.contains("mimetypeapplication/epub+zip")) return "epub";
+        return "zip";
+      }
+      if (b0 == 0x89 && b1 == 0x50 && b2 == 0x4E && b3 == 0x47) return "png";
+      if (b0 == 0xFF && b1 == 0xD8 && b2 == 0xFF) return "jpg";
+      if (b0 == 0x47 && b1 == 0x49 && b2 == 0x46 && b3 == 0x38) return "gif";
+      if (magicLen >= 12
+          && b0 == 0x52
+          && b1 == 0x49
+          && b2 == 0x46
+          && b3 == 0x46
+          && magic[8] == 'W'
+          && magic[9] == 'E'
+          && magic[10] == 'B'
+          && magic[11] == 'P') {
+        return "webp";
+      }
+      if (magicLen >= 12
+          && b0 == 0x52
+          && b1 == 0x49
+          && b2 == 0x46
+          && b3 == 0x46
+          && magic[8] == 'W'
+          && magic[9] == 'A'
+          && magic[10] == 'V'
+          && magic[11] == 'E') {
+        return "wav";
+      }
+      if (magicLen >= 12
+          && magic[4] == 'f'
+          && magic[5] == 't'
+          && magic[6] == 'y'
+          && magic[7] == 'p') {
+        String brand = new String(magic, 8, 4, StandardCharsets.US_ASCII).toLowerCase(Locale.US);
+        if (brand.startsWith("m4a")) return "m4a";
+        if (brand.startsWith("qt")) return "mov";
+        if (brand.startsWith("avif") || brand.startsWith("avis")) return "avif";
+        return "mp4";
+      }
+      if ((b0 == 'I' && b1 == 'D' && b2 == '3')
+          || (b0 == 0xFF && (b1 & 0xE0) == 0xE0 && (b1 & 0x18) != 0x08)) {
+        return "mp3";
+      }
+      if (b0 == 'f' && b1 == 'L' && b2 == 'a' && b3 == 'C') return "flac";
+      if (b0 == 'O' && b1 == 'g' && b2 == 'g' && b3 == 'S') return "ogg";
+      if (b0 == 0x1A && b1 == 0x45 && b2 == 0xDF && b3 == 0xA3) {
+        String head = new String(magic, 0, Math.min(magicLen, 128), StandardCharsets.ISO_8859_1);
+        return head.toLowerCase(Locale.US).contains("webm") ? "webm" : "mkv";
+      }
+      if (b0 == 'R' && b1 == 'a' && b2 == 'r' && b3 == '!') return "rar";
+      if (magicLen >= 6 && b0 == 0x37 && b1 == 0x7A && b2 == 0xBC && b3 == 0xAF) return "7z";
+      if (b0 == 0x1F && b1 == 0x8B) return "gz";
+    }
+
+    // 2. Clean MIME type mapping (NEVER maps application/octet-stream to .bin!)
+    if (rawMime != null && !rawMime.trim().isEmpty()) {
+      String m = rawMime.trim().toLowerCase(Locale.US);
+      int semi = m.indexOf(';');
+      if (semi > 0) m = m.substring(0, semi).trim();
+      if (!"application/octet-stream".equals(m)
+          && !"binary/octet-stream".equals(m)
+          && !"application/force-download".equals(m)
+          && !"application/x-download".equals(m)
+          && !"application/download".equals(m)
+          && !"*/*".equals(m)) {
+        switch (m) {
+          case "application/vnd.android.package-archive":
+            return "apk";
+          case "application/pdf":
+            return "pdf";
+          case "application/zip":
+          case "application/x-zip-compressed":
+            return "zip";
+          case "application/vnd.rar":
+          case "application/x-rar-compressed":
+            return "rar";
+          case "application/x-7z-compressed":
+            return "7z";
+          case "application/gzip":
+          case "application/x-gzip":
+            return "gz";
+          case "application/x-tar":
+            return "tar";
+          case "application/json":
+            return "json";
+          case "application/epub+zip":
+            return "epub";
+          case "text/plain":
+            return "txt";
+          case "text/csv":
+            return "csv";
+          case "text/html":
+            return "html";
+          case "video/mp4":
+            return "mp4";
+          case "video/webm":
+            return "webm";
+          case "video/x-matroska":
+            return "mkv";
+          case "audio/mpeg":
+          case "audio/mp3":
+            return "mp3";
+          case "audio/mp4":
+          case "audio/x-m4a":
+            return "m4a";
+          case "audio/wav":
+          case "audio/x-wav":
+            return "wav";
+          case "audio/ogg":
+            return "ogg";
+          case "image/jpeg":
+          case "image/jpg":
+            return "jpg";
+          case "image/png":
+            return "png";
+          case "image/webp":
+            return "webp";
+          case "image/gif":
+            return "gif";
+          case "image/svg+xml":
+            return "svg";
+          default:
+            String sysExt = MimeTypeMap.getSingleton().getExtensionFromMimeType(m);
+            if (sysExt != null
+                && !sysExt.isEmpty()
+                && !"bin".equalsIgnoreCase(sysExt)) {
+              return sysExt.toLowerCase(Locale.US);
+            }
+            break;
+        }
+      }
+    }
+    return "";
+  }
+
+  private static String resolveSmartFileName(
+      String url, String contentDisposition, String mimeType) {
+    String dispName = extractDispositionFileName(contentDisposition);
+    String urlName = extractUrlFileName(url);
+    String chosen = !dispName.isEmpty() ? dispName : urlName;
+
+    String existingExt = extractValidExtension(chosen);
+    if (!existingExt.isEmpty()) {
+      return chosen;
+    }
+    String urlExt = extractValidExtension(urlName);
+    String base = stripTrailingBinOrGenericExt(chosen.isEmpty() ? "download" : chosen);
+    if (base.isEmpty()) {
+      base = "download";
+    }
+    if (!urlExt.isEmpty()) {
+      return base + "." + urlExt;
+    }
+    String mimeExt = extensionFromMimeOrMagic(mimeType, url, null, 0);
+    if (!mimeExt.isEmpty()) {
+      return base + "." + mimeExt;
+    }
+    return base;
+  }
+
+  private void refineDownloadJobTarget(
+      DownloadJob job,
+      String responseDisposition,
+      String responseMime,
+      byte[] firstChunk,
+      int firstChunkLen) {
+    try {
+      String dispName = extractDispositionFileName(responseDisposition);
+      String finalUrlName = extractUrlFileName(job.resolvedUrl);
+      String currentExt = extractValidExtension(job.fileName);
+
+      String bestCandidate = !dispName.isEmpty() ? dispName : job.fileName;
+      if ((bestCandidate == null
+              || bestCandidate.isEmpty()
+              || "download".equalsIgnoreCase(stripTrailingBinOrGenericExt(bestCandidate)))
+          && !finalUrlName.isEmpty()) {
+        bestCandidate = finalUrlName;
+      }
+
+      String candExt = extractValidExtension(bestCandidate);
+      String detectedExt =
+          extensionFromMimeOrMagic(
+              responseMime, job.resolvedUrl, firstChunk, firstChunkLen);
+
+      String finalName;
+      if (!candExt.isEmpty()) {
+        // Keep true extension unless server gave .zip header on a verified Android .apk!
+        if ("zip".equals(candExt) && "apk".equals(detectedExt)) {
+          finalName = bestCandidate.substring(0, bestCandidate.lastIndexOf('.')) + ".apk";
+        } else {
+          finalName = bestCandidate;
+        }
+      } else {
+        String cleanBase =
+            stripTrailingBinOrGenericExt(
+                bestCandidate != null && !bestCandidate.isEmpty() ? bestCandidate : "download");
+        if (cleanBase.isEmpty()) cleanBase = "download";
+        String extToUse = !detectedExt.isEmpty() ? detectedExt : extractValidExtension(finalUrlName);
+        if (extToUse.isEmpty() && !currentExt.isEmpty()) {
+          extToUse = currentExt;
+        }
+        finalName = extToUse.isEmpty() ? cleanBase : (cleanBase + "." + extToUse);
+      }
+
+      if (!detectedExt.isEmpty()
+          && (job.mimeType == null
+              || job.mimeType.isEmpty()
+              || "application/octet-stream".equalsIgnoreCase(job.mimeType)
+              || "binary/octet-stream".equalsIgnoreCase(job.mimeType))) {
+        String mappedMime =
+            "apk".equals(detectedExt)
+                ? "application/vnd.android.package-archive"
+                : MimeTypeMap.getSingleton().getMimeTypeFromExtension(detectedExt);
+        if (mappedMime != null && !mappedMime.isEmpty()) {
+          job.mimeType = mappedMime;
+        }
+      }
+
+      if (finalName != null
+          && !finalName.isEmpty()
+          && !finalName.equals(job.fileName)) {
+        File dir = job.targetFile.getParentFile();
+        if (dir != null) {
+          File oldPart = job.partFile;
+          File nextTarget = uniqueTargetFile(dir, finalName);
+          File nextPart = new File(dir, nextTarget.getName() + ".part");
+          if (oldPart != null && oldPart.exists() && !oldPart.equals(nextPart)) {
+            //noinspection ResultOfMethodCallIgnored
+            oldPart.renameTo(nextPart);
+          }
+          job.targetFile = nextTarget;
+          job.partFile = nextPart;
+          job.fileName = nextTarget.getName();
+        }
+      }
+    } catch (Throwable ignored) {
+    }
+  }
+
   private void handleStartDownload(MethodCall call, MethodChannel.Result result) {
     String url = call.argument("url");
     String fileName = call.argument("fileName");
@@ -3024,10 +3141,11 @@ public class HeavenShieldPlugin
       return;
     }
     String cleanUrl = url.trim();
+    String candidateName = (fileName != null) ? fileName.trim() : "";
     String resolvedName =
-        (fileName != null && !fileName.trim().isEmpty())
-            ? fileName.trim()
-            : URLUtil.guessFileName(cleanUrl, null, mimeType);
+        (!candidateName.isEmpty() && !candidateName.toLowerCase(Locale.US).endsWith(".bin"))
+            ? sanitizeDownloadFileName(candidateName)
+            : resolveSmartFileName(cleanUrl, null, mimeType);
     DownloadJob job =
         createAndStartJob(cleanUrl, resolvedName, mimeType, userAgent, null, -1L, null, true);
     if (job == null) {
@@ -3060,7 +3178,10 @@ public class HeavenShieldPlugin
       return;
     }
     File dir = resolveDownloadsDir(ctx);
-    String safeName = (fileName != null && !fileName.isEmpty()) ? fileName : "download.bin";
+    String safeName =
+        (fileName != null && !fileName.isEmpty())
+            ? fileName
+            : resolveSmartFileName(url, null, mimeType);
     File targetFile;
     File partFile;
     if (localPath != null && !localPath.isEmpty()) {
@@ -3264,8 +3385,10 @@ public class HeavenShieldPlugin
           throw new IOException("Empty redirect Location");
         }
         currentUrl = URI.create(currentUrl).resolve(loc).toString();
+        job.resolvedUrl = currentUrl;
         continue;
       }
+      job.resolvedUrl = currentUrl;
       return conn;
     }
     throw new IOException("Too many redirects");
@@ -3299,6 +3422,7 @@ public class HeavenShieldPlugin
       if (etagHeader != null && !etagHeader.isEmpty()) {
         job.etag = etagHeader;
       }
+      String serverDisp = conn.getHeaderField("Content-Disposition");
       String serverMime = conn.getContentType();
       if (serverMime != null && !serverMime.isEmpty()) {
         int semi = serverMime.indexOf(';');
@@ -3334,15 +3458,29 @@ public class HeavenShieldPlugin
 
       in = conn.getInputStream();
       job.activeStream = in;
-      out = new FileOutputStream(job.partFile, append);
 
       byte[] buf = new byte[32 * 1024];
+      int firstRead = -1;
+      if (!append) {
+        firstRead = in.read(buf);
+        refineDownloadJobTarget(
+            job, serverDisp, job.mimeType, firstRead > 0 ? buf : null, Math.max(0, firstRead));
+      }
+
+      out = new FileOutputStream(job.partFile, append);
       long lastTickTime = SystemClock.elapsedRealtime();
       long lastTickBytes = job.bytesDownloaded.get();
       long lastNotifTime = 0L;
 
+      if (firstRead > 0 && !job.cancelRequested && !job.pauseRequested) {
+        out.write(buf, 0, firstRead);
+        job.bytesDownloaded.addAndGet(firstRead);
+        postDownloadNotification(job);
+        lastNotifTime = SystemClock.elapsedRealtime();
+      }
+
       int n;
-      while ((n = in.read(buf)) != -1) {
+      while (!job.cancelRequested && !job.pauseRequested && (n = in.read(buf)) != -1) {
         if (job.cancelRequested || job.pauseRequested) {
           break;
         }
@@ -3463,6 +3601,15 @@ public class HeavenShieldPlugin
     int dot = name.lastIndexOf('.');
     if (dot >= 0 && dot + 1 < name.length()) {
       String ext = name.substring(dot + 1).toLowerCase(Locale.US);
+      if ("apk".equals(ext)) {
+        return "application/vnd.android.package-archive";
+      }
+      if ("mkv".equals(ext)) {
+        return "video/x-matroska";
+      }
+      if ("7z".equals(ext)) {
+        return "application/x-7z-compressed";
+      }
       String fromExt = MimeTypeMap.getSingleton().getMimeTypeFromExtension(ext);
       if (fromExt != null && !fromExt.isEmpty()) {
         return fromExt;
@@ -3705,10 +3852,6 @@ public class HeavenShieldPlugin
     if (!this.ultraDataSaverMode || request.isForMainFrame()) {
       return false;
     }
-    if (HeavenChromeExtManager.EXT_VIRTUAL_HOST.equals(reqHost)
-        || "chromewebstore.google.com".equals(reqHost)) {
-      return false;
-    }
     String accept = "";
     Map<String, String> headers = request.getRequestHeaders();
     if (headers != null) {
@@ -3769,22 +3912,10 @@ public class HeavenShieldPlugin
       return buildEmptyResponseForPath(fullPath, request);
     }
 
-    // 2. MV3 Chrome Extension declarativeNetRequest block rules
-    if (chromeExtManager != null
-        && !request.isForMainFrame()
-        && chromeExtManager.shouldBlockByExtensionDnr(url, activePageHost)) {
-      notifyBlockedOnMainThread(webViewId, host, 18400L);
-      return buildEmptyResponseForPath(fullPath, request);
-    }
-
     if (!shieldEnabled) {
       return null;
     }
 
-    if (HeavenChromeExtManager.EXT_VIRTUAL_HOST.equals(host)
-        || HeavenChromeExtManager.EXT_VIRTUAL_HOST.equals(activePageHost)) {
-      return null;
-    }
     if (activePageHost != null && isTrustedHost(activePageHost)) {
       return null;
     }
@@ -3870,14 +4001,6 @@ public class HeavenShieldPlugin
         || (lowerQuery.contains("zoneid=") && lowerQuery.contains("cb="));
   }
 
-  private static boolean isChromeWebStoreUri(Uri u) {
-    if (u == null) return false;
-    String h = normalizeHost(u.getHost());
-    String p = u.getEncodedPath() != null ? u.getEncodedPath().toLowerCase(Locale.US) : "";
-    return "chromewebstore.google.com".equals(h)
-        || ("chrome.google.com".equals(h) && p.startsWith("/webstore"));
-  }
-
   private static String extractRegistrableRoot(String rawHost) {
     String h = normalizeHost(rawHost);
     if (h.isEmpty()) return "";
@@ -3925,8 +4048,7 @@ public class HeavenShieldPlugin
         || host.endsWith("github.com")
         || host.endsWith("microsoftonline.com")
         || host.endsWith("live.com")
-        || host.endsWith("apple.com")
-        || host.equals(HeavenChromeExtManager.EXT_VIRTUAL_HOST);
+        || host.endsWith("apple.com");
   }
 
   private static boolean isSuspiciousRedirectTarget(Uri uri, String currentPageHost) {
@@ -4017,33 +4139,31 @@ public class HeavenShieldPlugin
         "text/plain", "UTF-8", 200, "OK", headers, new ByteArrayInputStream(EMPTY_TEXT));
   }
 
+  private void scheduleBlockedBatchFlush() {
+    if (blockedBatchScheduled) {
+      return;
+    }
+    blockedBatchScheduled = true;
+    mainHandler.postDelayed(flushBlockedStatsRunnable, 450L);
+  }
+
   private void notifyBlockedOnMainThread(final long webViewId, final String domain) {
     notifyBlockedOnMainThread(webViewId, domain, 14200L);
   }
 
   private void notifyBlockedOnMainThread(
       final long webViewId, final String domain, final long bytesSaved) {
-    mainHandler.post(
-        () -> {
-          MethodChannel ch = this.channel;
-          if (ch != null) {
-            Map<String, Object> payload = new HashMap<>(6);
-            payload.put("webViewId", webViewId);
-            payload.put("domain", domain);
-            payload.put("bytesSaved", bytesSaved);
-            ch.invokeMethod("onResourceBlocked", payload);
-          }
-        });
+    pendingBlockedCountByWv.merge(webViewId, 1, Integer::sum);
+    if (domain != null && !domain.isEmpty()) {
+      pendingBlockedDomainByWv.put(webViewId, domain);
+    }
+    pendingBlockedBytesByWv.merge(webViewId, bytesSaved, Long::sum);
+    scheduleBlockedBatchFlush();
   }
 
   private void notifyBytesSavedOnMainThread(final long bytesSaved) {
-    mainHandler.post(
-        () -> {
-          MethodChannel ch = this.channel;
-          if (ch != null) {
-            ch.invokeMethod("onBytesSaved", Collections.singletonMap("bytesSaved", bytesSaved));
-          }
-        });
+    pendingExtraBytesSaved.addAndGet(bytesSaved);
+    scheduleBlockedBatchFlush();
   }
 
   private void notifyRedirectBlockedOnMainThread(final long webViewId, final String target) {
@@ -4082,14 +4202,6 @@ public class HeavenShieldPlugin
 
     @Override
     public WebResourceResponse shouldInterceptRequest(WebView view, WebResourceRequest request) {
-      if (request != null && chromeExtManager != null) {
-        WebResourceResponse extRes =
-            chromeExtManager.interceptExtensionRequest(
-                request.getUrl(), activePopupTabUrl, activePopupTabTitle);
-        if (extRes != null) {
-          return extRes;
-        }
-      }
       WebResourceResponse blocked = interceptIfAdOrTracker(webViewId, request);
       if (blocked != null) {
         return blocked;
@@ -4109,73 +4221,13 @@ public class HeavenShieldPlugin
 
     @Override
     public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
-      if (request != null && request.getUrl() != null) {
-        Uri rawUri = request.getUrl();
-        String rawScheme =
-            rawUri.getScheme() != null ? rawUri.getScheme().toLowerCase(Locale.US) : "";
-
-        // 0. Never block Chrome/Firefox Extension URLs — rewrite chrome-extension:// to virtual HTTPS host!
-        if ("chrome-extension".equals(rawScheme) || "moz-extension".equals(rawScheme)) {
-          String mapped = HeavenChromeExtManager.normalizeExtensionUrl(rawUri.toString(), "");
-          if (mapped != null && !mapped.isEmpty()) {
-            currentPageHosts.put(webViewId, HeavenChromeExtManager.EXT_VIRTUAL_HOST);
-            view.loadUrl(mapped);
-          }
-          return true;
-        }
-      }
-
       if (request != null && request.isForMainFrame() && request.getUrl() != null) {
         Uri destUri = request.getUrl();
         String scheme = destUri.getScheme() != null ? destUri.getScheme().toLowerCase(Locale.US) : "";
         String destHost = normalizeHost(destUri.getHost());
         String prevHost = currentPageHosts.get(webViewId);
         boolean pageTrusted = prevHost != null && isTrustedHost(prevHost);
-        boolean fromOrToExtension =
-            HeavenChromeExtManager.EXT_VIRTUAL_HOST.equals(destHost)
-                || HeavenChromeExtManager.EXT_VIRTUAL_HOST.equals(prevHost);
 
-        // 1. Always allow Chrome Extension pages and any redirect initiated from an Extension!
-        if (fromOrToExtension) {
-          if (!destHost.isEmpty()) {
-            currentPageHosts.put(webViewId, destHost);
-          }
-          if (HeavenChromeExtManager.EXT_VIRTUAL_HOST.equals(destHost)) {
-            view.getSettings().setJavaScriptCanOpenWindowsAutomatically(true);
-          }
-          return delegate != null
-              ? delegate.shouldOverrideUrlLoading(view, request)
-              : super.shouldOverrideUrlLoading(view, request);
-        }
-
-        // 2. Force Desktop Windows Chrome 134 mode automatically for Chrome Web Store!
-        if (isChromeWebStoreUri(destUri)) {
-          String curUa = view.getSettings().getUserAgentString();
-          currentPageHosts.put(webViewId, destHost);
-          if (curUa == null || curUa.contains("Mobile") || curUa.contains("Android")) {
-            view.getSettings().setUserAgentString(DESKTOP_CHROME_WIN_UA);
-            view.getSettings().setUseWideViewPort(true);
-            view.getSettings().setLoadWithOverviewMode(true);
-            Map<String, String> chHeaders = new HashMap<>(6);
-            chHeaders.put(
-                "Sec-CH-UA",
-                "\"Chromium\";v=\"134\", \"Not:A-Brand\";v=\"24\", \"Google Chrome\";v=\"134\"");
-            chHeaders.put("Sec-CH-UA-Mobile", "?0");
-            chHeaders.put("Sec-CH-UA-Platform", "\"Windows\"");
-            view.loadUrl(destUri.toString(), chHeaders);
-            return true;
-          }
-          return delegate != null
-              ? delegate.shouldOverrideUrlLoading(view, request)
-              : super.shouldOverrideUrlLoading(view, request);
-        }
-
-        // Restore normal UA when navigating away from Chrome Web Store if desktopMode is false
-        if (!desktopMode && "chromewebstore.google.com".equals(prevHost) && !isChromeWebStoreUri(destUri)) {
-          applyDesktopSettingsToWebView(view, webViewId, false, true);
-        }
-
-        // 3. Targeted Ad / Malware / Adult-Trap / Play-Store Hijack Firewall (never blocks normal or extension redirects!)
         if ((shieldEnabled || antiRedirectEnabled) && !pageTrusted) {
           if (!"http".equals(scheme)
               && !"https".equals(scheme)
@@ -4213,29 +4265,19 @@ public class HeavenShieldPlugin
       }
       return delegate != null
           ? delegate.shouldOverrideUrlLoading(view, request)
-              : super.shouldOverrideUrlLoading(view, request);
+          : super.shouldOverrideUrlLoading(view, request);
     }
 
     @Override
     @SuppressWarnings("deprecation")
     public boolean shouldOverrideUrlLoading(WebView view, String url) {
-      if (url != null) {
-        String lower = url.toLowerCase(Locale.US);
-        if (lower.startsWith("chrome-extension://") || lower.startsWith("moz-extension://")) {
-          String mapped = HeavenChromeExtManager.normalizeExtensionUrl(url, "");
-          view.loadUrl(mapped);
+      if (url != null && shieldEnabled) {
+        Uri u = Uri.parse(url);
+        String destHost = normalizeHost(u.getHost());
+        String prevHost = currentPageHosts.get(webViewId);
+        if (matchesBlockedDomain(destHost) || isSuspiciousRedirectTarget(u, prevHost)) {
+          notifyBlockedOnMainThread(webViewId, destHost);
           return true;
-        }
-        if (shieldEnabled) {
-          Uri u = Uri.parse(url);
-          String destHost = normalizeHost(u.getHost());
-          String prevHost = currentPageHosts.get(webViewId);
-          if (!HeavenChromeExtManager.EXT_VIRTUAL_HOST.equals(destHost)
-              && !HeavenChromeExtManager.EXT_VIRTUAL_HOST.equals(prevHost)
-              && (matchesBlockedDomain(destHost) || isSuspiciousRedirectTarget(u, prevHost))) {
-            notifyBlockedOnMainThread(webViewId, destHost);
-            return true;
-          }
         }
       }
       return delegate != null
@@ -4245,24 +4287,17 @@ public class HeavenShieldPlugin
 
     @Override
     public void onPageStarted(WebView view, String url, Bitmap favicon) {
+      pageLoadingUntilMsByWv.put(webViewId, SystemClock.elapsedRealtime() + 900L);
+      accumulatedScrollDyByWv.put(webViewId, 0);
       emitNavBarVisibility(webViewId, true);
-      boolean isCws = false;
-      boolean isExtPage = false;
       if (url != null) {
         Uri parsed = Uri.parse(url);
-        isCws = isChromeWebStoreUri(parsed);
         String host = normalizeHost(parsed.getHost());
-        isExtPage = HeavenChromeExtManager.EXT_VIRTUAL_HOST.equals(host);
         if (!host.isEmpty()) {
           currentPageHosts.put(webViewId, host);
         }
       }
-      view.getSettings().setJavaScriptCanOpenWindowsAutomatically(isExtPage);
-      if (isCws) {
-        view.getSettings().setUserAgentString(DESKTOP_CHROME_WIN_UA);
-        view.getSettings().setUseWideViewPort(true);
-        view.getSettings().setLoadWithOverviewMode(true);
-      } else if (desktopMode && !isExtPage) {
+      if (desktopMode) {
         applyDesktopSettingsToWebView(view, webViewId, true, false);
       }
       if (delegate != null) {
@@ -4270,7 +4305,7 @@ public class HeavenShieldPlugin
       } else {
         super.onPageStarted(view, url, favicon);
       }
-      injectScripts(view, url, "document_start");
+      injectScripts(view);
     }
 
     @Override
@@ -4280,11 +4315,12 @@ public class HeavenShieldPlugin
       } else {
         super.onPageCommitVisible(view, url);
       }
-      injectScripts(view, url, "document_idle");
+      injectScripts(view);
     }
 
     @Override
     public void onPageFinished(WebView view, String url) {
+      pageLoadingUntilMsByWv.put(webViewId, SystemClock.elapsedRealtime() + 250L);
       if (delegate != null) {
         delegate.onPageFinished(view, url);
       } else {
@@ -4293,26 +4329,15 @@ public class HeavenShieldPlugin
       if (url != null && (url.startsWith("http://") || url.startsWith("https://"))) {
         Uri parsedFin = Uri.parse(url);
         String finHost = normalizeHost(parsedFin.getHost());
-        if (!finHost.isEmpty() && !HeavenChromeExtManager.EXT_VIRTUAL_HOST.equals(finHost)) {
+        if (!finHost.isEmpty()) {
           activeFocusedWebViewId = webViewId;
-          activePopupTabUrl = url;
-          String wvTitle = view != null ? view.getTitle() : null;
-          activePopupTabTitle =
-              (wvTitle != null && !wvTitle.trim().isEmpty()) ? wvTitle.trim() : finHost;
         }
       }
-      injectScripts(view, url, "all");
+      injectScripts(view);
     }
 
-    private void injectScripts(final WebView view, final String url, final String extStage) {
-      Uri parsed = url != null ? Uri.parse(url) : null;
-      boolean isCws = isChromeWebStoreUri(parsed);
-      boolean isExtPage =
-          parsed != null
-              && HeavenChromeExtManager.EXT_VIRTUAL_HOST.equals(normalizeHost(parsed.getHost()));
-      if (isCws) {
-        view.evaluateJavascript(CHROME_WEB_STORE_DESKTOP_SCRIPT, null);
-      } else if (desktopMode && !isExtPage) {
+    private void injectScripts(final WebView view) {
+      if (desktopMode) {
         view.evaluateJavascript(DESKTOP_VIEWPORT_SCRIPT, null);
       }
       view.evaluateJavascript(
@@ -4328,18 +4353,6 @@ public class HeavenShieldPlugin
               + BG_AUDIO_AND_SCROLL_SCRIPT
               + ULTRA_DATA_SAVER_STYLE_SCRIPT,
           null);
-
-      // Inject enabled Chrome Extensions (.crx / MV2 & MV3) on EVERY search engine & website!
-      if (chromeExtManager != null && url != null && url.startsWith("http") && !isCws && !isExtPage) {
-        downloadPool.execute(
-            () -> {
-              final String extBundle =
-                  chromeExtManager.buildContentScriptsBundleForUrl(url, extStage, false);
-              if (!extBundle.isEmpty()) {
-                mainHandler.post(() -> view.evaluateJavascript(extBundle, null));
-              }
-            });
-      }
 
       if (!shieldEnabled) {
         return;

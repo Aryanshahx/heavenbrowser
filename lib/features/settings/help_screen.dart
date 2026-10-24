@@ -22,7 +22,7 @@ class _HelpScreenState extends State<HelpScreen> {
   static const List<String> _topics = <String>[
     'Bug Report',
     'VPN / Banned Website Issue',
-    'Chrome Extensions (.crx)',
+    'Downloads & Video Playback',
     'Background Audio',
     'General Question',
   ];
@@ -254,13 +254,6 @@ class _HelpScreenState extends State<HelpScreen> {
               title: 'How does the Auto-Hiding Top Navigation Bar work?',
               answer:
                   'Scroll down on any search result or website to hide the top navigation bar for full-screen reading, and scroll up anytime to show it immediately.',
-            ),
-            _buildFaqTile(
-              colors,
-              isDark,
-              title: 'How do I install & use Desktop Chrome Extensions?',
-              answer:
-                  'Open Menu -> Extensions, tap Chrome Web Store (Desktop View) or paste an extension link. Tap any installed extension to open it in a new tab.',
             ),
           ],
         ),

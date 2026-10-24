@@ -1,25 +1,239 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:math' as math;
+import 'dart:ui' as ui;
 
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 import '../../core/utils/omnibox_parser.dart';
 
+class DiscoverRegionConfig {
+  const DiscoverRegionConfig({
+    required this.countryCode,
+    required this.countryName,
+    required this.languageCode,
+    required this.localDirectFeeds,
+    required this.sportsHint,
+    required this.entertainmentHint,
+  });
+
+  final String countryCode;
+  final String countryName;
+  final String languageCode;
+  final List<({String source, String url})> localDirectFeeds;
+  final String sportsHint;
+  final String entertainmentHint;
+
+  String get bingSetLang =>
+      '${languageCode.toLowerCase()}-${countryCode.toLowerCase()}';
+
+  @visibleForTesting
+  static ui.Locale? debugLocaleOverride;
+
+  static DiscoverRegionConfig detect() {
+    final ui.Locale locale =
+        debugLocaleOverride ?? ui.PlatformDispatcher.instance.locale;
+    return fromLocaleAndOffset(locale, DateTime.now().timeZoneOffset);
+  }
+
+  static DiscoverRegionConfig fromLocaleAndOffset(
+    ui.Locale locale,
+    Duration tzOffset,
+  ) {
+    String cc = (locale.countryCode ?? '').trim().toUpperCase();
+    final String rawLang = locale.languageCode.trim().toLowerCase();
+    final String lang = rawLang.isEmpty ? 'en' : rawLang;
+
+    if (cc.length != 2) {
+      final int mins = tzOffset.inMinutes;
+      if (mins == 330) {
+        cc = 'IN';
+      } else if (mins == 540) {
+        cc = 'JP';
+      } else if (mins == 480) {
+        cc = 'SG';
+      } else if (mins >= 600 && mins <= 660) {
+        cc = 'AU';
+      } else if (mins >= -480 && mins <= -240) {
+        cc = 'US';
+      } else if (mins == 60 || mins == 120) {
+        cc = lang == 'fr'
+            ? 'FR'
+            : (lang == 'de' ? 'DE' : (lang == 'es' ? 'ES' : 'GB'));
+      } else {
+        cc = 'US';
+      }
+    }
+
+    final String name = _countryNames[cc] ?? 'Local';
+    return DiscoverRegionConfig(
+      countryCode: cc,
+      countryName: name,
+      languageCode: lang,
+      localDirectFeeds: _feedsForCountry(cc),
+      sportsHint: _sportsQueryForCountry(cc, name),
+      entertainmentHint: cc == 'IN'
+          ? 'Bollywood Hollywood movies'
+          : (cc == 'JP' || cc == 'KR'
+                ? '$name anime cinema entertainment'
+                : '$name movies television music'),
+    );
+  }
+
+  static List<({String source, String url})> _feedsForCountry(String cc) {
+    switch (cc) {
+      case 'IN':
+        return const <({String source, String url})>[
+          (
+            source: 'Times of India',
+            url: 'https://timesofindia.indiatimes.com/rssfeedstopstories.cms',
+          ),
+          (
+            source: 'NDTV',
+            url: 'https://feeds.feedburner.com/ndtvnews-top-stories',
+          ),
+          (
+            source: 'NDTV India',
+            url: 'https://feeds.feedburner.com/ndtvnews-india-news',
+          ),
+        ];
+      case 'US':
+        return const <({String source, String url})>[
+          (source: 'NPR News', url: 'https://feeds.npr.org/1001/rss.xml'),
+          (
+            source: 'NYT Top Stories',
+            url: 'https://rss.nytimes.com/services/xml/rss/nyt/HomePage.xml',
+          ),
+          (
+            source: 'BBC US & Canada',
+            url: 'https://feeds.bbci.co.uk/news/world/us_and_canada/rss.xml',
+          ),
+        ];
+      case 'GB':
+        return const <({String source, String url})>[
+          (source: 'BBC UK', url: 'https://feeds.bbci.co.uk/news/uk/rss.xml'),
+          (
+            source: 'The Guardian UK',
+            url: 'https://www.theguardian.com/uk-news/rss',
+          ),
+        ];
+      case 'CA':
+        return const <({String source, String url})>[
+          (
+            source: 'CBC Top Stories',
+            url: 'https://www.cbc.ca/webfeed/rss/rss-topstories',
+          ),
+          (
+            source: 'BBC US & Canada',
+            url: 'https://feeds.bbci.co.uk/news/world/us_and_canada/rss.xml',
+          ),
+        ];
+      case 'AU':
+        return const <({String source, String url})>[
+          (
+            source: 'ABC News AU',
+            url: 'https://www.abc.net.au/news/feed/51120/rss.xml',
+          ),
+          (
+            source: 'BBC Australia',
+            url: 'https://feeds.bbci.co.uk/news/world/australia/rss.xml',
+          ),
+        ];
+      default:
+        return const <({String source, String url})>[
+          (
+            source: 'BBC World',
+            url: 'https://feeds.bbci.co.uk/news/world/rss.xml',
+          ),
+          (
+            source: 'The Guardian World',
+            url: 'https://www.theguardian.com/world/rss',
+          ),
+        ];
+    }
+  }
+
+  static String _sportsQueryForCountry(String cc, String countryName) {
+    switch (cc) {
+      case 'IN':
+      case 'PK':
+      case 'BD':
+      case 'LK':
+        return '$countryName Cricket IPL sports';
+      case 'US':
+        return 'NFL NBA MLB sports';
+      case 'GB':
+      case 'DE':
+      case 'FR':
+      case 'ES':
+      case 'IT':
+        return '$countryName Premier League Champions League F1 sports';
+      case 'CA':
+        return 'NHL NBA Canada sports';
+      case 'AU':
+      case 'NZ':
+        return '$countryName Cricket AFL NRL sports';
+      default:
+        return '$countryName football sports';
+    }
+  }
+
+  static const Map<String, String> _countryNames = <String, String>{
+    'US': 'United States',
+    'GB': 'United Kingdom',
+    'IN': 'India',
+    'CA': 'Canada',
+    'AU': 'Australia',
+    'DE': 'Germany',
+    'FR': 'France',
+    'ES': 'Spain',
+    'IT': 'Italy',
+    'NL': 'Netherlands',
+    'SE': 'Sweden',
+    'NO': 'Norway',
+    'DK': 'Denmark',
+    'FI': 'Finland',
+    'CH': 'Switzerland',
+    'AT': 'Austria',
+    'BE': 'Belgium',
+    'IE': 'Ireland',
+    'PT': 'Portugal',
+    'PL': 'Poland',
+    'JP': 'Japan',
+    'KR': 'South Korea',
+    'SG': 'Singapore',
+    'MY': 'Malaysia',
+    'ID': 'Indonesia',
+    'PH': 'Philippines',
+    'TH': 'Thailand',
+    'VN': 'Vietnam',
+    'AE': 'UAE',
+    'SA': 'Saudi Arabia',
+    'IL': 'Israel',
+    'TR': 'Turkey',
+    'BR': 'Brazil',
+    'MX': 'Mexico',
+    'AR': 'Argentina',
+    'CL': 'Chile',
+    'CO': 'Colombia',
+    'ZA': 'South Africa',
+    'NG': 'Nigeria',
+    'KE': 'Kenya',
+    'EG': 'Egypt',
+    'NZ': 'New Zealand',
+    'PK': 'Pakistan',
+    'BD': 'Bangladesh',
+    'LK': 'Sri Lanka',
+    'NP': 'Nepal',
+  };
+}
+
 enum NewsCategoryTab {
   forYou(
     label: 'For You',
-    query: 'India technology science world',
+    query: 'technology science world',
     directRssUrls: <({String source, String url})>[
-      (
-        source: 'Times of India',
-        url: 'https://timesofindia.indiatimes.com/rssfeedstopstories.cms',
-      ),
-      (
-        source: 'NDTV',
-        url: 'https://feeds.feedburner.com/ndtvnews-top-stories',
-      ),
       (source: 'BBC News', url: 'https://feeds.bbci.co.uk/news/world/rss.xml'),
       (source: 'The Verge', url: 'https://www.theverge.com/rss/index.xml'),
       (
@@ -28,23 +242,10 @@ enum NewsCategoryTab {
       ),
     ],
   ),
-  india(
-    label: 'India',
-    query: 'India breaking news',
-    directRssUrls: <({String source, String url})>[
-      (
-        source: 'Times of India',
-        url: 'https://timesofindia.indiatimes.com/rssfeedstopstories.cms',
-      ),
-      (
-        source: 'NDTV',
-        url: 'https://feeds.feedburner.com/ndtvnews-top-stories',
-      ),
-      (
-        source: 'NDTV India',
-        url: 'https://feeds.feedburner.com/ndtvnews-india-news',
-      ),
-    ],
+  localCountry(
+    label: 'Top Local',
+    query: 'breaking news',
+    directRssUrls: <({String source, String url})>[],
   ),
   tech(
     label: 'Tech & AI',
@@ -65,7 +266,7 @@ enum NewsCategoryTab {
   ),
   entertainment(
     label: 'Movies & Showbiz',
-    query: 'Bollywood Hollywood movies',
+    query: 'Hollywood movies television',
     directRssUrls: <({String source, String url})>[
       (
         source: 'BBC Entertainment',
@@ -76,13 +277,9 @@ enum NewsCategoryTab {
   ),
   sports(
     label: 'Sports',
-    query: 'India Cricket IPL sports',
+    query: 'football cricket F1 sports',
     directRssUrls: <({String source, String url})>[
       (source: 'BBC Sport', url: 'https://feeds.bbci.co.uk/sport/rss.xml'),
-      (
-        source: 'NDTV Sports',
-        url: 'https://feeds.feedburner.com/ndtvsports-latest',
-      ),
     ],
   ),
   gaming(
@@ -94,15 +291,11 @@ enum NewsCategoryTab {
   ),
   business(
     label: 'Business',
-    query: 'India stock market startups',
+    query: 'stock market startups economy',
     directRssUrls: <({String source, String url})>[
       (
         source: 'BBC Business',
         url: 'https://feeds.bbci.co.uk/news/business/rss.xml',
-      ),
-      (
-        source: 'NDTV Profit',
-        url: 'https://feeds.feedburner.com/ndtvprofit-latest',
       ),
       (
         source: 'CoinDesk',
@@ -112,7 +305,7 @@ enum NewsCategoryTab {
   ),
   science(
     label: 'Science',
-    query: 'ISRO NASA space astronomy',
+    query: 'NASA space astronomy science',
     directRssUrls: <({String source, String url})>[
       (source: 'Space.com', url: 'https://www.space.com/feeds/all'),
       (
@@ -131,6 +324,47 @@ enum NewsCategoryTab {
   final String label;
   final String query;
   final List<({String source, String url})> directRssUrls;
+
+  String resolvedLabel([DiscoverRegionConfig? region]) {
+    if (this == NewsCategoryTab.localCountry) {
+      return (region ?? DiscoverRegionConfig.detect()).countryName;
+    }
+    return label;
+  }
+
+  String resolvedQuery(DiscoverRegionConfig region) {
+    switch (this) {
+      case NewsCategoryTab.forYou:
+        return '${region.countryName} technology science world';
+      case NewsCategoryTab.localCountry:
+        return '${region.countryName} breaking news';
+      case NewsCategoryTab.entertainment:
+        return region.entertainmentHint;
+      case NewsCategoryTab.sports:
+        return region.sportsHint;
+      case NewsCategoryTab.business:
+        return '${region.countryName} stock market startups';
+      case NewsCategoryTab.tech:
+      case NewsCategoryTab.gaming:
+      case NewsCategoryTab.science:
+        return query;
+    }
+  }
+
+  List<({String source, String url})> resolvedDirectFeeds(
+    DiscoverRegionConfig region,
+  ) {
+    if (this == NewsCategoryTab.localCountry) {
+      return region.localDirectFeeds;
+    }
+    if (this == NewsCategoryTab.forYou) {
+      return <({String source, String url})>[
+        ...region.localDirectFeeds.take(2),
+        ...directRssUrls,
+      ];
+    }
+    return directRssUrls;
+  }
 }
 
 class PersonalizedNewsItem {
@@ -287,8 +521,8 @@ class InterestProfileController extends ChangeNotifier {
           ],
         ),
         'sports': (
-          label: 'Sports & Cricket',
-          query: 'India Cricket IPL football',
+          label: 'Sports',
+          query: 'Cricket football F1 sports',
           keywords: <String>[
             'cricket',
             'ipl',
@@ -587,14 +821,18 @@ class HeavenNewsFeedService {
     http.Client? client,
   }) : _client = client ?? http.Client();
 
-  static const String _cachePrefix = 'hb.newsFeedCache.v7.';
+  static const String _cachePrefix = 'hb.newsFeedCache.v8.';
 
   final SharedPreferences prefs;
   final InterestProfileController interests;
   final http.Client _client;
 
+  String _cacheKeyFor(NewsCategoryTab tab, DiscoverRegionConfig region) =>
+      '$_cachePrefix${region.countryCode}.${tab.name}';
+
   List<PersonalizedNewsItem> readCached(NewsCategoryTab tab) {
-    final String? raw = prefs.getString('$_cachePrefix${tab.name}');
+    final DiscoverRegionConfig region = DiscoverRegionConfig.detect();
+    final String? raw = prefs.getString(_cacheKeyFor(tab, region));
     if (raw == null || raw.isEmpty) {
       return const <PersonalizedNewsItem>[];
     }
@@ -614,17 +852,18 @@ class HeavenNewsFeedService {
   }
 
   Future<List<PersonalizedNewsItem>> fetchFeed(NewsCategoryTab tab) async {
+    final DiscoverRegionConfig region = DiscoverRegionConfig.detect();
     List<PersonalizedNewsItem> fetched;
     if (tab == NewsCategoryTab.forYou) {
-      fetched = await _fetchPersonalizedForYou();
+      fetched = await _fetchPersonalizedForYou(region);
     } else {
-      fetched = await _fetchCategoryFeed(tab);
+      fetched = await _fetchCategoryFeed(tab, region);
     }
 
     if (fetched.isNotEmpty) {
       unawaited(
         prefs.setString(
-          '$_cachePrefix${tab.name}',
+          _cacheKeyFor(tab, region),
           jsonEncode(
             fetched
                 .take(24)
@@ -638,7 +877,9 @@ class HeavenNewsFeedService {
     return readCached(tab);
   }
 
-  Future<List<PersonalizedNewsItem>> _fetchPersonalizedForYou() async {
+  Future<List<PersonalizedNewsItem>> _fetchPersonalizedForYou(
+    DiscoverRegionConfig region,
+  ) async {
     final List<InterestEntry> topInterests = interests.rankedInterests
         .take(3)
         .toList(growable: false);
@@ -646,16 +887,25 @@ class HeavenNewsFeedService {
     final List<Future<List<PersonalizedNewsItem>>> tasks =
         <Future<List<PersonalizedNewsItem>>>[
           for (final ({String source, String url}) feed
-              in NewsCategoryTab.forYou.directRssUrls)
+              in NewsCategoryTab.forYou.resolvedDirectFeeds(region))
             _fetchDirectPublisherRss(feed.url, defaultSource: feed.source),
           for (final InterestEntry entry in topInterests)
             _fetchBingMediaNewsRss(
-              _focusedNewsQuery(entry.query),
+              _focusedNewsQuery(entry.query, region),
               topicBadge: entry.label,
+              region: region,
             ),
           if (topInterests.isEmpty) ...<Future<List<PersonalizedNewsItem>>>[
-            _fetchBingMediaNewsRss('India cricket technology', topicBadge: null),
-            _fetchBingMediaNewsRss('World science entertainment', topicBadge: null),
+            _fetchBingMediaNewsRss(
+              '${region.countryName} top news technology',
+              topicBadge: null,
+              region: region,
+            ),
+            _fetchBingMediaNewsRss(
+              'World science entertainment',
+              topicBadge: null,
+              region: region,
+            ),
           ],
         ];
 
@@ -664,29 +914,36 @@ class HeavenNewsFeedService {
 
   Future<List<PersonalizedNewsItem>> _fetchCategoryFeed(
     NewsCategoryTab tab,
+    DiscoverRegionConfig region,
   ) async {
+    final String badge = tab.resolvedLabel(region);
     final List<Future<List<PersonalizedNewsItem>>> tasks =
         <Future<List<PersonalizedNewsItem>>>[
-          for (final ({String source, String url}) feed in tab.directRssUrls)
+          for (final ({String source, String url}) feed
+              in tab.resolvedDirectFeeds(region))
             _fetchDirectPublisherRss(
               feed.url,
               defaultSource: feed.source,
-              topicBadge: tab.label,
+              topicBadge: badge,
             ),
-          _fetchBingMediaNewsRss(tab.query, topicBadge: tab.label),
+          _fetchBingMediaNewsRss(
+            tab.resolvedQuery(region),
+            topicBadge: badge,
+            region: region,
+          ),
         ];
 
     return _mergeAndRankBatches(await Future.wait(tasks));
   }
 
-  static String _focusedNewsQuery(String raw) {
+  static String _focusedNewsQuery(String raw, DiscoverRegionConfig region) {
     final List<String> words = raw
         .trim()
         .split(RegExp(r'\s+'))
         .where((String w) => w.length >= 2)
         .take(3)
         .toList();
-    return words.isEmpty ? 'India news' : words.join(' ');
+    return words.isEmpty ? '${region.countryName} news' : words.join(' ');
   }
 
   List<PersonalizedNewsItem> _mergeAndRankBatches(
@@ -780,11 +1037,13 @@ class HeavenNewsFeedService {
   Future<List<PersonalizedNewsItem>> _fetchBingMediaNewsRss(
     String query, {
     required String? topicBadge,
+    required DiscoverRegionConfig region,
   }) async {
     try {
       final Uri uri = Uri.parse(
         'https://www.bing.com/news/search?q=${Uri.encodeQueryComponent(query)}'
-        '&format=rss&setlang=en-in&cc=IN',
+        '&format=rss&setlang=${Uri.encodeQueryComponent(region.bingSetLang)}'
+        '&cc=${Uri.encodeQueryComponent(region.countryCode)}',
       );
       final http.Response response = await _client
           .get(

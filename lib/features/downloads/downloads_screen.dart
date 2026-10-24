@@ -518,82 +518,129 @@ class DownloadsScreen extends StatelessWidget {
 
     await showModalBottomSheet<void>(
       context: context,
+      isScrollControlled: true,
+      enableDrag: true,
+      useSafeArea: true,
       showDragHandle: true,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+      ),
       builder: (BuildContext sheetContext) {
         return ListenableBuilder(
           listenable: downloads,
           builder: (BuildContext context, _) {
             final ColorScheme colors = Theme.of(context).colorScheme;
+            final double maxSheetHeight =
+                MediaQuery.sizeOf(context).height * 0.78;
             return SafeArea(
-              child: Padding(
-                padding: const EdgeInsets.fromLTRB(16, 4, 16, 20),
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: <Widget>[
-                    const Text(
-                      'Choose Download Location',
-                      style: TextStyle(
-                        fontSize: 17,
-                        fontWeight: FontWeight.w800,
+              top: false,
+              child: ConstrainedBox(
+                key: const Key('download_location_sheet_box'),
+                constraints: BoxConstraints(maxHeight: maxSheetHeight),
+                child: Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 0, 16, 18),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: <Widget>[
+                      Row(
+                        children: <Widget>[
+                          const Expanded(
+                            child: Text(
+                              'Choose Download Location',
+                              style: TextStyle(
+                                fontSize: 17,
+                                fontWeight: FontWeight.w800,
+                              ),
+                            ),
+                          ),
+                          IconButton(
+                            key: const Key('download_location_close_button'),
+                            tooltip: 'Close',
+                            visualDensity: VisualDensity.compact,
+                            icon: const Icon(Icons.close_rounded, size: 20),
+                            onPressed: () => Navigator.pop(sheetContext),
+                          ),
+                        ],
                       ),
-                    ),
-                    const SizedBox(height: 10),
-                    for (final ({String label, String path}) loc
-                        in downloads.presetLocations)
-                      ListTile(
-                        dense: true,
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(12),
+                      const SizedBox(height: 6),
+                      Flexible(
+                        child: SingleChildScrollView(
+                          physics: const ClampingScrollPhysics(),
+                          child: Column(
+                            mainAxisSize: MainAxisSize.min,
+                            children: <Widget>[
+                              for (final ({String label, String path}) loc
+                                  in downloads.presetLocations)
+                                ListTile(
+                                  dense: true,
+                                  shape: RoundedRectangleBorder(
+                                    borderRadius: BorderRadius.circular(12),
+                                  ),
+                                  leading: Icon(
+                                    Icons.folder_rounded,
+                                    color:
+                                        downloads.downloadLocationPath ==
+                                            loc.path
+                                        ? colors.primary
+                                        : colors.onSurfaceVariant,
+                                  ),
+                                  title: Text(
+                                    loc.label,
+                                    style: const TextStyle(
+                                      fontWeight: FontWeight.w700,
+                                    ),
+                                  ),
+                                  subtitle: Text(
+                                    loc.path,
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: const TextStyle(fontSize: 11),
+                                  ),
+                                  trailing:
+                                      downloads.downloadLocationPath == loc.path
+                                      ? Icon(
+                                          Icons.check_circle_rounded,
+                                          color: colors.primary,
+                                        )
+                                      : null,
+                                  onTap: () async {
+                                    final String? err = await downloads
+                                        .setDownloadLocation(
+                                          loc.path,
+                                          label: loc.label,
+                                        );
+                                    if (sheetContext.mounted) {
+                                      Navigator.pop(sheetContext);
+                                      if (err != null) {
+                                        ScaffoldMessenger.of(
+                                          sheetContext,
+                                        ).showSnackBar(
+                                          SnackBar(content: Text(err)),
+                                        );
+                                      }
+                                    }
+                                  },
+                                ),
+                            ],
+                          ),
                         ),
-                        leading: Icon(
-                          Icons.folder_rounded,
-                          color: downloads.downloadLocationPath == loc.path
-                              ? colors.primary
-                              : colors.onSurfaceVariant,
-                        ),
-                        title: Text(
-                          loc.label,
-                          style: const TextStyle(fontWeight: FontWeight.w700),
-                        ),
-                        subtitle: Text(
-                          loc.path,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: const TextStyle(fontSize: 11),
-                        ),
-                        trailing: downloads.downloadLocationPath == loc.path
-                            ? Icon(
-                                Icons.check_circle_rounded,
-                                color: colors.primary,
-                              )
-                            : null,
-                        onTap: () async {
-                          final String? err = await downloads
-                              .setDownloadLocation(loc.path, label: loc.label);
-                          if (sheetContext.mounted) {
+                      ),
+                      const SizedBox(height: 12),
+                      OutlinedButton.icon(
+                        key: const Key('choose_custom_download_folder_button'),
+                        onPressed: () async {
+                          final bool ok = await downloads
+                              .pickCustomDownloadFolder();
+                          if (sheetContext.mounted && ok) {
                             Navigator.pop(sheetContext);
-                            if (err != null) {
-                              ScaffoldMessenger.of(sheetContext).showSnackBar(
-                                SnackBar(content: Text(err)),
-                              );
-                            }
                           }
                         },
+                        icon: const Icon(Icons.create_new_folder_rounded),
+                        label: const Text('Choose Custom Folder...'),
                       ),
-                    const SizedBox(height: 10),
-                    OutlinedButton.icon(
-                      onPressed: () async {
-                        final bool ok = await downloads
-                            .pickCustomDownloadFolder();
-                        if (sheetContext.mounted && ok) {
-                          Navigator.pop(sheetContext);
-                        }
-                      },
-                      icon: const Icon(Icons.create_new_folder_rounded),
-                      label: const Text('Choose Custom Folder...'),
-                    ),
-                  ],
+                    ],
+                  ),
                 ),
               ),
             );

@@ -297,15 +297,6 @@ class OmniboxParser {
       return url;
     }
     String host = uri.host;
-    if (host.toLowerCase() == 'chrome-ext.heaven.local') {
-      final List<String> segs = uri.pathSegments
-          .where((String s) => s.isNotEmpty)
-          .toList();
-      if (segs.length >= 2 && segs[1] != '__heaven_ext_home.html') {
-        return 'Extension • ${segs.sublist(1).join('/')}';
-      }
-      return 'Chrome Extension';
-    }
     if (host.startsWith('www.') && host.length > 4) {
       host = host.substring(4);
     }

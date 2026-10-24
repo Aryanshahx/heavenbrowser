@@ -10,7 +10,6 @@ import 'core/constants/app_constants.dart';
 import 'core/theme/app_theme.dart';
 import 'features/browser/presentation/browser_screen.dart';
 import 'features/downloads/downloads_controller.dart';
-import 'features/extensions/extensions_controller.dart';
 import 'features/news/interest_news_service.dart';
 import 'features/search/heaven_search_service.dart';
 import 'features/settings/browser_settings.dart';
@@ -23,7 +22,6 @@ Future<void> main() async {
   final SharedPreferences prefs = await SharedPreferences.getInstance();
   final BrowserSettingsController settings = BrowserSettingsController(prefs);
   final DownloadsController downloads = DownloadsController(prefs);
-  final ExtensionsController extensions = ExtensionsController(prefs);
   final InterestProfileController interests = InterestProfileController(prefs);
   final HeavenNewsFeedService newsService = HeavenNewsFeedService(
     prefs: prefs,
@@ -35,7 +33,6 @@ Future<void> main() async {
     HeavenBrowserApp(
       settings: settings,
       downloads: downloads,
-      extensions: extensions,
       interests: interests,
       newsService: newsService,
       vpn: vpn,
@@ -48,7 +45,6 @@ class HeavenBrowserApp extends StatefulWidget {
     super.key,
     required this.settings,
     this.downloads,
-    this.extensions,
     this.interests,
     this.newsService,
     this.vpn,
@@ -58,7 +54,6 @@ class HeavenBrowserApp extends StatefulWidget {
 
   final BrowserSettingsController settings;
   final DownloadsController? downloads;
-  final ExtensionsController? extensions;
   final InterestProfileController? interests;
   final HeavenNewsFeedService? newsService;
   final VpnController? vpn;
@@ -74,7 +69,6 @@ class _HeavenBrowserAppState extends State<HeavenBrowserApp>
   late final TabManagerController _tabManager;
   late final HeavenSearchService _searchService;
   DownloadsController? _ownedDownloads;
-  ExtensionsController? _ownedExtensions;
   InterestProfileController? _ownedInterests;
   HeavenNewsFeedService? _ownedNewsService;
   VpnController? _ownedVpn;
@@ -83,8 +77,6 @@ class _HeavenBrowserAppState extends State<HeavenBrowserApp>
 
   DownloadsController get _effectiveDownloads =>
       widget.downloads ?? _ownedDownloads!;
-  ExtensionsController get _effectiveExtensions =>
-      widget.extensions ?? _ownedExtensions!;
   InterestProfileController get _effectiveInterests =>
       widget.interests ?? _ownedInterests!;
   HeavenNewsFeedService get _effectiveNews =>
@@ -97,31 +89,11 @@ class _HeavenBrowserAppState extends State<HeavenBrowserApp>
     WidgetsBinding.instance.addObserver(this);
     _appUnlocked = !widget.settings.biometricLockApp;
 
-    if (widget.extensions == null) {
-      _ownedExtensions = ExtensionsController(
-        widget.settings.prefs,
-        syncNativeOnInit: widget.enablePlatformWebView,
-      );
-    }
     _tabManager = TabManagerController(
       settings: widget.settings,
-      extensions: _effectiveExtensions,
       enablePlatformWebView: widget.enablePlatformWebView,
     );
     _searchService = widget.searchService ?? HeavenSearchService();
-
-    NativeShieldBridge.instance.onExtensionOpenNewTab = (String url) {
-      unawaited(
-        _tabManager.openNewTab(
-          incognito: _tabManager.isActiveIncognito,
-          initialInput: url,
-        ),
-      );
-    };
-    NativeShieldBridge.instance.onWebStoreExtensionInstalled =
-        (Map<String, Object?> _) {
-          unawaited(_effectiveExtensions.refreshChromeExtensions());
-        };
 
     if (widget.downloads == null) {
       _ownedDownloads = DownloadsController(
@@ -176,6 +148,12 @@ class _HeavenBrowserAppState extends State<HeavenBrowserApp>
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.inactive ||
+        state == AppLifecycleState.paused) {
+      if (widget.enablePlatformWebView) {
+        unawaited(_tabManager.captureTabPreview(_tabManager.activeTab));
+      }
+    }
     if (state == AppLifecycleState.paused) {
       if (widget.settings.biometricLockIncognito) {
         _tabManager.markIncognitoUnlocked(false);
@@ -222,11 +200,8 @@ class _HeavenBrowserAppState extends State<HeavenBrowserApp>
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
-    NativeShieldBridge.instance.onExtensionOpenNewTab = null;
-    NativeShieldBridge.instance.onWebStoreExtensionInstalled = null;
     _tabManager.dispose();
     _ownedDownloads?.dispose();
-    _ownedExtensions?.dispose();
     _ownedInterests?.dispose();
     _ownedNewsService?.dispose();
     _ownedVpn?.dispose();
@@ -289,7 +264,6 @@ class _HeavenBrowserAppState extends State<HeavenBrowserApp>
       tabManager: _tabManager,
       searchService: _searchService,
       downloads: _effectiveDownloads,
-      extensions: _effectiveExtensions,
       newsService: _effectiveNews,
       interests: _effectiveInterests,
       vpn: _effectiveVpn,

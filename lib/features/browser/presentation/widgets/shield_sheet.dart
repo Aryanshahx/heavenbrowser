@@ -32,67 +32,91 @@ class ShieldSheet extends StatelessWidget {
         final bool hostTrusted = settings.isHostTrusted(host);
         final bool shieldEffective = settings.shieldEnabled && !hostTrusted;
         final List<String> blockedDomains = engine.pageBlockedDomains;
+        final double maxSheetHeight =
+            MediaQuery.sizeOf(context).height * 0.64;
 
         return SafeArea(
-          child: SingleChildScrollView(
-            padding: const EdgeInsets.fromLTRB(20, 4, 20, 20),
+          top: false,
+          child: ConstrainedBox(
+            key: const Key('heaven_shield_sheet_container'),
+            constraints: BoxConstraints(maxHeight: maxSheetHeight),
             child: Column(
               mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.start,
               children: <Widget>[
-                Row(
-                  children: <Widget>[
-                    Container(
-                      width: 46,
-                      height: 46,
-                      decoration: BoxDecoration(
-                        color:
-                            (shieldEffective
-                                    ? AppTheme.shieldEmerald
-                                    : AppTheme.warningAmber)
-                                .withValues(alpha: 0.16),
-                        borderRadius: BorderRadius.circular(14),
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(20, 0, 12, 10),
+                  child: Row(
+                    children: <Widget>[
+                      Container(
+                        width: 44,
+                        height: 44,
+                        decoration: BoxDecoration(
+                          color:
+                              (shieldEffective
+                                      ? AppTheme.shieldEmerald
+                                      : AppTheme.warningAmber)
+                                  .withValues(alpha: 0.16),
+                          borderRadius: BorderRadius.circular(14),
+                        ),
+                        child: Icon(
+                          shieldEffective
+                              ? Icons.shield_rounded
+                              : Icons.shield_outlined,
+                          color: shieldEffective
+                              ? AppTheme.shieldEmerald
+                              : AppTheme.warningAmber,
+                          size: 25,
+                        ),
                       ),
-                      child: Icon(
-                        shieldEffective
-                            ? Icons.shield_rounded
-                            : Icons.shield_outlined,
-                        color: shieldEffective
-                            ? AppTheme.shieldEmerald
-                            : AppTheme.warningAmber,
-                        size: 26,
-                      ),
-                    ),
-                    const SizedBox(width: 14),
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: <Widget>[
-                          Text(
-                            shieldEffective
-                                ? 'Heaven Shield Active'
-                                : 'Heaven Shield Paused',
-                            style: theme.textTheme.titleMedium?.copyWith(
-                              fontWeight: FontWeight.w800,
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: <Widget>[
+                            Text(
+                              shieldEffective
+                                  ? 'Heaven Shield Active'
+                                  : 'Heaven Shield Paused',
+                              style: theme.textTheme.titleMedium?.copyWith(
+                                fontWeight: FontWeight.w800,
+                              ),
                             ),
-                          ),
-                          Text(
-                            host ?? 'Native Subresource & Tracker Firewall',
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            style: theme.textTheme.bodySmall?.copyWith(
-                              color: colors.onSurfaceVariant,
+                            Text(
+                              host ?? 'Native Subresource & Tracker Firewall',
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: theme.textTheme.bodySmall?.copyWith(
+                                color: colors.onSurfaceVariant,
+                              ),
                             ),
-                          ),
-                        ],
+                          ],
+                        ),
                       ),
-                    ),
-                    if (host != null)
-                      SiteLogo(urlOrDomain: host, size: 34, borderRadius: 10),
-                  ],
+                      if (host != null) ...<Widget>[
+                        SiteLogo(urlOrDomain: host, size: 32, borderRadius: 9),
+                        const SizedBox(width: 4),
+                      ],
+                      IconButton(
+                        key: const Key('shield_sheet_close_button'),
+                        tooltip: 'Close Shield panel',
+                        visualDensity: VisualDensity.compact,
+                        icon: const Icon(Icons.close_rounded, size: 21),
+                        onPressed: () => Navigator.pop(context),
+                      ),
+                    ],
+                  ),
                 ),
-                const SizedBox(height: 16),
-                Row(
+                const Divider(height: 1),
+                Flexible(
+                  child: SingleChildScrollView(
+                    physics: const ClampingScrollPhysics(),
+                    padding: const EdgeInsets.fromLTRB(20, 12, 20, 20),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: <Widget>[
+                        Row(
                   children: <Widget>[
                     Expanded(
                       child: _MetricTile(
@@ -298,6 +322,10 @@ class ShieldSheet extends StatelessWidget {
                   ),
                   value: settings.httpsUpgrade,
                   onChanged: settings.setHttpsUpgrade,
+                ),
+                      ],
+                    ),
+                  ),
                 ),
               ],
             ),

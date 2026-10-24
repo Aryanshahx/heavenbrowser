@@ -6,8 +6,6 @@ import '../../core/utils/omnibox_parser.dart';
 import '../../core/widgets/site_logo.dart';
 import '../downloads/downloads_controller.dart';
 import '../downloads/downloads_screen.dart';
-import '../extensions/extensions_controller.dart';
-import '../extensions/extensions_screen.dart';
 import '../shield/native_shield_bridge.dart';
 import '../tabs/tab_manager.dart';
 import 'browser_settings.dart';
@@ -20,13 +18,11 @@ class SettingsScreen extends StatelessWidget {
     super.key,
     required this.settings,
     required this.tabManager,
-    this.extensions,
     this.downloads,
   });
 
   final BrowserSettingsController settings;
   final TabManagerController tabManager;
-  final ExtensionsController? extensions;
   final DownloadsController? downloads;
 
   Future<void> _openPrivacyPolicy(BuildContext context) async {
@@ -415,60 +411,6 @@ class SettingsScreen extends StatelessWidget {
                   isDark: isDark,
                   colors: colors,
                   children: <Widget>[
-                    if (extensions != null) ...<Widget>[
-                      ListTile(
-                        dense: true,
-                        leading: const Icon(Icons.extension_outlined, size: 20),
-                        title: const Text('Chrome Extensions'),
-                        trailing: Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: <Widget>[
-                            if (extensions!.enabledCount > 0)
-                              Text(
-                                '${extensions!.enabledCount} active',
-                                style: TextStyle(
-                                  fontSize: 12,
-                                  color: colors.primary,
-                                  fontWeight: FontWeight.w700,
-                                ),
-                              ),
-                            const SizedBox(width: 4),
-                            Icon(
-                              Icons.chevron_right_rounded,
-                              size: 18,
-                              color: colors.onSurfaceVariant,
-                            ),
-                          ],
-                        ),
-                        onTap: () {
-                          final BrowserTab? targetTab =
-                              tabManager.lastActiveWebsiteTab;
-                          Navigator.of(context).push(
-                            MaterialPageRoute<void>(
-                              builder: (_) => ExtensionsScreen(
-                                extensions: extensions!,
-                                activeEngine:
-                                    targetTab?.engine ?? tabManager.activeEngine,
-                                onOpenWebStoreInBrowser: () {
-                                  Navigator.pop(context);
-                                  tabManager.activeEngine.loadUserEntry(
-                                    ExtensionsController.chromeWebStoreHomeUrl,
-                                  );
-                                },
-                                onOpenUrlInNewTab: (String url) {
-                                  Navigator.pop(context);
-                                  tabManager.openNewTab(
-                                    incognito: tabManager.isActiveIncognito,
-                                    initialInput: url,
-                                  );
-                                },
-                              ),
-                            ),
-                          );
-                        },
-                      ),
-                      _thinDivider(colors),
-                    ],
                     if (downloads != null) ...<Widget>[
                       ListTile(
                         dense: true,

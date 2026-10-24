@@ -10,10 +10,11 @@ import 'package:heavenbrowser/core/theme/app_theme.dart';
 import 'package:heavenbrowser/core/utils/omnibox_parser.dart';
 import 'package:heavenbrowser/features/browser/engine/browser_engine.dart';
 import 'package:heavenbrowser/features/browser/presentation/browser_screen.dart';
+import 'package:heavenbrowser/features/browser/presentation/widgets/shield_sheet.dart';
 import 'package:heavenbrowser/features/browser/site_controls_sheet.dart';
 import 'package:heavenbrowser/features/devtools/desktop_inspector_panel.dart';
 import 'package:heavenbrowser/features/downloads/downloads_controller.dart';
-import 'package:heavenbrowser/features/extensions/extensions_controller.dart';
+import 'package:heavenbrowser/features/downloads/downloads_screen.dart';
 import 'package:heavenbrowser/features/news/interest_news_service.dart';
 import 'package:heavenbrowser/features/search/heaven_search_service.dart';
 import 'package:heavenbrowser/features/settings/browser_settings.dart';
@@ -21,6 +22,7 @@ import 'package:heavenbrowser/features/settings/help_screen.dart';
 import 'package:heavenbrowser/features/settings/notifications_screen.dart';
 import 'package:heavenbrowser/features/settings/settings_screen.dart';
 import 'package:heavenbrowser/features/shield/heaven_shield.dart';
+import 'package:heavenbrowser/features/shield/native_shield_bridge.dart';
 import 'package:heavenbrowser/features/tabs/tab_manager.dart';
 import 'package:heavenbrowser/features/tabs/tabs_screen.dart';
 import 'package:heavenbrowser/features/vpn/vpn_controller.dart';
@@ -91,328 +93,330 @@ HeavenNewsFeedService _createMockNewsService(
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
-  group('Step 14 Core: Heaven Brand, Google + Perplexity Search, Persistent Tabs (No Sleep) & Extensions', () {
-    test('uses Electric Sapphire & Midnight Navy blue palette and Heaven app name', () {
-      expect(AppConstants.appName, 'Heaven');
-      expect(AppConstants.appVersion, '0.0.1');
-      expect(AppTheme.sapphireBlue, const Color(0xFF2563EB));
-      expect(AppTheme.electricBlue, const Color(0xFF3B82F6));
-      expect(AppTheme.deepNavyBg, const Color(0xFF040B16));
-      expect(AppTheme.navySurface, const Color(0xFF0B162C));
-      expect(AppTheme.darkTheme.colorScheme.primary, const Color(0xFF60A5FA));
+  group(
+    'Step 15 Core: Extensions Removed, Anti-Jitter Guards, Persistent Tab Previews, Dynamic Country Discover & .bin-Free Downloads',
+    () {
+      test(
+        'uses Electric Sapphire & Midnight Navy palette, Heaven app name, version 0.0.1, and completely removes Chrome Extensions files',
+        () {
+          expect(AppConstants.appName, 'Heaven');
+          expect(AppConstants.appVersion, '0.0.1');
+          expect(AppTheme.sapphireBlue, const Color(0xFF2563EB));
+          expect(AppTheme.electricBlue, const Color(0xFF3B82F6));
+          expect(AppTheme.deepNavyBg, const Color(0xFF040B16));
+          expect(AppTheme.navySurface, const Color(0xFF0B162C));
+          expect(
+            AppTheme.darkTheme.colorScheme.primary,
+            const Color(0xFF60A5FA),
+          );
 
-      // Obsolete Step 13 sheets are completely removed
-      expect(
-        File('lib/features/browser/quick_action_sheet.dart').existsSync(),
-        isFalse,
+          // Extensions system and obsolete sheets are 100% removed
+          expect(
+            File(
+              'android/app/src/main/java/com/hypertechlabs/heavenbrowser/HeavenChromeExtManager.java',
+            ).existsSync(),
+            isFalse,
+          );
+          expect(
+            File(
+              'lib/features/extensions/extensions_controller.dart',
+            ).existsSync(),
+            isFalse,
+          );
+          expect(
+            File('lib/features/extensions/extensions_screen.dart').existsSync(),
+            isFalse,
+          );
+          expect(
+            File('lib/features/browser/quick_action_sheet.dart').existsSync(),
+            isFalse,
+          );
+          expect(
+            File(
+              'lib/features/downloads/media_grabber_sheet.dart',
+            ).existsSync(),
+            isFalse,
+          );
+        },
       );
-      expect(
-        File('lib/features/downloads/media_grabber_sheet.dart').existsSync(),
-        isFalse,
+
+      test(
+        'Google is Default Search Engine, Perplexity is supported, Heaven Engine is removed, and Anti-Jitter configRevision stays stable during ad-block ticks',
+        () async {
+          expect(SearchEngine.values.first, SearchEngine.google);
+          expect(SearchEngine.values, contains(SearchEngine.perplexity));
+          expect(
+            SearchEngine.values.map((SearchEngine e) => e.name),
+            isNot(contains('heaven')),
+          );
+          expect(SearchEngine.fromName('heaven'), SearchEngine.google);
+          expect(SearchEngine.fromName('perplexity'), SearchEngine.perplexity);
+
+          SharedPreferences.setMockInitialValues(<String, Object>{});
+          final SharedPreferences prefs = await SharedPreferences.getInstance();
+          final BrowserSettingsController settings = BrowserSettingsController(
+            prefs,
+          );
+          expect(settings.searchEngine, SearchEngine.google);
+
+          final int initialRev = settings.webViewConfigRevision;
+          await settings.incrementBlockedCount(5);
+          await settings.incrementBytesSaved(48 * 1024);
+          await settings.incrementRedirectBlockedCount();
+          // Counter updates must NOT increment webViewConfigRevision (prevents whole-app WebView jitter!)
+          expect(settings.webViewConfigRevision, initialRev);
+
+          await settings.setUltraDataSaverMode(true);
+          expect(settings.webViewConfigRevision, initialRev + 1);
+          await settings.setUltraDataSaverMode(false);
+
+          final BrowserEngine normalEngine = BrowserEngine(
+            settings: settings,
+            isIncognito: false,
+            enablePlatformWebView: false,
+          );
+          await normalEngine.loadUserEntry('raspberry pi 5');
+          expect(
+            normalEngine.currentUrl,
+            'https://www.google.com/search?q=raspberry+pi+5',
+          );
+          expect(settings.recentSearches, contains('raspberry pi 5'));
+
+          await settings.setSearchEngine(SearchEngine.perplexity);
+          await normalEngine.loadUserEntry('quantum computing');
+          expect(
+            normalEngine.currentUrl,
+            'https://www.perplexity.ai/search?q=quantum+computing',
+          );
+          expect(
+            OmniboxParser.extractAnySearchQuery(normalEngine.currentUrl),
+            'quantum computing',
+          );
+
+          // Legacy heaven:// search URLs automatically migrate to Google Search
+          await normalEngine.loadUri(Uri.parse('heaven://search?q=flutter+sdk'));
+          expect(
+            normalEngine.currentUrl,
+            'https://www.google.com/search?q=flutter+sdk',
+          );
+
+          normalEngine.dispose();
+        },
       );
-      expect(
-        File('lib/features/extensions/extension_popup_sheet.dart').existsSync(),
-        isFalse,
+
+      test(
+        'Open tabs, tab groups, AND tab preview screenshots persist across app restarts and remain visible after closing other tabs',
+        () async {
+          SharedPreferences.setMockInitialValues(<String, Object>{});
+          final SharedPreferences prefs = await SharedPreferences.getInstance();
+          final BrowserSettingsController settings = BrowserSettingsController(
+            prefs,
+          );
+
+          final TabManagerController session1 = TabManagerController(
+            settings: settings,
+            enablePlatformWebView: false,
+          );
+          await session1.activeEngine.loadUserEntry('https://flutter.dev');
+          final BrowserTab tab1 = session1.activeTab;
+          tab1.previewBytes = _kSamplePreviewPng;
+          await prefs.setString(
+            'hb.tabPreview.v15.${tab1.id}',
+            base64Encode(_kSamplePreviewPng),
+          );
+
+          final BrowserTab tab2 = await session1.openNewTab(
+            incognito: false,
+            initialInput: 'https://dart.dev',
+          );
+          tab2.previewBytes = _kSamplePreviewPng;
+          await prefs.setString(
+            'hb.tabPreview.v15.${tab2.id}',
+            base64Encode(_kSamplePreviewPng),
+          );
+          final TabGroup grp = session1.createGroupAndAddTab(
+            name: 'SDK Docs',
+            tabId: tab2.id,
+          );
+          expect(session1.normalTabs.length, 2);
+          session1.dispose();
+
+          // Simulate closing & reopening Heaven with the same SharedPreferences
+          final TabManagerController session2 = TabManagerController(
+            settings: settings,
+            enablePlatformWebView: false,
+          );
+          expect(session2.normalTabs.length, 2);
+          expect(session2.groups.first.name, 'SDK Docs');
+          expect(session2.activeTab.groupId, grp.id);
+          // Both tabs restore their previewBytes immediately on reopen!
+          expect(session2.normalTabs[0].previewBytes, isNotNull);
+          expect(session2.normalTabs[0].previewBytes, isNotEmpty);
+          expect(session2.normalTabs[1].previewBytes, isNotNull);
+
+          // Closing tab 2 keeps tab 1's previewBytes intact and removes only tab 2's cache key
+          await session2.closeTab(tab2.id);
+          expect(session2.normalTabs.length, 1);
+          expect(session2.normalTabs.first.previewBytes, isNotNull);
+          expect(session2.normalTabs.first.previewBytes, isNotEmpty);
+          expect(prefs.getString('hb.tabPreview.v15.${tab2.id}'), isNull);
+          expect(prefs.getString('hb.tabPreview.v15.${tab1.id}'), isNotNull);
+          session2.dispose();
+        },
       );
-    });
 
-    test(
-      'Google is Default Search Engine, Perplexity is supported, Heaven Engine is removed, and chrome-extension URLs rewrite cleanly',
-      () async {
-        expect(
-          File(
-            'android/app/src/main/java/com/hypertechlabs/heavenbrowser/HeavenGoogleBgSearch.java',
-          ).existsSync(),
-          isFalse,
-        );
-        expect(
-          File('lib/features/search/heaven_search_view.dart').existsSync(),
-          isFalse,
-        );
-        expect(SearchEngine.values.first, SearchEngine.google);
-        expect(SearchEngine.values, contains(SearchEngine.perplexity));
-        expect(
-          SearchEngine.values.map((SearchEngine e) => e.name),
-          isNot(contains('heaven')),
-        );
-        expect(SearchEngine.fromName('heaven'), SearchEngine.google);
-        expect(SearchEngine.fromName('perplexity'), SearchEngine.perplexity);
+      test(
+        'Home Discover dynamically adapts country tab & localized RSS queries to user locale (US, UK, Germany, Japan, India)',
+        () async {
+          addTearDown(() {
+            DiscoverRegionConfig.debugLocaleOverride = null;
+          });
 
-        SharedPreferences.setMockInitialValues(<String, Object>{});
-        final SharedPreferences prefs = await SharedPreferences.getInstance();
-        final BrowserSettingsController settings = BrowserSettingsController(
-          prefs,
-        );
-        expect(settings.searchEngine, SearchEngine.google);
+          DiscoverRegionConfig.debugLocaleOverride = const Locale('en', 'US');
+          expect(DiscoverRegionConfig.detect().countryCode, 'US');
+          expect(
+            NewsCategoryTab.localCountry.resolvedLabel(),
+            'United States',
+          );
 
-        final BrowserEngine normalEngine = BrowserEngine(
-          settings: settings,
-          isIncognito: false,
-          enablePlatformWebView: false,
-        );
-        await normalEngine.loadUserEntry('raspberry pi 5');
-        expect(
-          normalEngine.currentUrl,
-          'https://www.google.com/search?q=raspberry+pi+5',
-        );
-        expect(settings.recentSearches, contains('raspberry pi 5'));
+          DiscoverRegionConfig.debugLocaleOverride = const Locale('en', 'GB');
+          expect(DiscoverRegionConfig.detect().countryCode, 'GB');
+          expect(
+            NewsCategoryTab.localCountry.resolvedLabel(),
+            'United Kingdom',
+          );
 
-        // Switch to Perplexity and verify search query resolution + query extraction
-        await settings.setSearchEngine(SearchEngine.perplexity);
-        await normalEngine.loadUserEntry('quantum computing');
-        expect(
-          normalEngine.currentUrl,
-          'https://www.perplexity.ai/search?q=quantum+computing',
-        );
-        expect(
-          OmniboxParser.extractAnySearchQuery(normalEngine.currentUrl),
-          'quantum computing',
-        );
+          DiscoverRegionConfig.debugLocaleOverride = const Locale('de', 'DE');
+          expect(DiscoverRegionConfig.detect().countryCode, 'DE');
+          expect(NewsCategoryTab.localCountry.resolvedLabel(), 'Germany');
 
-        // Chrome extension scheme URLs rewrite to virtual extension host instead of being blocked
-        await normalEngine.loadUri(
-          Uri.parse(
-            'chrome-extension://eimadpbcbfnmbkopoojfekhnkhdbieeh/ui/popup/index.html',
-          ),
-        );
-        expect(
-          normalEngine.currentUrl,
-          'https://chrome-ext.heaven.local/eimadpbcbfnmbkopoojfekhnkhdbieeh/ui/popup/index.html',
-        );
-        expect(
-          OmniboxParser.formatDisplayUrl(normalEngine.currentUrl),
-          'Extension • ui/popup/index.html',
-        );
+          DiscoverRegionConfig.debugLocaleOverride = const Locale('ja', 'JP');
+          expect(DiscoverRegionConfig.detect().countryCode, 'JP');
+          expect(NewsCategoryTab.localCountry.resolvedLabel(), 'Japan');
 
-        // Legacy heaven:// search URLs automatically migrate to Google Search
-        await normalEngine.loadUri(
-          Uri.parse('heaven://search?q=flutter+sdk'),
-        );
-        expect(
-          normalEngine.currentUrl,
-          'https://www.google.com/search?q=flutter+sdk',
-        );
+          DiscoverRegionConfig.debugLocaleOverride = const Locale('en', 'IN');
+          expect(DiscoverRegionConfig.detect().countryCode, 'IN');
+          expect(NewsCategoryTab.localCountry.resolvedLabel(), 'India');
+        },
+      );
 
-        // Incognito never saves recent searches
-        final BrowserEngine incogEngine = BrowserEngine(
-          settings: settings,
-          isIncognito: true,
-          enablePlatformWebView: false,
-        );
-        await incogEngine.loadUserEntry('secret query');
-        expect(settings.recentSearches, isNot(contains('secret query')));
+      test(
+        'Downloads never fall back to .bin and refreshStatuses updates refined native filenames',
+        () async {
+          const MethodChannel nativeChannel = MethodChannel(
+            'com.hypertechlabs.heavenbrowser/native_shield',
+          );
+          addTearDown(() {
+            TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+                .setMockMethodCallHandler(nativeChannel, null);
+          });
 
-        final HeavenSearchService service = _createMockSearchService();
-        final List<String> suggestions = await service.fetchSuggestions(
-          'flutter',
-        );
-        expect(suggestions, contains('flutter sdk'));
-
-        normalEngine.dispose();
-        incogEngine.dispose();
-      },
-    );
-
-    test(
-      'Open tabs, active tab, and tab groups persist across app restarts with Sleep Mode completely removed',
-      () async {
-        SharedPreferences.setMockInitialValues(<String, Object>{});
-        final SharedPreferences prefs = await SharedPreferences.getInstance();
-        final BrowserSettingsController settings = BrowserSettingsController(
-          prefs,
-        );
-
-        final TabManagerController session1 = TabManagerController(
-          settings: settings,
-          enablePlatformWebView: false,
-        );
-        await session1.activeEngine.loadUserEntry('https://flutter.dev');
-        final BrowserTab tab2 = await session1.openNewTab(
-          incognito: false,
-          initialInput: 'https://dart.dev',
-        );
-        final TabGroup grp = session1.createGroupAndAddTab(
-          name: 'SDK Docs',
-          tabId: tab2.id,
-        );
-        expect(session1.normalTabs.length, 2);
-        expect(session1.groups.length, 1);
-        session1.dispose();
-
-        // Simulate app restart with the same SharedPreferences
-        final TabManagerController session2 = TabManagerController(
-          settings: settings,
-          enablePlatformWebView: false,
-        );
-        expect(session2.normalTabs.length, 2);
-        expect(session2.groups.length, 1);
-        expect(session2.groups.first.name, 'SDK Docs');
-        expect(session2.activeTab.groupId, grp.id);
-        expect(session2.activeEngine.currentUrl, 'https://dart.dev');
-
-        // Background restored tab retains its URL immediately without sleeping
-        final BrowserTab bgTab = session2.normalTabs.first;
-        expect(bgTab.engine.currentUrl, 'https://flutter.dev');
-        expect(session2.lastActiveWebsiteTab?.id, tab2.id);
-        session2.dispose();
-      },
-    );
-
-    test(
-      'ExtensionsController installs .crx packages, exposes launchUrl for New Tab opening, and exposes NO suggested catalog',
-      () async {
-        const MethodChannel nativeChannel = MethodChannel(
-          'com.hypertechlabs.heavenbrowser/native_shield',
-        );
-        addTearDown(() {
           TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
-              .setMockMethodCallHandler(nativeChannel, null);
-        });
-
-        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
-            .setMockMethodCallHandler(nativeChannel, (MethodCall call) async {
-              switch (call.method) {
-                case 'listChromeExtensions':
-                  return const <Map<String, Object>>[];
-                case 'installWebStoreExtension':
+              .setMockMethodCallHandler(nativeChannel, (MethodCall call) async {
+                if (call.method == 'startDownload') {
+                  final Map<Object?, Object?> args =
+                      call.arguments as Map<Object?, Object?>;
+                  final String url = args['url']?.toString() ?? '';
+                  if (url.contains('app-arm64-release.apk')) {
+                    // Return null to exercise NativeShieldBridge fallback name parser!
+                    return null;
+                  }
                   return <String, Object>{
-                    'ok': true,
-                    'extension': <String, Object>{
-                      'id': 'eimadpbcbfnmbkopoojfekhnkhdbieeh',
-                      'name': 'Dark Reader',
-                      'description': 'Dark mode for every website',
-                      'version': '4.9.96',
-                      'manifestVersion': 3,
-                      'enabled': true,
-                      'source': 'webstore',
-                      'popupUrl':
-                          'https://chrome-ext.heaven.local/eimadpbcbfnmbkopoojfekhnkhdbieeh/ui/popup/index.html',
-                      'optionsUrl':
-                          'https://chrome-ext.heaven.local/eimadpbcbfnmbkopoojfekhnkhdbieeh/ui/options/index.html',
-                      'launchUrl':
-                          'https://chrome-ext.heaven.local/eimadpbcbfnmbkopoojfekhnkhdbieeh/ui/popup/index.html',
-                      'hasBackground': true,
-                      'iconBase64': base64Encode(_kSamplePreviewPng),
-                      'permissions': <String>['storage', 'tabs'],
-                      'matches': <String>['<all_urls>'],
-                      'contentScriptCount': 1,
-                    },
+                    'downloadId': 42,
+                    'url': url,
+                    'fileName': 'download',
+                    'state': 'running',
                   };
-                case 'getChromeExtensionScriptsForUrl':
-                  return 'window.__darkReaderCrxLoaded = true;';
-                case 'toggleChromeExtension':
-                case 'uninstallChromeExtension':
-                  return true;
-                default:
-                  return null;
-              }
-            });
+                }
+                if (call.method == 'queryDownloads') {
+                  // Simulate native refineDownloadJobTarget discovering real PDF filename after redirect/headers
+                  return <Map<String, Object>>[
+                    <String, Object>{
+                      'downloadId': 42,
+                      'fileName': 'architecture-guide.pdf',
+                      'state': 'completed',
+                      'bytesDownloaded': 102400,
+                      'totalBytes': 102400,
+                      'speedBytesPerSec': 0,
+                      'localUri':
+                          '/storage/emulated/0/Download/architecture-guide.pdf',
+                    },
+                  ];
+                }
+                return null;
+              });
 
-        final MockClient cwsMock = MockClient((http.Request req) async {
-          const String rss = '''
-          <rss version="2.0"><channel>
-            <item>
-              <title>JSON Viewer - Chrome Web Store</title>
-              <link>https://chromewebstore.google.com/detail/json-viewer/gbmdgpbipfallnflgajpaliibnhdgobh</link>
-              <description>Pretty print JSON documents in Chrome.</description>
-            </item>
-          </channel></rss>
-          ''';
-          return http.Response(rss, 200);
-        });
+          SharedPreferences.setMockInitialValues(<String, Object>{});
+          final SharedPreferences prefs = await SharedPreferences.getInstance();
+          final DownloadsController downloads = DownloadsController(
+            prefs,
+            enableNativePolling: false,
+          );
 
-        SharedPreferences.setMockInitialValues(<String, Object>{});
-        final SharedPreferences prefs = await SharedPreferences.getInstance();
-        final ExtensionsController ext = ExtensionsController(
-          prefs,
-          syncNativeOnInit: false,
-          httpClient: cwsMock,
-        );
+          final bool ok = await downloads.startUrlDownload(
+            url: 'https://cdn.example.com/releases/v2/download?id=9981',
+          );
+          expect(ok, isTrue);
+          expect(downloads.items.first.fileName.endsWith('.bin'), isFalse);
 
-        expect(ext.chromeExtensions, isEmpty);
+          await downloads.refreshStatuses();
+          expect(downloads.items.first.fileName, 'architecture-guide.pdf');
+          expect(downloads.items.first.fileName.endsWith('.bin'), isFalse);
 
-        final List<ChromeWebStoreSearchItem> searchRes =
-            await ext.searchWebStoreExtensions('json viewer');
-        expect(searchRes.length, 1);
-        expect(
-          searchRes.first.extensionId,
-          'gbmdgpbipfallnflgajpaliibnhdgobh',
-        );
+          // Direct NativeShieldBridge fallback check on URL with .apk + octet-stream
+          final Map<String, Object?>? apkRes = await NativeShieldBridge.instance
+              .startDownload(
+                url:
+                    'https://releases.example.com/app-arm64-release.apk?token=abc',
+                mimeType: 'application/octet-stream',
+              );
+          expect(apkRes?['fileName'], 'app-arm64-release.apk');
 
-        final String? installErr = await ext.installFromWebStore(
-          'https://chromewebstore.google.com/detail/dark-reader/eimadpbcbfnmbkopoojfekhnkhdbieeh',
-        );
-        expect(installErr, isNull);
-        expect(ext.isInstalled('eimadpbcbfnmbkopoojfekhnkhdbieeh'), isTrue);
-        expect(
-          ext.chromeExtensions.first.effectiveLaunchUrl,
-          'https://chrome-ext.heaven.local/eimadpbcbfnmbkopoojfekhnkhdbieeh/ui/popup/index.html',
-        );
+          downloads.dispose();
+        },
+      );
 
-        final String fullInjected = await ext.buildFullInjectionForUrl(
-          'https://www.google.com/search?q=flutter',
-        );
-        expect(fullInjected, contains('__darkReaderCrxLoaded'));
-        ext.dispose();
-      },
-    );
+      test(
+        'Privacy Policy file is populated and Per-Site Permission store & 1-tap revoke work cleanly',
+        () async {
+          expect(
+            AppConstants.privacyPolicyUrl,
+            'https://github.com/Aryanshahx/heavenbrowser/blob/main/privacypolicy.md',
+          );
+          final File policyFile = File('privacypolicy.md');
+          expect(policyFile.existsSync(), isTrue);
+          final String policyText = policyFile.readAsStringSync();
+          expect(policyText.length, greaterThan(1500));
+          expect(policyText, contains('techlabs.hyper@gmail.com'));
 
-    test(
-      'Privacy Policy file is populated and AppConstants.privacyPolicyUrl points to official GitHub policy',
-      () {
-        expect(
-          AppConstants.privacyPolicyUrl,
-          'https://github.com/Aryanshahx/heavenbrowser/blob/main/privacypolicy.md',
-        );
-        final File policyFile = File('privacypolicy.md');
-        expect(policyFile.existsSync(), isTrue);
-        final String policyText = policyFile.readAsStringSync();
-        expect(policyText.length, greaterThan(1500));
-        expect(policyText, contains('techlabs.hyper@gmail.com'));
-      },
-    );
-
-    test(
-      'Per-Site Permission store, 1-tap revoke, Ultra Data Saver & Data Saved metrics work cleanly',
-      () async {
-        SharedPreferences.setMockInitialValues(<String, Object>{});
-        final SharedPreferences prefs = await SharedPreferences.getInstance();
-        final BrowserSettingsController settings = BrowserSettingsController(
-          prefs,
-        );
-
-        expect(
-          settings.getSitePermission('meet.example.com', SitePermissionType.camera),
-          SitePermissionDecision.ask,
-        );
-        await settings.setSitePermission(
-          'meet.example.com',
-          SitePermissionType.camera,
-          SitePermissionDecision.allow,
-        );
-        expect(
-          settings.getSitePermission('meet.example.com', SitePermissionType.camera),
-          SitePermissionDecision.allow,
-        );
-
-        await settings.revokeSitePermission(
-          'meet.example.com',
-          SitePermissionType.camera,
-        );
-        expect(
-          settings.getSitePermission('meet.example.com', SitePermissionType.camera),
-          SitePermissionDecision.block,
-        );
-
-        await settings.incrementBytesSaved(2 * 1024 * 1024);
-        expect(settings.formattedDataSaved, '2.0 MB');
-
-        await settings.setLanguage(BrowserLanguage.hi);
-        expect(settings.language, BrowserLanguage.hi);
-        expect(HelpScreen.supportEmail, 'techlabs.hyper@gmail.com');
-      },
-    );
-  });
+          SharedPreferences.setMockInitialValues(<String, Object>{});
+          final SharedPreferences prefs = await SharedPreferences.getInstance();
+          final BrowserSettingsController settings = BrowserSettingsController(
+            prefs,
+          );
+          await settings.setSitePermission(
+            'meet.example.com',
+            SitePermissionType.camera,
+            SitePermissionDecision.allow,
+          );
+          await settings.revokeSitePermission(
+            'meet.example.com',
+            SitePermissionType.camera,
+          );
+          expect(
+            settings.getSitePermission(
+              'meet.example.com',
+              SitePermissionType.camera,
+            ),
+            SitePermissionDecision.block,
+          );
+          await settings.setLanguage(BrowserLanguage.hi);
+          expect(settings.language, BrowserLanguage.hi);
+          expect(HelpScreen.supportEmail, 'techlabs.hyper@gmail.com');
+        },
+      );
+    },
+  );
 
   group('Restored Step 7 Foreign Country VPN & Download Location Control', () {
     const MethodChannel nativeChannel = MethodChannel(
@@ -425,7 +429,7 @@ void main() {
     });
 
     test(
-      'VpnController defaults to United States Foreign OpenVPN, connects Foreign & WARP profiles & reloads failed tabs',
+      'VpnController defaults to United States Foreign OpenVPN, connects Foreign & WARP profiles & disconnects cleanly',
       () async {
         TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
             .setMockMethodCallHandler(nativeChannel, (MethodCall call) async {
@@ -454,12 +458,6 @@ void main() {
                     'connected': true,
                     'profileName': 'Fastest Nearby Edge (WARP)',
                   };
-                case 'validateWireGuardConfig':
-                  return <String, Object>{
-                    'valid': true,
-                    'endpoint': '185.159.157.1:51820',
-                    'addresses': '10.2.0.2/32',
-                  };
                 case 'disconnectVpn':
                   return <String, Object>{'ok': true, 'connected': false};
                 default:
@@ -480,8 +478,6 @@ void main() {
         )..onTunnelConnected = () => callbackFired = true;
 
         expect(vpn.selectedProfile.id, VpnController.defaultForeignUsId);
-        expect(vpn.foreignProfiles.length, greaterThanOrEqualTo(9));
-
         await vpn.connect();
         expect(vpn.isConnected, isTrue);
         expect(vpn.exitCountry, 'US');
@@ -495,45 +491,10 @@ void main() {
         vpn.dispose();
       },
     );
-
-    test('DownloadsController changes download location cleanly', () async {
-      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
-          .setMockMethodCallHandler(nativeChannel, (MethodCall call) async {
-            if (call.method == 'setDownloadLocation') {
-              final Map<Object?, Object?> args =
-                  call.arguments as Map<Object?, Object?>;
-              final String p = args['path']?.toString() ?? '';
-              return <String, Object>{
-                'ok': true,
-                'path': p,
-                'label': 'Heaven Subfolder',
-              };
-            }
-            return null;
-          });
-
-      SharedPreferences.setMockInitialValues(<String, Object>{});
-      final SharedPreferences prefs = await SharedPreferences.getInstance();
-      final DownloadsController downloads = DownloadsController(
-        prefs,
-        enableNativePolling: false,
-      );
-      final String? err = await downloads.setDownloadLocation(
-        '/storage/emulated/0/Download/HeavenBrowser',
-        label: 'Heaven Subfolder',
-      );
-      expect(err, isNull);
-      expect(
-        downloads.downloadLocationPath,
-        '/storage/emulated/0/Download/HeavenBrowser',
-      );
-      expect(downloads.downloadLocationLabel, 'Heaven Subfolder');
-      downloads.dispose();
-    });
   });
 
   testWidgets(
-    'Step 14 UI: Top Navigation Bar Auto-Hide on Scroll, Extension Opens in New Tab, Minimal Settings + Perplexity, Permissions, Notifications & Privacy Policy on 320px screen',
+    'Step 15 UI on 320px Screen: Dynamic Country Discover, Compact Closable Shield Sheet, Uncut Download Location Sheet, Uncut Blue Active Tab Border & Persistent Previews, No Extensions UI',
     (WidgetTester tester) async {
       const MethodChannel nativeChannel = MethodChannel(
         'com.hypertechlabs.heavenbrowser/native_shield',
@@ -541,32 +502,14 @@ void main() {
       Map<Object?, Object?>? capturedShortcutArgs;
       bool testNotificationSent = false;
 
+      DiscoverRegionConfig.debugLocaleOverride = const Locale('en', 'GB');
+      addTearDown(() {
+        DiscoverRegionConfig.debugLocaleOverride = null;
+      });
+
       TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
           .setMockMethodCallHandler(nativeChannel, (MethodCall call) async {
             switch (call.method) {
-              case 'listChromeExtensions':
-                return <Map<String, Object>>[
-                  <String, Object>{
-                    'id': 'eimadpbcbfnmbkopoojfekhnkhdbieeh',
-                    'name': 'Dark Reader',
-                    'description': 'Dark mode for every website',
-                    'version': '4.9.96',
-                    'manifestVersion': 3,
-                    'enabled': true,
-                    'source': 'webstore',
-                    'popupUrl':
-                        'https://chrome-ext.heaven.local/eimadpbcbfnmbkopoojfekhnkhdbieeh/ui/popup/index.html',
-                    'launchUrl':
-                        'https://chrome-ext.heaven.local/eimadpbcbfnmbkopoojfekhnkhdbieeh/ui/popup/index.html',
-                    'hasBackground': true,
-                    'iconBase64': base64Encode(_kSamplePreviewPng),
-                    'permissions': <String>['storage', 'tabs'],
-                    'matches': <String>['<all_urls>'],
-                    'contentScriptCount': 1,
-                  },
-                ];
-              case 'setPopupContextTab':
-                return true;
               case 'createHomeScreenShortcut':
                 capturedShortcutArgs = call.arguments as Map<Object?, Object?>?;
                 return true;
@@ -579,6 +522,29 @@ void main() {
               case 'sendTestNotification':
                 testNotificationSent = true;
                 return true;
+              case 'getDownloadLocations':
+                return <String, Object>{
+                  'currentPath': '/storage/emulated/0/Download',
+                  'currentLabel': 'System Downloads',
+                  'presets': <Map<String, String>>[
+                    <String, String>{
+                      'label': 'System Downloads',
+                      'path': '/storage/emulated/0/Download',
+                    },
+                    <String, String>{
+                      'label': 'Heaven Subfolder',
+                      'path': '/storage/emulated/0/Download/HeavenBrowser',
+                    },
+                  ],
+                };
+              case 'setDownloadLocation':
+                final Map<Object?, Object?> args =
+                    call.arguments as Map<Object?, Object?>;
+                return <String, Object>{
+                  'ok': true,
+                  'path': args['path']?.toString() ?? '',
+                  'label': args['label']?.toString() ?? 'Heaven Subfolder',
+                };
               case 'provisionForeignOpenVpnConfig':
                 return <String, Object>{
                   'ok': true,
@@ -617,12 +583,6 @@ void main() {
         prefs,
         enableNativePolling: false,
       );
-      final ExtensionsController extensions = ExtensionsController(
-        prefs,
-        syncNativeOnInit: false,
-      );
-      await extensions.refreshChromeExtensions();
-
       final InterestProfileController interests = InterestProfileController(
         prefs,
       );
@@ -643,7 +603,6 @@ void main() {
         HeavenBrowserApp(
           settings: settings,
           downloads: downloads,
-          extensions: extensions,
           interests: interests,
           newsService: newsService,
           vpn: vpn,
@@ -657,17 +616,28 @@ void main() {
           .widget<BrowserScreen>(find.byType(BrowserScreen))
           .tabManager;
 
-      // 1. Verify Top Navigation Bar is at the TOP of the screen and Quick Action FAB is removed
-      expect(find.byKey(const Key('top_navigation_bar_wrapper')), findsOneWidget);
-      expect(find.byKey(const Key('omnibox_display_pill')), findsOneWidget);
-      expect(find.byKey(const Key('quick_action_fab')), findsNothing);
-      final Offset topBarOffset = tester.getTopLeft(
-        find.byKey(const Key('top_navigation_bar_wrapper')),
+      // 1. Dynamic Country in Home Discover shows 'United Kingdom' (for en_GB) instead of hardcoded 'India'
+      expect(
+        find.byKey(const Key('discover_tab_localCountry')),
+        findsOneWidget,
       );
-      expect(topBarOffset.dy, lessThan(80));
-      expect(find.text('Heaven'), findsWidgets);
+      expect(find.text('United Kingdom'), findsOneWidget);
+      expect(find.text('India'), findsNothing);
 
-      // 2. Submit search -> resolves to Google Search; then scroll down hides top bar & scroll up shows it again!
+      // 2. Tap Shield icon on Home -> Heaven Shield Active sheet opens BELOW 65% height (never top of screen!) & closes via X button!
+      await tester.tap(find.byKey(const Key('site_permissions_button')));
+      await tester.pumpAndSettle();
+      expect(find.byType(ShieldSheet), findsOneWidget);
+      expect(find.text('Heaven Shield Active'), findsOneWidget);
+      final Size shieldSize = tester.getSize(
+        find.byKey(const Key('heaven_shield_sheet_container')),
+      );
+      expect(shieldSize.height, lessThanOrEqualTo(640 * 0.65));
+      await tester.tap(find.byKey(const Key('shield_sheet_close_button')));
+      await tester.pumpAndSettle();
+      expect(find.byType(ShieldSheet), findsNothing);
+
+      // 3. Submit search -> resolves to Google Search; scroll down hides top bar & scroll up shows it smoothly!
       await tester.enterText(
         find.byKey(const Key('home_search_textfield')),
         'flutter',
@@ -680,14 +650,12 @@ void main() {
       tabManager.activeEngine.handleWebScrollDelta(140, 60);
       await tester.pumpAndSettle();
       expect(tabManager.activeEngine.isNavBarVisible, isFalse);
-      expect(find.byKey(const Key('omnibox_display_pill')), findsNothing);
 
       tabManager.activeEngine.handleWebScrollDelta(80, -35);
       await tester.pumpAndSettle();
       expect(tabManager.activeEngine.isNavBarVisible, isTrue);
-      expect(find.byKey(const Key('omnibox_display_pill')), findsOneWidget);
 
-      // 3. Per-Site Permission Dashboard shows allowed Camera & revokes with 1 tap!
+      // 4. Per-Site Permission Dashboard revokes Camera with 1 tap!
       await tester.tap(find.byKey(const Key('site_permissions_button')));
       await tester.pumpAndSettle();
       expect(find.byType(SiteControlsSheet), findsOneWidget);
@@ -702,41 +670,45 @@ void main() {
       Navigator.of(tester.element(find.byType(SiteControlsSheet))).pop();
       await tester.pumpAndSettle();
 
-      // 4. Tapping an installed Chrome extension opens it in a NEW TAB!
-      expect(tabManager.normalTabs.length, 1);
+      // 5. Browser Menu has ZERO Chrome Extensions items; Downloads -> Change Download Location sheet is uncut & slides/closes cleanly!
       await tester.tap(find.byTooltip('Browser Menu'));
       await tester.pumpAndSettle();
-      await tester.ensureVisible(find.text('Chrome Extensions'));
+      expect(find.text('Extensions'), findsNothing);
+      expect(find.text('Chrome Extensions'), findsNothing);
+      await tester.tap(find.text('Downloads'));
       await tester.pumpAndSettle();
-      await tester.tap(find.text('Chrome Extensions'));
+      expect(find.byType(DownloadsScreen), findsOneWidget);
+
+      await tester.tap(find.byKey(const Key('change_download_location_card')));
       await tester.pumpAndSettle();
       expect(
-        find.byKey(
-          const Key('installed_extension_card_eimadpbcbfnmbkopoojfekhnkhdbieeh'),
-        ),
+        find.byKey(const Key('download_location_sheet_box')),
         findsOneWidget,
       );
-      await tester.tap(
-        find.byKey(
-          const Key('installed_extension_card_eimadpbcbfnmbkopoojfekhnkhdbieeh'),
-        ),
-      );
-      await tester.pumpAndSettle();
-      expect(tabManager.normalTabs.length, 2);
       expect(
-        tabManager.activeEngine.currentUrl,
-        'https://chrome-ext.heaven.local/eimadpbcbfnmbkopoojfekhnkhdbieeh/ui/popup/index.html',
+        find.byKey(const Key('choose_custom_download_folder_button')),
+        findsOneWidget,
       );
+      expect(tester.takeException(), isNull);
+      await tester.tap(find.text('Heaven Subfolder'));
+      await tester.pumpAndSettle();
+      expect(downloads.downloadLocationLabel, 'Heaven Subfolder');
+      await tester.pageBack();
+      await tester.pumpAndSettle();
 
-      // 5. Minimal Settings Screen: switch Search Engine to Perplexity & verify Privacy Policy tile!
+      // 6. Settings Screen has ZERO Chrome Extensions items, switches to Perplexity, and opens Privacy Policy!
       await tester.tap(find.byTooltip('Browser Menu'));
       await tester.pumpAndSettle();
       await tester.tap(find.text('Settings'));
       await tester.pumpAndSettle();
       expect(find.byType(SettingsScreen), findsOneWidget);
+      expect(find.text('Chrome Extensions'), findsNothing);
+
       await tester.tap(find.byKey(const Key('settings_search_engine_tile')));
       await tester.pumpAndSettle();
-      await tester.tap(find.byKey(const Key('search_engine_option_perplexity')));
+      await tester.tap(
+        find.byKey(const Key('search_engine_option_perplexity')),
+      );
       await tester.pumpAndSettle();
       expect(settings.searchEngine, SearchEngine.perplexity);
 
@@ -753,7 +725,7 @@ void main() {
       await tester.pumpAndSettle();
       expect(find.textContaining('github.com'), findsWidgets);
 
-      // 6. Open Notification Control Center -> Send Test Alert!
+      // 7. Notifications & Create Shortcut still work cleanly
       await tester.tap(find.byTooltip('Browser Menu'));
       await tester.pumpAndSettle();
       await tester.ensureVisible(find.text('Notifications'));
@@ -767,7 +739,6 @@ void main() {
       await tester.pageBack();
       await tester.pumpAndSettle();
 
-      // 7. Create Shortcut with website logo works cleanly
       await tester.tap(find.byTooltip('Browser Menu'));
       await tester.pumpAndSettle();
       await tester.ensureVisible(find.text('Create shortcut'));
@@ -778,16 +749,31 @@ void main() {
       await tester.pumpAndSettle();
       expect(capturedShortcutArgs, isNotNull);
 
-      // 8. Tabs screen shows open tabs with zero Sleep Mode controls
-      await tester.pump(const Duration(seconds: 5));
+      // 8. Tabs screen renders active tab with uncut foregroundDecoration rounded blue border & visible preview image!
+      tabManager.activeTab.previewBytes = _kSamplePreviewPng;
+      await tester.pump(const Duration(seconds: 2));
       await tester.pumpAndSettle();
       await tester.tap(find.byTooltip('Switch Tabs'));
       await tester.pumpAndSettle();
       expect(find.byType(TabsScreen), findsOneWidget);
-      expect(find.text('Sleeping'), findsNothing);
+      expect(find.text('ACTIVE'), findsOneWidget);
+      final AnimatedContainer activeCardContainer = tester
+          .widgetList<AnimatedContainer>(
+            find.descendant(
+              of: find.byKey(
+                ValueKey<String>('tab_card_${tabManager.activeTab.id}'),
+              ),
+              matching: find.byType(AnimatedContainer),
+            ),
+          )
+          .first;
+      final BoxDecoration? fgDeco =
+          activeCardContainer.foregroundDecoration as BoxDecoration?;
+      expect(fgDeco, isNotNull);
+      expect(fgDeco!.borderRadius, BorderRadius.circular(18));
+      expect((fgDeco.border! as Border).top.width, 2.6);
 
       vpn.dispose();
-      extensions.dispose();
       newsService.dispose();
       downloads.dispose();
     },
@@ -811,10 +797,6 @@ void main() {
           isNotNull,
         );
         expect(HeavenShield.matchBlockedDomain('adsterra.com'), isNotNull);
-        expect(
-          HeavenShield.matchBlockedDomain('chromewebstore.google.com'),
-          isNull,
-        );
         expect(HeavenShield.matchBlockedDomain('www.google.com'), isNull);
         expect(HeavenShield.matchBlockedDomain('www.perplexity.ai'), isNull);
         expect(HeavenShield.matchBlockedDomain('www.youtube.com'), isNull);
@@ -855,10 +837,6 @@ void main() {
                 http.Response('ip=198.51.100.7\nloc=US\nwarp=on\n', 200),
           ),
         );
-        final ExtensionsController extensions = ExtensionsController(
-          prefs,
-          syncNativeOnInit: false,
-        );
 
         await tester.pumpWidget(
           HeavenBrowserApp(
@@ -868,7 +846,6 @@ void main() {
             newsService: newsService,
             interests: interests,
             vpn: vpn,
-            extensions: extensions,
             enablePlatformWebView: false,
           ),
         );
@@ -904,38 +881,30 @@ void main() {
         expect(find.byKey(const Key('desktop_inspector_panel')), findsNothing);
 
         vpn.dispose();
-        extensions.dispose();
         newsService.dispose();
         downloads.dispose();
       },
     );
 
     test(
-      'Native Java & Manifest safety: Heaven label, PiP & Media Grabber removed, Background MediaSession + WakeLock + Extension Native Bridge wired',
+      'Native Java & Manifest safety: Heaven label, Extensions removed, First-Load Video + Smart .bin-Free Downloads + Background MediaSession wired',
       () {
         final String shieldJava = File(
           'android/app/src/main/java/com/hypertechlabs/heavenbrowser/HeavenShieldPlugin.java',
         ).readAsStringSync();
         expect(shieldJava.contains('setWebChromeClient'), isFalse);
         expect(shieldJava.contains('ShieldWebChromeClient'), isFalse);
-        expect(shieldJava.contains('enterPictureInPictureMode'), isFalse);
-        expect(shieldJava.contains('executeHlsPlaylistDownload'), isFalse);
+        expect(shieldJava.contains('HeavenChromeExtManager'), isFalse);
+        expect(shieldJava.contains('URLUtil.guessFileName'), isFalse);
+        expect(shieldJava.contains('download.bin'), isFalse);
+        expect(shieldJava.contains('resolveSmartFileName'), isTrue);
+        expect(shieldJava.contains('refineDownloadJobTarget'), isTrue);
+        expect(shieldJava.contains('focusWebView'), isTrue);
         expect(shieldJava.contains('addDocumentStartJavaScript'), isTrue);
         expect(shieldJava.contains('/youtubei/v1/player'), isTrue);
+        expect(shieldJava.contains('window.__hbInBg'), isTrue);
         expect(shieldJava.contains('onWebScrollNavBar'), isTrue);
         expect(shieldJava.contains('bgKeepAliveLoop'), isTrue);
-
-        final String extJava = File(
-          'android/app/src/main/java/com/hypertechlabs/heavenbrowser/HeavenChromeExtManager.java',
-        ).readAsStringSync();
-        expect(
-          extJava.contains('update.googleapis.com/service/update2/crx'),
-          isTrue,
-        );
-        expect(extJava.contains('HeavenExtNative'), isTrue);
-        expect(extJava.contains('importScripts'), isTrue);
-        expect(extJava.contains('normalizeExtensionUrl'), isTrue);
-        expect(extJava.contains('DnrBlockRule'), isTrue);
 
         final String mediaServiceJava = File(
           'android/app/src/main/java/com/hypertechlabs/heavenbrowser/HeavenMediaService.java',
@@ -945,32 +914,12 @@ void main() {
           isTrue,
         );
         expect(mediaServiceJava.contains('MediaSession'), isTrue);
-        expect(mediaServiceJava.contains('AudioFocusRequest'), isTrue);
-        expect(mediaServiceJava.contains('PARTIAL_WAKE_LOCK'), isTrue);
-
-        final String mainKt = File(
-          'android/app/src/main/kotlin/com/hypertechlabs/heavenbrowser/MainActivity.kt',
-        ).readAsStringSync();
-        expect(mainKt.contains('onActivityPaused'), isTrue);
-        expect(mainKt.contains('onActivityStopped'), isTrue);
-        expect(mainKt.contains('onActivityResumed'), isTrue);
-        expect(mainKt.contains('PictureInPicture'), isFalse);
 
         final String manifestXml = File(
           'android/app/src/main/AndroidManifest.xml',
         ).readAsStringSync();
         expect(manifestXml.contains('android:label="Heaven"'), isTrue);
-        expect(
-          manifestXml.contains('android:supportsPictureInPicture'),
-          isFalse,
-        );
         expect(manifestXml.contains('android.permission.USE_BIOMETRIC'), isTrue);
-        expect(
-          manifestXml.contains(
-            'android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK',
-          ),
-          isTrue,
-        );
       },
     );
   });

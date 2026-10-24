@@ -461,6 +461,7 @@ class _StartPageState extends State<StartPage> {
 
   /// Header with zero 'Reset Interests' button as requested!
   Widget _buildNewsSectionHeader(BuildContext context, ColorScheme colors) {
+    final DiscoverRegionConfig region = DiscoverRegionConfig.detect();
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: <Widget>[
@@ -476,12 +477,19 @@ class _StartPageState extends State<StartPage> {
                 style: TextStyle(fontSize: 16, fontWeight: FontWeight.w800),
               ),
             ),
-            if (_loadingNews)
-              const SizedBox(
-                width: 14,
-                height: 14,
-                child: CircularProgressIndicator(strokeWidth: 2),
-              ),
+            AnimatedSwitcher(
+              duration: const Duration(milliseconds: 200),
+              child: _loadingNews
+                  ? const SizedBox(
+                      key: ValueKey<String>('discover_loading_spinner'),
+                      width: 14,
+                      height: 14,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  : const SizedBox.shrink(
+                      key: ValueKey<String>('discover_idle'),
+                    ),
+            ),
           ],
         ),
         const SizedBox(height: 8),
@@ -493,9 +501,10 @@ class _StartPageState extends State<StartPage> {
                 Padding(
                   padding: const EdgeInsets.only(right: 6),
                   child: ChoiceChip(
+                    key: ValueKey<String>('discover_tab_${tab.name}'),
                     showCheckmark: false,
                     label: Text(
-                      tab.label,
+                      tab.resolvedLabel(region),
                       style: const TextStyle(
                         fontSize: 12,
                         fontWeight: FontWeight.w700,

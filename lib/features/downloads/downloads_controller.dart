@@ -46,6 +46,7 @@ class DownloadEntry {
   }
 
   DownloadEntry copyWith({
+    String? fileName,
     String? state,
     int? bytesDownloaded,
     int? totalBytes,
@@ -55,7 +56,7 @@ class DownloadEntry {
   }) {
     return DownloadEntry(
       downloadId: downloadId,
-      fileName: fileName,
+      fileName: fileName ?? this.fileName,
       url: url,
       mimeType: mimeType ?? this.mimeType,
       state: state ?? this.state,
@@ -364,6 +365,8 @@ class DownloadsController extends ChangeNotifier {
         next.add(item);
         continue;
       }
+      final String newName = (row['fileName']?.toString() ?? item.fileName)
+          .trim();
       final String newState = (row['state']?.toString() ?? item.state).trim();
       final int newBytes = (row['bytesDownloaded'] is num)
           ? (row['bytesDownloaded']! as num).toInt()
@@ -379,14 +382,17 @@ class DownloadsController extends ChangeNotifier {
       final String newMime = (row['mimeType']?.toString() ?? item.mimeType)
           .trim();
 
-      if (newState != item.state ||
+      if (newName != item.fileName ||
+          newState != item.state ||
           newBytes != item.bytesDownloaded ||
           newTotal != item.totalBytes ||
           newSpeed != item.speedBytesPerSec ||
-          newUri != item.localUri) {
+          newUri != item.localUri ||
+          newMime != item.mimeType) {
         changed = true;
         next.add(
           item.copyWith(
+            fileName: newName.isNotEmpty ? newName : item.fileName,
             state: newState,
             bytesDownloaded: newBytes,
             totalBytes: newTotal,
