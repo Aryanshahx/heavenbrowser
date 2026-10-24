@@ -562,6 +562,24 @@ void main() {
                   'serverHost': '89.187.173.169',
                   'countryCode': 'US',
                 };
+              case 'getBraveShieldStats':
+                return <String, Object>{
+                  'enabled': true,
+                  'farblingEnabled': true,
+                  'tabBlocked': 14,
+                  'tabSurrogates': 2,
+                  'tabCnameUncloaked': 1,
+                  'totalBlocked': 128,
+                  'totalSurrogates': 19,
+                  'totalCnameUncloaked': 6,
+                  'activeRuleCount': 24800,
+                };
+              case 'refreshBraveFilterLists':
+                return <String, Object>{
+                  'enabled': true,
+                  'farblingEnabled': true,
+                  'activeRuleCount': 26500,
+                };
               case 'disconnectVpn':
                 return <String, Object>{'ok': true, 'connected': false};
               default:
@@ -633,7 +651,7 @@ void main() {
       expect(find.text('United Kingdom'), findsOneWidget);
       expect(find.byKey(const Key('omnibox_shield_badge_button')), findsNothing);
 
-      // 2. Submit search -> resolves to Google Search; scroll down hides top bar & scroll up shows it smoothly!
+      // 2. Submit search -> resolves to Google Search; scrolling down hides top search bar SMOOTHLY (never instantly!) & scrolling up reveals it SMOOTHLY!
       await tester.enterText(
         find.byKey(const Key('home_search_textfield')),
         'flutter',
@@ -643,13 +661,34 @@ void main() {
       await tester.pumpAndSettle();
       expect(find.textContaining('google.com'), findsWidgets);
 
-      tabManager.activeEngine.handleWebScrollDelta(140, 60);
-      await tester.pumpAndSettle();
-      expect(tabManager.activeEngine.isNavBarVisible, isFalse);
+      final Finder topBarWrapper = find.byKey(
+        const Key('top_navigation_bar_wrapper'),
+      );
+      final double fullBarHeight = tester.getSize(topBarWrapper).height;
+      expect(fullBarHeight, greaterThan(45.0));
 
-      tabManager.activeEngine.handleWebScrollDelta(80, -35);
+      // Trigger downward scroll -> bar starts gliding smoothly (NOT snapping to 0px on frame 1!)
+      tabManager.activeEngine.handleWebScrollDelta(140, 60);
+      expect(tabManager.activeEngine.isNavBarVisible, isFalse);
+      await tester.pump();
+      expect(tester.getSize(topBarWrapper).height, equals(fullBarHeight));
+      await tester.pump(const Duration(milliseconds: 120));
+      final double midHideHeight = tester.getSize(topBarWrapper).height;
+      expect(midHideHeight, greaterThan(2.0));
+      expect(midHideHeight, lessThan(fullBarHeight - 2.0));
       await tester.pumpAndSettle();
+      expect(tester.getSize(topBarWrapper).height, equals(0.0));
+
+      // Trigger upward scroll -> bar glides smoothly back down from 0 -> fullBarHeight!
+      tabManager.activeEngine.handleWebScrollDelta(80, -35);
       expect(tabManager.activeEngine.isNavBarVisible, isTrue);
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 100));
+      final double midRevealHeight = tester.getSize(topBarWrapper).height;
+      expect(midRevealHeight, greaterThan(2.0));
+      expect(midRevealHeight, lessThan(fullBarHeight - 2.0));
+      await tester.pumpAndSettle();
+      expect(tester.getSize(topBarWrapper).height, closeTo(fullBarHeight, 0.1));
 
       // 3. Left-Edge Swipe Gesture navigates Back to Home, and Right-Edge Swipe Gesture navigates Forward!
       await tester.drag(
@@ -666,11 +705,20 @@ void main() {
       await tester.pumpAndSettle();
       expect(tabManager.activeEngine.currentUrl, contains('google.com'));
 
-      // 4. Per-Site Permission Dashboard revokes Camera with 1 tap and has NO Heaven Shield toggle!
+      // 4. Site Controls Sheet shows minimal Brave Shields per-site toggle + SugarCoat/Farbling summary & revokes Camera with 1 tap!
       await tester.tap(find.byKey(const Key('site_permissions_button')));
       await tester.pumpAndSettle();
       expect(find.byType(SiteControlsSheet), findsOneWidget);
-      expect(find.text('Heaven Shield for this site'), findsNothing);
+      expect(find.byKey(const Key('site_brave_shields_switch')), findsOneWidget);
+      expect(find.textContaining('14 ads & trackers blocked'), findsOneWidget);
+      expect(find.textContaining('2 SugarCoat'), findsOneWidget);
+      await tester.tap(find.byKey(const Key('site_brave_shields_switch')));
+      await tester.pumpAndSettle();
+      expect(settings.isBraveShieldEnabledForHost('www.google.com'), isFalse);
+      await tester.tap(find.byKey(const Key('site_brave_shields_switch')));
+      await tester.pumpAndSettle();
+      expect(settings.isBraveShieldEnabledForHost('www.google.com'), isTrue);
+
       await tester.ensureVisible(find.byKey(const Key('revoke_perm_camera')));
       await tester.pumpAndSettle();
       await tester.tap(find.byKey(const Key('revoke_perm_camera')));
@@ -761,13 +809,12 @@ void main() {
       await tester.pumpAndSettle();
       expect(tabManager.activeEngine.currentUrl, contains('google.com'));
 
-      // 8. Settings Screen has ZERO Shield/Ultra-Data-Saver items, switches to Perplexity, and opens Privacy Policy!
+      // 8. Settings Screen exposes minimal Brave Shields + Farbling + Filter Sync controls, switches to Perplexity, and opens Privacy Policy!
       await tester.tap(find.byTooltip('Browser Menu'));
       await tester.pumpAndSettle();
       await tester.tap(find.text('Settings'));
       await tester.pumpAndSettle();
       expect(find.byType(SettingsScreen), findsOneWidget);
-      expect(find.text('Heaven Ad & Tracker Shield'), findsNothing);
       expect(find.text('Ultra Data Saver'), findsNothing);
 
       await tester.tap(find.byKey(const Key('settings_search_engine_tile')));
@@ -777,6 +824,24 @@ void main() {
       );
       await tester.pumpAndSettle();
       expect(settings.searchEngine, SearchEngine.perplexity);
+
+      await tester.scrollUntilVisible(
+        find.byKey(const Key('settings_brave_shields_switch')),
+        140,
+        scrollable: find.descendant(
+          of: find.byType(SettingsScreen),
+          matching: find.byType(Scrollable),
+        ),
+      );
+      expect(
+        find.byKey(const Key('settings_brave_shields_switch')),
+        findsOneWidget,
+      );
+      expect(find.byKey(const Key('settings_farbling_switch')), findsOneWidget);
+      expect(
+        find.byKey(const Key('settings_update_filters_tile')),
+        findsOneWidget,
+      );
 
       await tester.scrollUntilVisible(
         find.byKey(const Key('settings_privacy_policy_tile')),
@@ -930,17 +995,14 @@ void main() {
     );
 
     test(
-      'Native Java & Manifest safety: Heaven label, Shields & WebViewClient wrapper removed, Pull-to-Refresh fixed, Smart .bin-Free Downloads + Background MediaSession wired',
+      'Native Java & Manifest safety: 5-Pillar Native Brave Shields Engine (EasyList/EasyPrivacy, DNS CNAME Uncloaking, Cosmetic/Procedural, SugarCoat & Farbling) + Zero Per-Request IPC Jitter',
       () {
         final String shieldJava = File(
           'android/app/src/main/java/com/hypertechlabs/heavenbrowser/HeavenShieldPlugin.java',
         ).readAsStringSync();
         expect(shieldJava.contains('setWebChromeClient'), isFalse);
         expect(shieldJava.contains('ShieldWebChromeClient'), isFalse);
-        expect(shieldJava.contains('ShieldWebViewClient'), isFalse);
-        expect(shieldJava.contains('ServiceWorkerController'), isFalse);
-        expect(shieldJava.contains('EARLY_YOUTUBE_AND_REDIRECT_GUARD_SCRIPT'), isFalse);
-        expect(shieldJava.contains('ULTRA_DATA_SAVER_STYLE_SCRIPT'), isFalse);
+        expect(shieldJava.contains('onBlockedRequest'), isFalse);
         expect(shieldJava.contains('canScrollVertically(-1)'), isFalse);
         expect(shieldJava.contains('HeavenChromeExtManager'), isFalse);
         expect(shieldJava.contains('URLUtil.guessFileName'), isFalse);
@@ -949,11 +1011,45 @@ void main() {
         expect(shieldJava.contains('refineDownloadJobTarget'), isTrue);
         expect(shieldJava.contains('installPullToRefreshListener'), isTrue);
         expect(shieldJava.contains('onPageAtTop'), isTrue);
+        expect(shieldJava.contains('onInnerScroll'), isTrue);
+        expect(shieldJava.contains('HeavenBraveShieldEngine'), isTrue);
         expect(shieldJava.contains('focusWebView'), isTrue);
         expect(shieldJava.contains('addDocumentStartJavaScript'), isTrue);
         expect(shieldJava.contains('window.__hbInBg'), isTrue);
         expect(shieldJava.contains('onWebScrollNavBar'), isTrue);
         expect(shieldJava.contains('bgKeepAliveLoop'), isTrue);
+
+        final String braveEngineJava = File(
+          'android/app/src/main/java/com/hypertechlabs/heavenbrowser/HeavenBraveShieldEngine.java',
+        ).readAsStringSync();
+        // Pillar 1: Native core WebView & ServiceWorker integration (no extensions, no UI-thread MethodChannel spam)
+        expect(braveEngineJava.contains('BraveNativeWebViewClient'), isTrue);
+        expect(braveEngineJava.contains('ServiceWorkerController'), isTrue);
+        expect(
+          braveEngineJava.contains('io.flutter.plugin.common.MethodChannel'),
+          isFalse,
+        );
+        // Pillar 2: EasyList / EasyPrivacy + DNS CNAME Uncloaking
+        expect(braveEngineJava.contains('easylist.txt'), isTrue);
+        expect(braveEngineJava.contains('easyprivacy.txt'), isTrue);
+        expect(braveEngineJava.contains('queryDnsCnameChain'), isTrue);
+        expect(braveEngineJava.contains('parseFirstCnameFromDnsPacket'), isTrue);
+        // Pillar 3: Cosmetic & Procedural Filtering
+        expect(braveEngineJava.contains('__hb_brave_cosmetic'), isTrue);
+        expect(braveEngineJava.contains('runProceduralPass'), isTrue);
+        // Pillar 4: SugarCoat Privacy-Safe Resource Replacement
+        expect(braveEngineJava.contains('buildSugarCoatLibrary'), isTrue);
+        expect(braveEngineJava.contains('google-analytics'), isTrue);
+        expect(braveEngineJava.contains('google-tag-manager'), isTrue);
+        expect(braveEngineJava.contains('googletag-gpt'), isTrue);
+        expect(braveEngineJava.contains('adsbygoogle'), isTrue);
+        expect(braveEngineJava.contains('facebook-pixel'), isTrue);
+        // Pillar 5: Advanced Anti-Fingerprinting (Farbling)
+        expect(braveEngineJava.contains('farblePixels'), isTrue);
+        expect(braveEngineJava.contains('measureText'), isTrue);
+        expect(braveEngineJava.contains('AudioBuffer'), isTrue);
+        expect(braveEngineJava.contains('patchWebGL'), isTrue);
+        expect(braveEngineJava.contains('globalPrivacyControl'), isTrue);
 
         final String vpnJava = File(
           'android/app/src/main/java/com/hypertechlabs/heavenbrowser/HeavenVpnManager.java',

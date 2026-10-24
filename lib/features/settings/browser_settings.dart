@@ -187,6 +187,9 @@ class BrowserSettingsController extends ChangeNotifier {
   static const String _keyDownloadNotifs = 'hb.downloadNotifs.v8';
   static const String _keyBgPlayNotifs = 'hb.bgPlayNotifs.v13';
   static const String _keyWebNotifs = 'hb.webNotifs.v8';
+  static const String _keyBraveShields = 'hb.braveShields.v17';
+  static const String _keyFarbling = 'hb.farbling.v17';
+  static const String _keyDisabledShieldHosts = 'hb.disabledShieldHosts.v17';
   static const String _keySiteUsage = 'hb.siteUsage.v3';
   static const String _keyHiddenDomains = 'hb.hiddenQuickDomains.v3';
   static const String _keyBookmarks = 'hb.bookmarks.v3';
@@ -208,10 +211,13 @@ class BrowserSettingsController extends ChangeNotifier {
   bool _downloadNotificationsEnabled = true;
   bool _backgroundPlayNotificationEnabled = true;
   bool _webNotificationsEnabled = false;
+  bool _braveShieldsEnabled = true;
+  bool _farblingEnabled = true;
   int _textScalePercent = 100;
 
   final Set<String> _jsDisabledHosts = <String>{};
   final Set<String> _popupAllowedHosts = <String>{};
+  final Set<String> _disabledShieldHosts = <String>{};
   final Map<String, Map<SitePermissionType, SitePermissionDecision>>
   _sitePermissions =
       <String, Map<SitePermissionType, SitePermissionDecision>>{};
@@ -241,6 +247,10 @@ class BrowserSettingsController extends ChangeNotifier {
   bool get backgroundPlayNotificationEnabled =>
       _backgroundPlayNotificationEnabled;
   bool get webNotificationsEnabled => _webNotificationsEnabled;
+  bool get braveShieldsEnabled => _braveShieldsEnabled;
+  bool get farblingEnabled => _farblingEnabled;
+  Set<String> get disabledShieldHosts =>
+      Set<String>.unmodifiable(_disabledShieldHosts);
   int get textScalePercent => _textScalePercent;
   List<String> get recentSearches => List<String>.unmodifiable(_recentSearches);
   List<BookmarkItem> get bookmarks =>
@@ -310,6 +320,17 @@ class BrowserSettingsController extends ChangeNotifier {
     _backgroundPlayNotificationEnabled =
         _prefs.getBool(_keyBgPlayNotifs) ?? true;
     _webNotificationsEnabled = _prefs.getBool(_keyWebNotifs) ?? false;
+    _braveShieldsEnabled = _prefs.getBool(_keyBraveShields) ?? true;
+    _farblingEnabled = _prefs.getBool(_keyFarbling) ?? true;
+
+    final List<String>? savedDisabledShield = _prefs.getStringList(
+      _keyDisabledShieldHosts,
+    );
+    if (savedDisabledShield != null) {
+      _disabledShieldHosts
+        ..clear()
+        ..addAll(savedDisabledShield);
+    }
 
     final List<String>? savedJsDisabled = _prefs.getStringList(
       _keyJsDisabledHosts,
@@ -432,7 +453,52 @@ class BrowserSettingsController extends ChangeNotifier {
       backgroundMediaEnabled: _backgroundMediaEnabled,
       webNotificationsEnabled: _webNotificationsEnabled,
       backgroundPlayNotificationEnabled: _backgroundPlayNotificationEnabled,
+      braveShieldsEnabled: _braveShieldsEnabled,
+      farblingEnabled: _farblingEnabled,
+      disabledShieldHosts: _disabledShieldHosts.toList(growable: false),
     );
+  }
+
+  bool isBraveShieldEnabledForHost(String? host) {
+    if (!_braveShieldsEnabled) {
+      return false;
+    }
+    final String clean = OmniboxParser.cleanDomain(host);
+    if (clean.isEmpty) {
+      return true;
+    }
+    return !_disabledShieldHosts.contains(clean);
+  }
+
+  Future<void> setBraveShieldsEnabled(bool value) async {
+    if (_braveShieldsEnabled == value) return;
+    _braveShieldsEnabled = value;
+    await _prefs.setBool(_keyBraveShields, value);
+    _pushNativeBrowserConfig();
+    notifyListeners();
+  }
+
+  Future<void> setFarblingEnabled(bool value) async {
+    if (_farblingEnabled == value) return;
+    _farblingEnabled = value;
+    await _prefs.setBool(_keyFarbling, value);
+    _pushNativeBrowserConfig();
+    notifyListeners();
+  }
+
+  Future<void> setBraveShieldForHost(String host, bool enabled) async {
+    final String clean = OmniboxParser.cleanDomain(host);
+    if (clean.isEmpty) return;
+    final bool changed = enabled
+        ? _disabledShieldHosts.remove(clean)
+        : _disabledShieldHosts.add(clean);
+    if (!changed) return;
+    await _prefs.setStringList(
+      _keyDisabledShieldHosts,
+      _disabledShieldHosts.toList(growable: false),
+    );
+    _pushNativeBrowserConfig();
+    notifyListeners();
   }
 
   SitePermissionDecision getSitePermission(

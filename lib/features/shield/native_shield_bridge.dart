@@ -1,5 +1,7 @@
 import 'package:flutter/services.dart';
 
+import 'brave_shield_status.dart';
+
 typedef NativePullProgressCallback = void Function(double progress);
 typedef NativePullRefreshCallback = void Function();
 typedef NativeDownloadStartedCallback =
@@ -97,6 +99,9 @@ class NativeShieldBridge {
     bool backgroundMediaEnabled = true,
     bool webNotificationsEnabled = false,
     bool backgroundPlayNotificationEnabled = true,
+    bool braveShieldsEnabled = true,
+    bool farblingEnabled = true,
+    List<String> disabledShieldHosts = const <String>[],
   }) async {
     try {
       await _channel.invokeMethod<bool>('updateConfig', <String, Object>{
@@ -104,11 +109,41 @@ class NativeShieldBridge {
         'backgroundMediaEnabled': backgroundMediaEnabled,
         'webNotificationsEnabled': webNotificationsEnabled,
         'backgroundPlayNotificationEnabled': backgroundPlayNotificationEnabled,
+        'braveShieldsEnabled': braveShieldsEnabled,
+        'farblingEnabled': farblingEnabled,
+        'disabledShieldHosts': disabledShieldHosts,
       });
     } on MissingPluginException {
       // Expected in unit/widget tests.
     } on PlatformException {
       // Ignore transient platform channel errors.
+    }
+  }
+
+  Future<BraveShieldStats> getBraveShieldStats({int webViewId = -1}) async {
+    try {
+      final Map<Object?, Object?>? raw = await _channel
+          .invokeMethod<Map<Object?, Object?>>(
+            'getBraveShieldStats',
+            <String, Object>{'webViewId': webViewId},
+          );
+      return BraveShieldStats.fromMap(raw);
+    } on MissingPluginException {
+      return const BraveShieldStats(activeRuleCount: 252);
+    } on PlatformException {
+      return const BraveShieldStats();
+    }
+  }
+
+  Future<BraveShieldStats> refreshBraveFilterLists() async {
+    try {
+      final Map<Object?, Object?>? raw = await _channel
+          .invokeMethod<Map<Object?, Object?>>('refreshBraveFilterLists');
+      return BraveShieldStats.fromMap(raw);
+    } on MissingPluginException {
+      return const BraveShieldStats(activeRuleCount: 252);
+    } on PlatformException {
+      return const BraveShieldStats();
     }
   }
 

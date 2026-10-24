@@ -171,16 +171,27 @@ public class HeavenShieldPlugin
           + "    setInterval(function(){if(window.__hbInBg){try{window._lact=Date.now();}catch(e){}}},5000);"
           + "  }catch(e){}"
           + "}"
-          + "var lastAtTop=true;"
+          + "var lastAtTop=true;var lastInnerSy=0;var lastInnerEmitMs=0;"
           + "window.addEventListener('scroll',function(ev){"
           + "  try{"
           + "    var t=ev&&ev.target;"
-          + "    var sy=window.pageYOffset||document.documentElement.scrollTop||0;"
-          + "    if(t&&t!==document&&t!==window&&typeof t.scrollTop==='number'&&t.scrollTop>sy){sy=t.scrollTop;}"
+          + "    var winSy=window.pageYOffset||document.documentElement.scrollTop||0;"
+          + "    var isInner=(t&&t!==document&&t!==window&&typeof t.scrollTop==='number');"
+          + "    var sy=winSy;"
+          + "    if(isInner&&t.scrollTop>sy){sy=t.scrollTop;}"
           + "    var nowTop=(sy<=6);"
           + "    if(nowTop!==lastAtTop){"
           + "      lastAtTop=nowTop;"
           + "      if(window.HeavenMediaBridge&&window.HeavenMediaBridge.onPageAtTop){window.HeavenMediaBridge.onPageAtTop(nowTop);}"
+          + "    }"
+          + "    if(isInner&&winSy<=4&&window.HeavenMediaBridge&&window.HeavenMediaBridge.onInnerScroll){"
+          + "      var dy=t.scrollTop-lastInnerSy;"
+          + "      lastInnerSy=t.scrollTop;"
+          + "      var nowMs=Date.now();"
+          + "      if(Math.abs(dy)>=6&&(nowMs-lastInnerEmitMs)>=55){"
+          + "        lastInnerEmitMs=nowMs;"
+          + "        window.HeavenMediaBridge.onInnerScroll(Math.round(t.scrollTop),Math.round(dy));"
+          + "      }"
           + "    }"
           + "  }catch(e){}"
           + "},{passive:true,capture:true});"
@@ -283,6 +294,7 @@ public class HeavenShieldPlugin
   private MethodChannel.Result pendingSiteHardwarePermResult;
   private MethodChannel.Result pendingBiometricResult;
   private HeavenVpnManager vpnManager;
+  private HeavenBraveShieldEngine braveShieldEngine;
   private volatile long activeFocusedWebViewId = -1L;
 
   private final ExecutorService downloadPool = Executors.newCachedThreadPool();
@@ -348,6 +360,7 @@ public class HeavenShieldPlugin
     this.customDownloadPath = sp.getString(PREF_DOWNLOAD_PATH, "");
     this.downloadNotificationsEnabled = sp.getBoolean(PREF_DL_NOTIFS_ENABLED, true);
     this.vpnManager = new HeavenVpnManager(appCtx);
+    this.braveShieldEngine = new HeavenBraveShieldEngine(appCtx);
     this.channel = new MethodChannel(binding.getBinaryMessenger(), CHANNEL_NAME);
     this.channel.setMethodCallHandler(this);
     registerDownloadControlReceiver(appCtx);
@@ -363,6 +376,10 @@ public class HeavenShieldPlugin
     unregisterDownloadControlReceiver(binding.getApplicationContext());
     unregisterMediaCommandReceiver(binding.getApplicationContext());
     stopBackgroundMediaService();
+    if (this.braveShieldEngine != null) {
+      this.braveShieldEngine.shutdown();
+      this.braveShieldEngine = null;
+    }
     if (this.channel != null) {
       this.channel.setMethodCallHandler(null);
       this.channel = null;
@@ -807,6 +824,7 @@ public class HeavenShieldPlugin
       case "attachToWebView":
         Object idObj = call.argument("webViewId");
         Boolean initDesktop = call.argument("desktopMode");
+        String initHost = call.argument("pageHost");
         if (initDesktop != null) {
           this.desktopMode = initDesktop;
         }
@@ -814,6 +832,9 @@ public class HeavenShieldPlugin
           long wvId = ((Number) idObj).longValue();
           this.activeFocusedWebViewId = wvId;
           pageAtTopByWv.put(wvId, Boolean.TRUE);
+          if (braveShieldEngine != null && initHost != null) {
+            braveShieldEngine.setPageHostForWebView(wvId, initHost);
+          }
           boolean attached = attachShieldToWebView(wvId);
           result.success(attached);
         } else {
@@ -869,15 +890,38 @@ public class HeavenShieldPlugin
       case "updatePageHost":
       case "setWebViewPageHost":
         Object wvIdObj = call.argument("webViewId");
+        String updatedHost = call.argument("pageHost");
         if (wvIdObj instanceof Number) {
           long id = ((Number) wvIdObj).longValue();
           this.activeFocusedWebViewId = id;
-          pageLoadingUntilMsByWv.put(id, SystemClock.elapsedRealtime() + 850L);
+          if (braveShieldEngine != null) {
+            braveShieldEngine.setPageHostForWebView(id, updatedHost);
+          }
+          pageLoadingUntilMsByWv.put(id, SystemClock.elapsedRealtime() + 650L);
           pageAtTopByWv.put(id, Boolean.TRUE);
           accumulatedScrollDyByWv.put(id, 0);
           emitNavBarVisibility(id, true);
         }
         result.success(true);
+        break;
+
+      case "getBraveShieldStats":
+        Object statsWvObj = call.argument("webViewId");
+        long statsWvId = (statsWvObj instanceof Number) ? ((Number) statsWvObj).longValue() : -1L;
+        if (braveShieldEngine != null) {
+          result.success(braveShieldEngine.getStatsSnapshot(statsWvId));
+        } else {
+          result.success(Collections.singletonMap("enabled", false));
+        }
+        break;
+
+      case "refreshBraveFilterLists":
+        if (braveShieldEngine != null) {
+          braveShieldEngine.forceRefreshFilterLists(
+              () -> mainHandler.post(() -> result.success(braveShieldEngine.getStatsSnapshot(-1L))));
+        } else {
+          result.success(Collections.singletonMap("enabled", false));
+        }
         break;
 
       case "startDownload":
@@ -1162,11 +1206,25 @@ public class HeavenShieldPlugin
     if (bgPlayNotifArg != null) {
       this.backgroundPlayNotifEnabled = bgPlayNotifArg;
     }
+    if (this.braveShieldEngine != null) {
+      Boolean shieldsArg = call.argument("braveShieldsEnabled");
+      Boolean farblingArg = call.argument("farblingEnabled");
+      List<String> disabledHostsArg = call.argument("disabledShieldHosts");
+      this.braveShieldEngine.updateConfiguration(
+          shieldsArg == null || shieldsArg,
+          farblingArg == null || farblingArg,
+          disabledHostsArg);
+    }
     refreshAllDocumentStartHandlers();
   }
 
   private String buildDocumentStartBundle() {
-    return "window.__heavenBgMediaEnabled="
+    String braveScript =
+        (this.braveShieldEngine != null)
+            ? this.braveShieldEngine.buildDocumentStartProtectionScript()
+            : "";
+    return braveScript
+        + "window.__heavenBgMediaEnabled="
         + this.backgroundMediaEnabled
         + ";window.__heavenWebNotifsBlocked="
         + (!this.webNotificationsEnabled)
@@ -1271,6 +1329,40 @@ public class HeavenShieldPlugin
         });
   }
 
+  private void processScrollDeltaForNavBar(final long webViewId, int scrollY, int dy) {
+    if (scrollY <= 18) {
+      accumulatedScrollDyByWv.put(webViewId, 0);
+      emitNavBarVisibility(webViewId, true);
+      return;
+    }
+    long nowMs = SystemClock.elapsedRealtime();
+    Long loadingLockUntil = pageLoadingUntilMsByWv.get(webViewId);
+    if (loadingLockUntil != null && nowMs < loadingLockUntil) {
+      return;
+    }
+    Long lastToggle = lastNavToggleMsByWv.get(webViewId);
+    if (lastToggle != null && (nowMs - lastToggle) < 340L) {
+      accumulatedScrollDyByWv.put(webViewId, 0);
+      return;
+    }
+    if (Math.abs(dy) > 480) {
+      return;
+    }
+    Integer prevAcc = accumulatedScrollDyByWv.get(webViewId);
+    int acc = prevAcc != null ? prevAcc : 0;
+    if ((acc > 0 && dy < 0) || (acc < 0 && dy > 0)) {
+      acc = dy;
+    } else {
+      acc += dy;
+    }
+    accumulatedScrollDyByWv.put(webViewId, acc);
+    if (acc <= -28) {
+      emitNavBarVisibility(webViewId, true);
+    } else if (acc >= 48 && scrollY > 76) {
+      emitNavBarVisibility(webViewId, false);
+    }
+  }
+
   private final class WebViewMediaJsBridge {
     private final long webViewId;
 
@@ -1281,6 +1373,12 @@ public class HeavenShieldPlugin
     @JavascriptInterface
     public void onPageAtTop(boolean atTop) {
       pageAtTopByWv.put(webViewId, atTop);
+    }
+
+    @JavascriptInterface
+    public void onInnerScroll(int scrollTop, int dy) {
+      pageAtTopByWv.put(webViewId, scrollTop <= 6);
+      processScrollDeltaForNavBar(webViewId, scrollTop, dy);
     }
 
     @JavascriptInterface
@@ -1353,41 +1451,13 @@ public class HeavenShieldPlugin
         webView.setOnScrollChangeListener(
             (v, scrollX, scrollY, oldScrollX, oldScrollY) -> {
               pageAtTopByWv.put(webViewId, scrollY <= 6);
-              if (scrollY <= 18) {
-                accumulatedScrollDyByWv.put(webViewId, 0);
-                emitNavBarVisibility(webViewId, true);
-                return;
-              }
-              long nowMs = SystemClock.elapsedRealtime();
-              Long loadingLockUntil = pageLoadingUntilMsByWv.get(webViewId);
-              if (loadingLockUntil != null && nowMs < loadingLockUntil) {
-                return;
-              }
-              Long lastToggle = lastNavToggleMsByWv.get(webViewId);
-              if (lastToggle != null && (nowMs - lastToggle) < 520L) {
-                accumulatedScrollDyByWv.put(webViewId, 0);
-                return;
-              }
-              int dy = scrollY - oldScrollY;
-              if (Math.abs(dy) > 420) {
-                return;
-              }
-              Integer prevAcc = accumulatedScrollDyByWv.get(webViewId);
-              int acc = prevAcc != null ? prevAcc : 0;
-              if ((acc > 0 && dy < 0) || (acc < 0 && dy > 0)) {
-                acc = dy;
-              } else {
-                acc += dy;
-              }
-              accumulatedScrollDyByWv.put(webViewId, acc);
-              if (acc <= -38) {
-                emitNavBarVisibility(webViewId, true);
-              } else if (acc >= 64 && scrollY > 110) {
-                emitNavBarVisibility(webViewId, false);
-              }
+              processScrollDeltaForNavBar(webViewId, scrollY, scrollY - oldScrollY);
             });
       }
 
+      if (this.braveShieldEngine != null) {
+        this.braveShieldEngine.attachToWebView(webView, webViewId);
+      }
       applyDesktopSettingsToWebView(webView, webViewId, this.desktopMode, false);
       installOrRefreshDocumentStartShield(webView, webViewId);
       installPullToRefreshListener(webView, webViewId);

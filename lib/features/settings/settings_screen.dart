@@ -296,6 +296,71 @@ class SettingsScreen extends StatelessWidget {
                   colors: colors,
                   children: <Widget>[
                     SwitchListTile.adaptive(
+                      key: const Key('settings_brave_shields_switch'),
+                      dense: true,
+                      secondary: const Icon(Icons.shield_outlined, size: 20),
+                      title: const Text('Brave Shields'),
+                      subtitle: const Text(
+                        'EasyList/EasyPrivacy, CNAME uncloak, Cosmetic & SugarCoat',
+                        style: TextStyle(fontSize: 11.5),
+                      ),
+                      value: settings.braveShieldsEnabled,
+                      onChanged: (bool v) async {
+                        await settings.setBraveShieldsEnabled(v);
+                        if (tabManager.activeEngine.isShowingWebPage) {
+                          await tabManager.activeEngine.reloadFullPage();
+                        }
+                      },
+                    ),
+                    _thinDivider(colors),
+                    SwitchListTile.adaptive(
+                      key: const Key('settings_farbling_switch'),
+                      dense: true,
+                      secondary: const Icon(Icons.blur_on_rounded, size: 20),
+                      title: const Text('Anti-Fingerprinting (Farbling)'),
+                      subtitle: const Text(
+                        'Randomize Canvas, WebGL, Audio & hardware per site',
+                        style: TextStyle(fontSize: 11.5),
+                      ),
+                      value:
+                          settings.braveShieldsEnabled &&
+                          settings.farblingEnabled,
+                      onChanged: settings.braveShieldsEnabled
+                          ? settings.setFarblingEnabled
+                          : null,
+                    ),
+                    _thinDivider(colors),
+                    ListTile(
+                      key: const Key('settings_update_filters_tile'),
+                      dense: true,
+                      leading: const Icon(Icons.sync_rounded, size: 20),
+                      title: const Text('Update Shield Filter Lists'),
+                      subtitle: const Text(
+                        'Sync latest EasyList & EasyPrivacy rules natively',
+                        style: TextStyle(fontSize: 11.5),
+                      ),
+                      trailing: Icon(
+                        Icons.chevron_right_rounded,
+                        size: 18,
+                        color: colors.onSurfaceVariant,
+                      ),
+                      onTap: () async {
+                        final stats = await NativeShieldBridge.instance
+                            .refreshBraveFilterLists();
+                        if (context.mounted) {
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            SnackBar(
+                              content: Text(
+                                'Filter lists synced (${stats.activeRuleCount} active rules)',
+                              ),
+                              behavior: SnackBarBehavior.floating,
+                            ),
+                          );
+                        }
+                      },
+                    ),
+                    _thinDivider(colors),
+                    SwitchListTile.adaptive(
                       dense: true,
                       secondary: const Icon(Icons.lock_outline_rounded, size: 20),
                       title: const Text('HTTPS Upgrade'),

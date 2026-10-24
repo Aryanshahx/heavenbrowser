@@ -2,10 +2,11 @@ import 'package:flutter/material.dart';
 
 import '../../core/theme/app_theme.dart';
 import '../settings/browser_settings.dart';
+import '../shield/brave_shield_status.dart';
 import '../shield/native_shield_bridge.dart';
 import 'engine/browser_engine.dart';
 
-class SiteControlsSheet extends StatelessWidget {
+class SiteControlsSheet extends StatefulWidget {
   const SiteControlsSheet({
     super.key,
     required this.engine,
@@ -38,6 +39,30 @@ class SiteControlsSheet extends StatelessWidget {
       SitePermissionType.javascript => Icons.javascript_rounded,
       SitePermissionType.protectedMedia => Icons.enhanced_encryption_outlined,
     };
+  }
+
+  @override
+  State<SiteControlsSheet> createState() => _SiteControlsSheetState();
+}
+
+class _SiteControlsSheetState extends State<SiteControlsSheet> {
+  BraveShieldStats _shieldStats = const BraveShieldStats();
+
+  BrowserEngine get engine => widget.engine;
+  BrowserSettingsController get settings => widget.settings;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadShieldStats();
+  }
+
+  Future<void> _loadShieldStats() async {
+    final BraveShieldStats fetched = await NativeShieldBridge.instance
+        .getBraveShieldStats(webViewId: engine.androidWebViewId ?? -1);
+    if (mounted) {
+      setState(() => _shieldStats = fetched);
+    }
   }
 
   @override
@@ -151,6 +176,13 @@ class SiteControlsSheet extends StatelessWidget {
                           label: const Text('Revoke All'),
                         ),
                     ],
+                  ),
+                  const SizedBox(height: 12),
+                  _buildBraveShieldsCard(
+                    colors,
+                    isDark: isDark,
+                    host: host,
+                    hasWebHost: hasWebHost,
                   ),
                   const SizedBox(height: 12),
                   const Divider(height: 1),
@@ -269,6 +301,72 @@ class SiteControlsSheet extends StatelessWidget {
     );
   }
 
+  Widget _buildBraveShieldsCard(
+    ColorScheme colors, {
+    required bool isDark,
+    required String? host,
+    required bool hasWebHost,
+  }) {
+    final bool shieldsUp = settings.isBraveShieldEnabledForHost(host);
+    final int blocked = hasWebHost
+        ? _shieldStats.tabBlocked
+        : _shieldStats.totalBlocked;
+    final int surrogates = hasWebHost
+        ? _shieldStats.tabSurrogates
+        : _shieldStats.totalSurrogates;
+
+    final String subtitleText = shieldsUp
+        ? '$blocked ads & trackers blocked'
+              '${surrogates > 0 ? ' • $surrogates SugarCoat' : ''}'
+              '${settings.farblingEnabled ? ' • Farbling on' : ''}'
+        : 'Shields Down for ${hasWebHost ? host : 'all sites'}';
+
+    return Material(
+      color: isDark ? AppTheme.navySurface : Colors.white,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(16),
+        side: BorderSide(
+          color: shieldsUp
+              ? AppTheme.shieldEmerald.withValues(alpha: 0.45)
+              : colors.outlineVariant.withValues(alpha: 0.35),
+        ),
+      ),
+      clipBehavior: Clip.antiAlias,
+      child: SwitchListTile.adaptive(
+        key: const Key('site_brave_shields_switch'),
+        dense: true,
+        secondary: Icon(
+          shieldsUp ? Icons.shield_rounded : Icons.shield_outlined,
+          color: shieldsUp ? AppTheme.shieldEmerald : colors.onSurfaceVariant,
+          size: 21,
+        ),
+        title: const Text(
+          'Brave Shields',
+          style: TextStyle(fontWeight: FontWeight.w800, fontSize: 13.8),
+        ),
+        subtitle: Text(
+          subtitleText,
+          maxLines: 2,
+          overflow: TextOverflow.ellipsis,
+          style: const TextStyle(fontSize: 11.5),
+        ),
+        value: shieldsUp,
+        onChanged: (bool value) async {
+          if (hasWebHost && host != null) {
+            if (value && !settings.braveShieldsEnabled) {
+              await settings.setBraveShieldsEnabled(true);
+            }
+            await settings.setBraveShieldForHost(host, value);
+            await engine.reloadFullPage();
+          } else {
+            await settings.setBraveShieldsEnabled(value);
+          }
+          await _loadShieldStats();
+        },
+      ),
+    );
+  }
+
   Widget _buildPermissionRow(
     BuildContext context,
     ColorScheme colors, {
@@ -290,7 +388,7 @@ class SiteControlsSheet extends StatelessWidget {
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
       child: Row(
         children: <Widget>[
-          Icon(_iconForPermission(type), size: 20, color: colors.primary),
+            Icon(SiteControlsSheet._iconForPermission(type), size: 20, color: colors.primary),
           const SizedBox(width: 10),
           Expanded(
             child: Column(

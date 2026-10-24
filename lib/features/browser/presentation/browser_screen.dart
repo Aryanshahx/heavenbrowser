@@ -385,12 +385,14 @@ class _BrowserScreenState extends State<BrowserScreen>
                   body: SafeArea(
                     child: Column(
                       children: <Widget>[
-                        SizedBox(
+                        _SmoothAutoHideTopBar(
                           key: const Key('top_navigation_bar_wrapper'),
-                          width: double.infinity,
-                          child: showTopNavBar
-                              ? _buildCommandCapsuleBar(context, colors, engine)
-                              : const SizedBox.shrink(),
+                          visible: showTopNavBar,
+                          child: _buildCommandCapsuleBar(
+                            context,
+                            colors,
+                            engine,
+                          ),
                         ),
                         if (_showFindBar) _buildFindBar(colors),
                         Expanded(
@@ -841,22 +843,36 @@ class _BrowserScreenState extends State<BrowserScreen>
             embeddedInTab: true,
           );
         } else if (engine.isShowingStartPage) {
-          overlayChild = StartPage(
-            settings: widget.settings,
-            isIncognito: tab.isIncognito,
-            searchService: widget.searchService,
-            newsService: widget.newsService,
-            interests: widget.interests,
-            onSelectUrl: (String input) => engine.loadUserEntry(input),
-            onOpenInNewTab: (String url) => widget.tabManager.openNewTab(
-              incognito: false,
-              initialInput: url,
+          overlayChild = NotificationListener<ScrollUpdateNotification>(
+            onNotification: (ScrollUpdateNotification notif) {
+              if (notif.metrics.axis == Axis.vertical &&
+                  !_isEditingOmnibox &&
+                  !_showLinkActionsCard) {
+                engine.handleWebScrollDelta(
+                  notif.metrics.pixels,
+                  notif.scrollDelta ?? 0.0,
+                );
+              }
+              return false;
+            },
+            child: StartPage(
+              settings: widget.settings,
+              isIncognito: tab.isIncognito,
+              searchService: widget.searchService,
+              newsService: widget.newsService,
+              interests: widget.interests,
+              onSelectUrl: (String input) => engine.loadUserEntry(input),
+              onOpenInNewTab: (String url) => widget.tabManager.openNewTab(
+                incognito: false,
+                initialInput: url,
+              ),
+              onOpenInIncognitoTab: (String url) =>
+                  widget.tabManager.openNewTab(
+                    incognito: true,
+                    initialInput: url,
+                  ),
+              onVoiceSearch: _triggerVoiceSearch,
             ),
-            onOpenInIncognitoTab: (String url) => widget.tabManager.openNewTab(
-              incognito: true,
-              initialInput: url,
-            ),
-            onVoiceSearch: _triggerVoiceSearch,
           );
         } else if (engine.errorMessage != null) {
           overlayChild = Center(
@@ -2460,3 +2476,92 @@ class _CreateShortcutDialogState extends State<_CreateShortcutDialog> {
     );
   }
 }
+
+/// Smoothly glides and fades the top search/navigation bar upward out of view
+/// when scrolling down and smoothly slides it back down when scrolling up,
+/// using RenderObject-level transitions (`SizeTransition` + `FadeTransition`)
+/// so zero widgets rebuild during animation frames.
+class _SmoothAutoHideTopBar extends StatefulWidget {
+  const _SmoothAutoHideTopBar({
+    super.key,
+    required this.visible,
+    required this.child,
+  });
+
+  final bool visible;
+  final Widget child;
+
+  @override
+  State<_SmoothAutoHideTopBar> createState() => _SmoothAutoHideTopBarState();
+}
+
+class _SmoothAutoHideTopBarState extends State<_SmoothAutoHideTopBar>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _controller;
+  late final Animation<double> _sizeFactor;
+  late final Animation<double> _opacityFactor;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = AnimationController(
+      vsync: this,
+      value: widget.visible ? 1.0 : 0.0,
+      duration: const Duration(milliseconds: 230),
+      reverseDuration: const Duration(milliseconds: 270),
+    );
+    _sizeFactor = CurvedAnimation(
+      parent: _controller,
+      curve: Curves.easeOutCubic,
+      reverseCurve: Curves.fastOutSlowIn,
+    );
+    _opacityFactor = CurvedAnimation(
+      parent: _controller,
+      curve: const Interval(0.15, 1.0, curve: Curves.easeOut),
+      reverseCurve: const Interval(0.0, 0.85, curve: Curves.easeIn),
+    );
+  }
+
+  @override
+  void didUpdateWidget(covariant _SmoothAutoHideTopBar oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.visible != oldWidget.visible) {
+      if (widget.visible) {
+        _controller.forward();
+      } else {
+        _controller.reverse();
+      }
+    }
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final Widget content = FadeTransition(
+      opacity: _opacityFactor,
+      child: IgnorePointer(ignoring: !widget.visible, child: widget.child),
+    );
+    return SizedBox(
+      width: double.infinity,
+      child: ClipRect(
+        child: AnimatedBuilder(
+          animation: _sizeFactor,
+          child: content,
+          builder: (BuildContext context, Widget? child) {
+            return Align(
+              alignment: Alignment.bottomCenter,
+              heightFactor: _sizeFactor.value,
+              child: child,
+            );
+          },
+        ),
+      ),
+    );
+  }
+}
+

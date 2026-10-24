@@ -91,6 +91,8 @@ class BrowserEngine extends ChangeNotifier {
   String _pageTitle = 'New Tab';
   double _progress = 0;
   double _pullProgress = 0;
+  double _scrollDeltaAccumulator = 0;
+  int _lastNavBarToggleEpochMs = 0;
   bool _isLoading = false;
   bool _isNavBarVisible = true;
   bool _webViewCanGoBack = false;
@@ -126,7 +128,7 @@ class BrowserEngine extends ChangeNotifier {
   bool get isShowingStartPage => _currentUrl == null || _currentUrl!.isEmpty;
   bool get isShowingDownloadsPage => OmniboxParser.isDownloadsUrl(_currentUrl);
   bool get isShowingWebPage => !isShowingStartPage && !isShowingDownloadsPage;
-  bool get isNavBarVisible => _isNavBarVisible || !isShowingWebPage;
+  bool get isNavBarVisible => _isNavBarVisible || isShowingDownloadsPage;
   bool get isMediaPlaying => _isMediaPlaying;
   String get playingMediaTitle => _playingMediaTitle;
 
@@ -193,24 +195,45 @@ class BrowserEngine extends ChangeNotifier {
     _mediaGestureConfigured = false;
   }
 
-  void setNavBarVisible(bool visible) {
-    final bool next = (!isShowingWebPage || _isLoading) ? true : visible;
-    if (_isNavBarVisible != next) {
-      _isNavBarVisible = next;
-      notifyListeners();
+  void setNavBarVisible(bool visible, {bool respectCooldown = false}) {
+    final bool next = (isShowingDownloadsPage || _isLoading) ? true : visible;
+    if (_isNavBarVisible == next) {
+      return;
     }
+    if (respectCooldown && !next) {
+      final int now = DateTime.now().millisecondsSinceEpoch;
+      if (now - _lastNavBarToggleEpochMs < 280) {
+        return;
+      }
+      _lastNavBarToggleEpochMs = now;
+    } else {
+      _lastNavBarToggleEpochMs = DateTime.now().millisecondsSinceEpoch;
+    }
+    _scrollDeltaAccumulator = 0;
+    _isNavBarVisible = next;
+    notifyListeners();
   }
 
   /// Updates top navigation bar visibility from scroll position & vertical delta:
-  /// scrolling down hides the bar; scrolling up (or near top) reveals it.
+  /// scrolling down smoothly hides the bar; scrolling up (or near top) smoothly reveals it.
   void handleWebScrollDelta(double scrollY, double deltaY) {
-    if (!isShowingWebPage || _isLoading) {
+    if (isShowingDownloadsPage || _isLoading) {
       setNavBarVisible(true);
       return;
     }
-    if (scrollY <= 18 || deltaY <= -28) {
+    if (scrollY <= 18) {
       setNavBarVisible(true);
-    } else if (deltaY >= 44 && scrollY > 90) {
+      return;
+    }
+    if ((_scrollDeltaAccumulator > 0 && deltaY < 0) ||
+        (_scrollDeltaAccumulator < 0 && deltaY > 0)) {
+      _scrollDeltaAccumulator = deltaY;
+    } else {
+      _scrollDeltaAccumulator += deltaY;
+    }
+    if (_scrollDeltaAccumulator <= -26) {
+      setNavBarVisible(true);
+    } else if (_scrollDeltaAccumulator >= 44 && scrollY > 80) {
       setNavBarVisible(false);
     }
   }

@@ -51,8 +51,9 @@ Heaven Browser requests only the Android permissions required for features you a
 
 ---
 
-## 5. Multi-Country VPN & Split Tunneling
+## 5. Native Brave-Style Shields & Multi-Country VPN
 
+- **On-Device Native Shields:** Heaven runs its ad, tracker, CNAME-uncloaking, cosmetic filtering, SugarCoat surrogate replacement, and anti-fingerprinting ("Farbling") engine **100% locally on your Android device**. Filter rules from public EasyList and EasyPrivacy lists are cached locally on your device without sending any browsing URLs externally.
 - **Optional Built-In VPN:** When you explicitly connect a country in **Heaven VPN**, traffic is encrypted via OpenVPN or WireGuard using either Browser-Only Split Tunneling (so only Heaven uses the VPN) or Full-Device mode. Heaven never logs, inspects, or stores your VPN traffic.
 
 ---
