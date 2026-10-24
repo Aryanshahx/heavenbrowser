@@ -667,7 +667,6 @@ class _DesktopInspectorPanelState extends State<DesktopInspectorPanel> {
       DevToolsNetworkEntry e,
     ) {
       if (_netFilter == 'all') return true;
-      if (_netFilter == 'blocked') return e.blocked;
       if (_netFilter == 'xhr') return e.type == 'fetch' || e.type == 'xhr';
       return e.type.contains(_netFilter);
     }).toList(growable: false);
@@ -685,7 +684,6 @@ class _DesktopInspectorPanelState extends State<DesktopInspectorPanel> {
                 ('script', 'JS'),
                 ('css', 'CSS'),
                 ('img', 'Img'),
-                ('blocked', 'Blocked Ads/Redirects'),
               ])
                 Padding(
                   padding: const EdgeInsets.only(right: 6),
@@ -715,11 +713,9 @@ class _DesktopInspectorPanelState extends State<DesktopInspectorPanel> {
                   ),
                   itemBuilder: (BuildContext context, int index) {
                     final DevToolsNetworkEntry e = filtered[index];
-                    final Color statusColor = e.blocked
-                        ? const Color(0xFFF87171)
-                        : (e.status >= 400
-                              ? const Color(0xFFFBBF24)
-                              : const Color(0xFF34D399));
+                    final Color statusColor = e.status >= 400
+                        ? const Color(0xFFFBBF24)
+                        : const Color(0xFF34D399);
                     return InkWell(
                       onTap: () {
                         Clipboard.setData(ClipboardData(text: e.url));
@@ -737,7 +733,7 @@ class _DesktopInspectorPanelState extends State<DesktopInspectorPanel> {
                             SizedBox(
                               width: 58,
                               child: Text(
-                                e.blocked ? 'BLOCKED' : '${e.status} ${e.method}',
+                                '${e.status} ${e.method}',
                                 maxLines: 1,
                                 overflow: TextOverflow.ellipsis,
                                 style: TextStyle(
@@ -763,7 +759,7 @@ class _DesktopInspectorPanelState extends State<DesktopInspectorPanel> {
                             ),
                             const SizedBox(width: 6),
                             Text(
-                              e.blocked ? 'Shield' : '${e.durationMs}ms',
+                              '${e.durationMs}ms',
                               style: const TextStyle(
                                 fontFamily: 'monospace',
                                 fontSize: 10.5,
@@ -915,10 +911,6 @@ class _DesktopInspectorPanelState extends State<DesktopInspectorPanel> {
         const Divider(color: Colors.white12),
         _InfoRow(label: 'Viewport', value: vp),
         _InfoRow(label: 'DOM Elements', value: '$nodes nodes • Load ${loadMs}ms'),
-        _InfoRow(
-          label: 'Shield Blocked',
-          value: '${widget.engine.pageBlockedCount} ads/redirects blocked on page',
-        ),
         _InfoRow(label: 'Platform', value: plat),
         _InfoRow(label: 'User-Agent', value: ua),
       ],

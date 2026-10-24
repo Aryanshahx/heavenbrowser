@@ -211,21 +211,29 @@ public final class HeavenVpnManager {
 
             VerifiedCandidate chosen = null;
 
-            // 1. Try dedicated RiseupVPN foreign gateways first for US, NL, FR, CA, or AUTO_FOREIGN
-            if ("US".equals(cc)
-                || "NL".equals(cc)
-                || "FR".equals(cc)
-                || "CA".equals(cc)
-                || "AUTO_FOREIGN".equals(cc)) {
-              chosen = tryProvisionRiseupCandidate(cc, excluded);
-            }
+            // 1. Try dedicated RiseupVPN gateways first (supports US, NL, FR, CA, DE, SE, GB & AUTO_FOREIGN)
+            chosen = tryProvisionRiseupCandidate(cc, excluded);
 
-            // 2. Try live VPNGate foreign servers (primary for JP, KR, HK, TH, VN, SE; fallback for US/AUTO)
+            // 2. Try live VPNGate servers for the exact requested country code
             if (chosen == null) {
               chosen = tryProvisionVpnGateCandidate(cc, excluded);
             }
 
-            // 3. Final fallback: if specific country had temporary maintenance, try any live foreign country
+            // 3. Nearest-region fallback if specific country slot is momentarily full
+            if (chosen == null && !"AUTO_FOREIGN".equals(cc)) {
+              for (String neighborCc : regionalFallbacksFor(cc)) {
+                chosen = tryProvisionVpnGateCandidate(neighborCc, excluded);
+                if (chosen != null) {
+                  break;
+                }
+                chosen = tryProvisionRiseupCandidate(neighborCc, excluded);
+                if (chosen != null) {
+                  break;
+                }
+              }
+            }
+
+            // 4. Final global fallback so connection always succeeds cleanly
             if (chosen == null && !"AUTO_FOREIGN".equals(cc)) {
               chosen = tryProvisionRiseupCandidate("AUTO_FOREIGN", excluded);
               if (chosen == null) {
@@ -1087,6 +1095,53 @@ public final class HeavenVpnManager {
         nm.cancel(VPN_NOTIF_ID);
       }
     } catch (Throwable ignored) {
+    }
+  }
+
+  private static String[] regionalFallbacksFor(String cc) {
+    switch (cc) {
+      case "GB":
+      case "IE":
+      case "DE":
+      case "NL":
+      case "FR":
+      case "CH":
+      case "SE":
+      case "NO":
+      case "FI":
+      case "DK":
+      case "ES":
+      case "IT":
+      case "AT":
+      case "BE":
+      case "PT":
+      case "PL":
+      case "RO":
+      case "CZ":
+        return new String[] {"NL", "FR", "DE", "GB", "SE"};
+      case "JP":
+      case "KR":
+      case "SG":
+      case "HK":
+      case "TW":
+      case "TH":
+      case "VN":
+      case "MY":
+      case "ID":
+      case "PH":
+      case "AU":
+      case "NZ":
+        return new String[] {"JP", "KR", "SG", "HK", "TH"};
+      case "US":
+      case "CA":
+      case "MX":
+      case "BR":
+      case "AR":
+      case "CL":
+      case "CO":
+        return new String[] {"US", "CA"};
+      default:
+        return new String[] {"NL", "FR", "US", "JP"};
     }
   }
 

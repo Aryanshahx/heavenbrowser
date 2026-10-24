@@ -1,9 +1,5 @@
 import 'package:flutter/services.dart';
 
-import 'heaven_shield.dart';
-
-typedef NativeBlockedCallback =
-    void Function(int webViewId, String domain, int count, int bytesSaved);
 typedef NativePullProgressCallback = void Function(double progress);
 typedef NativePullRefreshCallback = void Function();
 typedef NativeDownloadStartedCallback =
@@ -27,8 +23,6 @@ class NativeShieldBridge {
     'com.hypertechlabs.heavenbrowser/native_shield',
   );
 
-  final Map<int, NativeBlockedCallback> _blockedListeners =
-      <int, NativeBlockedCallback>{};
   final Map<int, NativePullProgressCallback> _pullProgressListeners =
       <int, NativePullProgressCallback>{};
   final Map<int, NativePullRefreshCallback> _pullRefreshListeners =
@@ -44,37 +38,10 @@ class NativeShieldBridge {
       <int, NativeWebScrollNavBarCallback>{};
 
   NativeDownloadStartedCallback? onDownloadStarted;
-  void Function(String target)? onRedirectBlocked;
-  void Function(int bytesSaved)? onBytesSaved;
 
   Future<dynamic> _handleNativeCall(MethodCall call) async {
     final Object? rawArgs = call.arguments;
-    if (call.method == 'onResourceBlocked' &&
-        rawArgs is Map<Object?, Object?>) {
-      final Object? idVal = rawArgs['webViewId'];
-      final int webViewId = idVal is num ? idVal.toInt() : -1;
-      final String domain = (rawArgs['domain']?.toString() ?? 'tracker').trim();
-      final int count = (rawArgs['count'] is num)
-          ? (rawArgs['count']! as num).toInt().clamp(1, 500)
-          : 1;
-      final int bytesSaved = (rawArgs['bytesSaved'] is num)
-          ? (rawArgs['bytesSaved']! as num).toInt()
-          : (14200 * count);
-      _blockedListeners[webViewId]?.call(webViewId, domain, count, bytesSaved);
-    } else if (call.method == 'onBytesSaved' &&
-        rawArgs is Map<Object?, Object?>) {
-      final int bytes = (rawArgs['bytesSaved'] is num)
-          ? (rawArgs['bytesSaved']! as num).toInt()
-          : 0;
-      if (bytes > 0) {
-        onBytesSaved?.call(bytes);
-      }
-    } else if (call.method == 'onRedirectBlocked' &&
-        rawArgs is Map<Object?, Object?>) {
-      final String target = (rawArgs['target']?.toString() ?? 'redirect')
-          .trim();
-      onRedirectBlocked?.call(target);
-    } else if (call.method == 'onMediaPlaybackChanged' &&
+    if (call.method == 'onMediaPlaybackChanged' &&
         rawArgs is Map<Object?, Object?>) {
       final int webViewId = (rawArgs['webViewId'] as num?)?.toInt() ?? -1;
       final bool playing = rawArgs['playing'] == true;
@@ -125,34 +92,18 @@ class NativeShieldBridge {
     return null;
   }
 
-  Future<void> syncShieldConfig({
-    required bool shieldEnabled,
+  Future<void> syncBrowserConfig({
     required bool desktopMode,
-    required Set<String> trustedHosts,
-    required bool sendDntAndGpc,
-    bool ultraDataSaverMode = false,
     bool backgroundMediaEnabled = true,
-    bool antiRedirectProtection = true,
     bool webNotificationsEnabled = false,
     bool backgroundPlayNotificationEnabled = true,
   }) async {
     try {
       await _channel.invokeMethod<bool>('updateConfig', <String, Object>{
-        'shieldEnabled': shieldEnabled,
         'desktopMode': desktopMode,
-        'ultraDataSaverMode': ultraDataSaverMode,
         'backgroundMediaEnabled': backgroundMediaEnabled,
-        'antiRedirectProtection': antiRedirectProtection,
         'webNotificationsEnabled': webNotificationsEnabled,
         'backgroundPlayNotificationEnabled': backgroundPlayNotificationEnabled,
-        'blockedDomains': HeavenShield.blockedRootDomains.toList(
-          growable: false,
-        ),
-        'trustedHosts': trustedHosts.toList(growable: false),
-        'cosmeticScript': HeavenShield.buildProtectionScript(
-          shieldEnabled: shieldEnabled,
-          sendDntAndGpc: sendDntAndGpc,
-        ),
       });
     } on MissingPluginException {
       // Expected in unit/widget tests.
@@ -165,7 +116,6 @@ class NativeShieldBridge {
     required int webViewId,
     required bool desktopMode,
     String? pageHost,
-    required NativeBlockedCallback onBlocked,
     required NativePullProgressCallback onPullProgress,
     required NativePullRefreshCallback onPullRefresh,
     NativeWebViewDownloadInterceptedCallback? onDownloadIntercepted,
@@ -173,7 +123,6 @@ class NativeShieldBridge {
     NativeMediaPlaybackChangedCallback? onMediaPlaybackChanged,
     NativeWebScrollNavBarCallback? onScrollNavBarChanged,
   }) async {
-    _blockedListeners[webViewId] = onBlocked;
     _pullProgressListeners[webViewId] = onPullProgress;
     _pullRefreshListeners[webViewId] = onPullRefresh;
     if (onDownloadIntercepted != null) {
@@ -248,7 +197,6 @@ class NativeShieldBridge {
   }
 
   void detachWebView(int webViewId) {
-    _blockedListeners.remove(webViewId);
     _pullProgressListeners.remove(webViewId);
     _pullRefreshListeners.remove(webViewId);
     _downloadInterceptListeners.remove(webViewId);
@@ -326,22 +274,6 @@ class NativeShieldBridge {
       return true;
     } on PlatformException {
       return false;
-    }
-  }
-
-  Future<void> approveExternalNavigation({
-    required int webViewId,
-    required String host,
-  }) async {
-    try {
-      await _channel.invokeMethod<bool>(
-        'approveExternalNavigation',
-        <String, Object>{'webViewId': webViewId, 'host': host},
-      );
-    } on MissingPluginException {
-      // Expected in widget tests.
-    } on PlatformException {
-      // Ignore platform channel errors.
     }
   }
 

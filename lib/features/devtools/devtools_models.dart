@@ -25,16 +25,14 @@ class DevToolsNetworkEntry {
     required this.status,
     required this.durationMs,
     this.transferBytes = 0,
-    this.blocked = false,
   });
 
   final String url;
   final String method;
-  final String type; // fetch, xhr, script, css, img, media, doc, blocked
-  final int status; // 200, 404, 0 (blocked/opaque)
+  final String type; // fetch, xhr, script, css, img, media, doc
+  final int status; // 200, 404, 0 (opaque)
   final int durationMs;
   final int transferBytes;
-  final bool blocked;
 }
 
 class DevToolsDomNode {

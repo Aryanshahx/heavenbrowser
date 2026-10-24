@@ -91,8 +91,15 @@ class OmniboxParser {
     caseSensitive: false,
   );
 
+  static bool isDownloadsUrl(String? url) {
+    if (url == null || url.isEmpty) return false;
+    final String lower = url.trim().toLowerCase();
+    return lower == 'heaven://downloads' || lower == 'heaven://downloads/';
+  }
+
   static bool isLegacyHeavenUrl(String? url) {
     if (url == null || url.isEmpty) return false;
+    if (isDownloadsUrl(url)) return false;
     return url.trim().toLowerCase().startsWith('heaven://');
   }
 
@@ -210,8 +217,12 @@ class OmniboxParser {
       return Uri.parse(input);
     }
 
+    if (isDownloadsUrl(input)) {
+      return Uri.parse('heaven://downloads');
+    }
+
     // Legacy heaven://search URLs migrate automatically to active search engine (Google default)
-    if (input.startsWith('heaven://')) {
+    if (input.toLowerCase().startsWith('heaven://')) {
       final Uri? legacy = Uri.tryParse(input);
       final String q = (legacy?.queryParameters['q'] ?? '').trim();
       return Uri.parse(
@@ -286,6 +297,9 @@ class OmniboxParser {
   static String formatDisplayUrl(String? url) {
     if (url == null || url.isEmpty) {
       return '';
+    }
+    if (isDownloadsUrl(url)) {
+      return 'Downloads';
     }
     final String googleQ = extractGoogleSearchQuery(url);
     if (googleQ.isNotEmpty) {

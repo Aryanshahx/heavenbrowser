@@ -7,6 +7,7 @@ import 'package:flutter/rendering.dart';
 import 'package:flutter/widgets.dart';
 import 'package:webview_flutter/webview_flutter.dart';
 
+import '../../core/constants/app_constants.dart';
 import '../../core/utils/omnibox_parser.dart';
 import '../browser/engine/browser_engine.dart';
 import '../settings/browser_settings.dart';
@@ -70,6 +71,9 @@ class BrowserTab {
   String? groupId;
 
   String get displayTitle {
+    if (engine.isShowingDownloadsPage) {
+      return 'Downloads';
+    }
     if (engine.isShowingStartPage) {
       return isIncognito ? 'Incognito Home' : 'Home';
     }
@@ -77,6 +81,9 @@ class BrowserTab {
   }
 
   String get displaySubtitle {
+    if (engine.isShowingDownloadsPage) {
+      return 'Heaven Downloads';
+    }
     if (engine.isShowingStartPage) {
       return isIncognito ? 'Private stealth session' : 'Heaven Home & News';
     }
@@ -105,11 +112,20 @@ class TabManagerController extends ChangeNotifier {
 
   final List<BrowserTab> _tabs = <BrowserTab>[];
   final List<TabGroup> _groups = <TabGroup>[];
+  final Map<String, String> _lastEngineSummaryByTab = <String, String>{};
+  final ValueNotifier<int> viewportRevision = ValueNotifier<int>(0);
   late String _activeTabId;
   int _nextIdCounter = 1;
   int _nextGroupCounter = 1;
   bool _incognitoSessionUnlocked = false;
   int _lastPersistMs = 0;
+
+  void _bumpViewport() {
+    viewportRevision.value += 1;
+  }
+
+  static String _engineSummary(BrowserEngine e) =>
+      '${e.currentUrl ?? ''}|${e.pageTitle}|${e.isShowingStartPage}|${e.isShowingDownloadsPage}';
 
   List<BrowserTab> get allTabs => List<BrowserTab>.unmodifiable(_tabs);
   List<TabGroup> get groups => List<TabGroup>.unmodifiable(_groups);
@@ -234,12 +250,11 @@ class TabManagerController extends ChangeNotifier {
                     : null,
                 previewBytes: restoredPreview,
               );
-              engine.onPageLoadedForPreview = () {
-                unawaited(captureTabPreview(restoredTab));
-              };
+              _lastEngineSummaryByTab[id] = _engineSummary(engine);
               _tabs.add(restoredTab);
             }
             _activeTabId = targetActive;
+            _bumpViewport();
             return;
           }
         }
@@ -363,7 +378,7 @@ class TabManagerController extends ChangeNotifier {
 
   Future<void> reloadFailedTabs() async {
     for (final BrowserTab t in _tabs) {
-      if (t.engine.errorMessage != null && !t.engine.isShowingStartPage) {
+      if (t.engine.errorMessage != null && t.engine.isShowingWebPage) {
         await t.engine.reloadFullPage();
       }
     }
@@ -405,7 +420,7 @@ class TabManagerController extends ChangeNotifier {
     if (!enablePlatformWebView) {
       return;
     }
-    if (tab.engine.isShowingStartPage) {
+    if (!tab.engine.isShowingWebPage) {
       if (tab.previewBytes != null) {
         tab.previewBytes = null;
         _removePersistedTabPreview(tab.id);
@@ -459,19 +474,44 @@ class TabManagerController extends ChangeNotifier {
       engine: engine,
       createdAt: DateTime.now(),
     );
-    engine.onPageLoadedForPreview = () {
-      unawaited(captureTabPreview(tab));
-    };
+    _lastEngineSummaryByTab[id] = _engineSummary(engine);
     _tabs.add(tab);
     if (switchTo) {
       _activeTabId = id;
     }
+    _bumpViewport();
     return tab;
   }
 
   void _onTabEngineChanged() {
+    bool summaryChanged = false;
+    for (final BrowserTab t in _tabs) {
+      final String next = _engineSummary(t.engine);
+      if (_lastEngineSummaryByTab[t.id] != next) {
+        _lastEngineSummaryByTab[t.id] = next;
+        summaryChanged = true;
+      }
+    }
+    if (!summaryChanged) {
+      return;
+    }
     _persistSessionSnapshot();
     notifyListeners();
+  }
+
+  Future<BrowserTab> openDownloadsTab({bool? incognito}) async {
+    final bool targetIncognito = incognito ?? isActiveIncognito;
+    for (final BrowserTab t in _tabs) {
+      if (t.isIncognito == targetIncognito && t.engine.isShowingDownloadsPage) {
+        switchToTab(t.id);
+        return t;
+      }
+    }
+    return openNewTab(
+      incognito: targetIncognito,
+      initialInput: AppConstants.downloadsTabUrl,
+      switchTo: true,
+    );
   }
 
   Future<BrowserTab> openNewTab({
@@ -514,6 +554,7 @@ class TabManagerController extends ChangeNotifier {
     _activeTabId = tabId;
     target.lastActiveAt = DateTime.now();
     unawaited(target.engine.focusNativeWebView());
+    _bumpViewport();
     _persistSessionSnapshot(force: true);
     notifyListeners();
   }
@@ -524,6 +565,7 @@ class TabManagerController extends ChangeNotifier {
       return;
     }
     final BrowserTab removed = _tabs.removeAt(idx);
+    _lastEngineSummaryByTab.remove(removed.id);
     removed.engine.removeListener(_onTabEngineChanged);
     _removePersistedTabPreview(removed.id);
 
@@ -548,6 +590,7 @@ class TabManagerController extends ChangeNotifier {
         _activeTabId = _tabs[nextIdx].id;
       }
     }
+    _bumpViewport();
     _persistSessionSnapshot(force: true);
     notifyListeners();
   }
@@ -565,6 +608,7 @@ class TabManagerController extends ChangeNotifier {
     }
 
     for (final BrowserTab tab in targets) {
+      _lastEngineSummaryByTab.remove(tab.id);
       tab.engine.removeListener(_onTabEngineChanged);
       _removePersistedTabPreview(tab.id);
       tab.engine.dispose();
@@ -576,6 +620,7 @@ class TabManagerController extends ChangeNotifier {
     } else if (!_tabs.any((BrowserTab t) => t.id == _activeTabId)) {
       _activeTabId = _tabs.last.id;
     }
+    _bumpViewport();
     _persistSessionSnapshot(force: true);
     notifyListeners();
   }
@@ -585,6 +630,7 @@ class TabManagerController extends ChangeNotifier {
       await _tabs.first.engine.burnBrowsingData();
     }
     for (final BrowserTab tab in _tabs) {
+      _lastEngineSummaryByTab.remove(tab.id);
       tab.engine.removeListener(_onTabEngineChanged);
       _removePersistedTabPreview(tab.id);
       tab.engine.dispose();
@@ -617,6 +663,7 @@ class TabManagerController extends ChangeNotifier {
       tab.engine.removeListener(_onTabEngineChanged);
       tab.engine.dispose();
     }
+    viewportRevision.dispose();
     super.dispose();
   }
 }

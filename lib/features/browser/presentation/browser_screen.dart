@@ -31,7 +31,6 @@ import '../engine/browser_engine.dart';
 import '../site_controls_sheet.dart';
 import 'widgets/library_screen.dart';
 import 'widgets/reader_mode_sheet.dart';
-import 'widgets/shield_sheet.dart';
 import 'widgets/start_page.dart';
 
 class BrowserScreen extends StatefulWidget {
@@ -65,12 +64,19 @@ class _BrowserScreenState extends State<BrowserScreen>
   final TextEditingController _findController = TextEditingController();
 
   Timer? _suggestDebounce;
+  Timer? _downloadPopupTimer;
   List<String> _liveSuggestions = <String>[];
+  String? _downloadPopupMessage;
   bool _isEditingOmnibox = false;
   bool _showLinkActionsCard = false;
   bool _showFindBar = false;
   bool _showInspectorPanel = false;
   int _findMatches = 0;
+
+  // Edge-swipe Back / Forward & Top-bar Tab-Swipe state
+  double _leftEdgeDragPx = 0.0;
+  double _rightEdgeDragPx = 0.0;
+  double _topBarSwipeDx = 0.0;
 
   BrowserEngine get _activeEngine => widget.tabManager.activeEngine;
 
@@ -78,39 +84,16 @@ class _BrowserScreenState extends State<BrowserScreen>
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
-    widget.downloads.onDownloadToast = (String msg) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(msg),
-          behavior: SnackBarBehavior.floating,
-          action: SnackBarAction(
-            label: 'Downloads',
-            onPressed: _openDownloadsScreen,
-          ),
-        ),
-      );
-    };
-    NativeShieldBridge.instance.onRedirectBlocked = (String target) {
-      unawaited(widget.settings.incrementRedirectBlockedCount());
-      if (!mounted || !widget.settings.securityRedirectAlertsEnabled) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Blocked unwanted redirect: $target'),
-          behavior: SnackBarBehavior.floating,
-          duration: const Duration(seconds: 2),
-        ),
-      );
-    };
+    widget.downloads.onDownloadToast = _showDownloadStartedPopup;
   }
 
   @override
   void dispose() {
     _suggestDebounce?.cancel();
-    if (widget.downloads.onDownloadToast != null) {
+    _downloadPopupTimer?.cancel();
+    if (widget.downloads.onDownloadToast == _showDownloadStartedPopup) {
       widget.downloads.onDownloadToast = null;
     }
-    NativeShieldBridge.instance.onRedirectBlocked = null;
     for (final BrowserTab tab in widget.tabManager.allTabs) {
       tab.engine.onSitePermissionPrompt = null;
     }
@@ -121,10 +104,42 @@ class _BrowserScreenState extends State<BrowserScreen>
     super.dispose();
   }
 
+  void _showDownloadStartedPopup(String message) {
+    if (!mounted) return;
+    _downloadPopupTimer?.cancel();
+    setState(() {
+      _downloadPopupMessage = message;
+    });
+    _downloadPopupTimer = Timer(const Duration(seconds: 4), () {
+      if (mounted && _downloadPopupMessage == message) {
+        setState(() => _downloadPopupMessage = null);
+      }
+    });
+  }
+
+  void _dismissDownloadPopup() {
+    _downloadPopupTimer?.cancel();
+    if (_downloadPopupMessage != null) {
+      setState(() => _downloadPopupMessage = null);
+    }
+  }
+
+  Future<void> _openDownloadsTab() async {
+    _dismissDownloadPopup();
+    _closeOmniboxOverlay();
+    await widget.tabManager.openDownloadsTab();
+  }
+
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state == AppLifecycleState.paused && widget.settings.clearOnExit) {
-      unawaited(widget.tabManager.burnAllSessionsAndData());
+    if (state == AppLifecycleState.paused) {
+      if (widget.settings.clearOnExit) {
+        unawaited(widget.tabManager.burnAllSessionsAndData());
+      } else {
+        unawaited(
+          widget.tabManager.captureTabPreview(widget.tabManager.activeTab),
+        );
+      }
     }
   }
 
@@ -133,7 +148,9 @@ class _BrowserScreenState extends State<BrowserScreen>
     List<SitePermissionType> types,
   ) async {
     if (!mounted) return false;
-    final String joined = types.map((SitePermissionType t) => t.label).join(', ');
+    final String joined = types
+        .map((SitePermissionType t) => t.label)
+        .join(', ');
     final bool? granted = await showDialog<bool>(
       context: context,
       builder: (BuildContext dialogContext) {
@@ -161,6 +178,9 @@ class _BrowserScreenState extends State<BrowserScreen>
 
   String _editableLinkForEngine(BrowserEngine engine) {
     final String? url = engine.currentUrl;
+    if (OmniboxParser.isDownloadsUrl(url)) {
+      return AppConstants.downloadsTabUrl;
+    }
     final String searchQ = OmniboxParser.extractAnySearchQuery(url);
     if (searchQ.isNotEmpty) {
       return searchQ;
@@ -173,7 +193,7 @@ class _BrowserScreenState extends State<BrowserScreen>
   }
 
   void _beginOmniboxEdit() {
-    final bool hasActiveLink = !_activeEngine.isShowingStartPage;
+    final bool hasActiveLink = _activeEngine.isShowingWebPage;
     _omniboxController.clear();
     setState(() {
       _isEditingOmnibox = true;
@@ -248,7 +268,8 @@ class _BrowserScreenState extends State<BrowserScreen>
     if (raw.isEmpty) {
       return;
     }
-    if (!widget.tabManager.isActiveIncognito) {
+    if (!widget.tabManager.isActiveIncognito &&
+        !OmniboxParser.isDownloadsUrl(raw)) {
       unawaited(widget.interests.recordActivity(text: raw, weight: 2.2));
     }
     await _activeEngine.loadUserEntry(raw);
@@ -277,16 +298,27 @@ class _BrowserScreenState extends State<BrowserScreen>
     await _submitOmnibox(clean);
   }
 
+  void _handleTopBarHorizontalEnd(DragEndDetails details) {
+    final double vx = details.primaryVelocity ?? 0.0;
+    final double dx = _topBarSwipeDx;
+    _topBarSwipeDx = 0.0;
+    if (dx <= -42 || vx <= -260) {
+      if (widget.tabManager.switchAdjacentTab(1)) {
+        HapticFeedback.selectionClick();
+      }
+    } else if (dx >= 42 || vx >= 260) {
+      if (widget.tabManager.switchAdjacentTab(-1)) {
+        HapticFeedback.selectionClick();
+      }
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
-    final BrowserEngine active = _activeEngine;
     return ListenableBuilder(
       listenable: Listenable.merge(<Listenable>[
         widget.tabManager,
         widget.settings,
-        widget.downloads,
-        widget.vpn,
-        active,
       ]),
       builder: (BuildContext context, _) {
         final bool incognito = widget.tabManager.isActiveIncognito;
@@ -299,9 +331,7 @@ class _BrowserScreenState extends State<BrowserScreen>
         engine.onSitePermissionPrompt ??= _promptSitePermission;
 
         final bool showLinkActions =
-            _isEditingOmnibox &&
-            _showLinkActionsCard &&
-            !engine.isShowingStartPage;
+            _isEditingOmnibox && _showLinkActionsCard && engine.isShowingWebPage;
         final List<String> recentMatches = (_isEditingOmnibox && !incognito)
             ? widget.settings.matchingRecentSearches(
                 _omniboxController.text,
@@ -312,163 +342,381 @@ class _BrowserScreenState extends State<BrowserScreen>
             showLinkActions ||
             (_isEditingOmnibox &&
                 (_liveSuggestions.isNotEmpty || recentMatches.isNotEmpty));
-        final bool showTopNavBar =
-            _isEditingOmnibox ||
-            engine.isShowingStartPage ||
-            engine.isNavBarVisible;
 
         return Theme(
           data: effectiveTheme,
-          child: PopScope<void>(
-            canPop:
-                !engine.canGoBack &&
-                !_isEditingOmnibox &&
-                !_showLinkActionsCard &&
-                !_showFindBar &&
-                !_showInspectorPanel,
-            onPopInvokedWithResult: (bool didPop, void _) async {
-              if (didPop) {
-                return;
-              }
-              if (_isEditingOmnibox || _showLinkActionsCard) {
-                _closeOmniboxOverlay();
-                return;
-              }
-              if (_showFindBar) {
-                setState(() => _showFindBar = false);
-                return;
-              }
-              if (_showInspectorPanel) {
-                setState(() => _showInspectorPanel = false);
-                unawaited(engine.clearInspectorHighlight());
-                return;
-              }
-              if (engine.canGoBack) {
-                await engine.goBack();
+          child: ListenableBuilder(
+            listenable: engine,
+            builder: (BuildContext context, _) {
+              final bool showTopNavBar =
+                  _isEditingOmnibox ||
+                  !engine.isShowingWebPage ||
+                  engine.isNavBarVisible;
+
+              return PopScope<void>(
+                canPop:
+                    !engine.canGoBack &&
+                    !_isEditingOmnibox &&
+                    !_showLinkActionsCard &&
+                    !_showFindBar &&
+                    !_showInspectorPanel,
+                onPopInvokedWithResult: (bool didPop, void _) async {
+                  if (didPop) {
+                    return;
+                  }
+                  if (_isEditingOmnibox || _showLinkActionsCard) {
+                    _closeOmniboxOverlay();
+                    return;
+                  }
+                  if (_showFindBar) {
+                    setState(() => _showFindBar = false);
+                    return;
+                  }
+                  if (_showInspectorPanel) {
+                    setState(() => _showInspectorPanel = false);
+                    unawaited(engine.clearInspectorHighlight());
+                    return;
+                  }
+                  if (engine.canGoBack) {
+                    await engine.goBack();
+                  }
+                },
+                child: Scaffold(
+                  body: SafeArea(
+                    child: Column(
+                      children: <Widget>[
+                        SizedBox(
+                          key: const Key('top_navigation_bar_wrapper'),
+                          width: double.infinity,
+                          child: showTopNavBar
+                              ? _buildCommandCapsuleBar(context, colors, engine)
+                              : const SizedBox.shrink(),
+                        ),
+                        if (_showFindBar) _buildFindBar(colors),
+                        Expanded(
+                          child: Stack(
+                            children: <Widget>[
+                              RepaintBoundary(
+                                child: ValueListenableBuilder<int>(
+                                  valueListenable:
+                                      widget.tabManager.viewportRevision,
+                                  builder: (BuildContext context, int _, _) {
+                                    return _buildTabsViewport(colors);
+                                  },
+                                ),
+                              ),
+                              if (engine.isLoading)
+                                Positioned(
+                                  top: 0,
+                                  left: 0,
+                                  right: 0,
+                                  child: RepaintBoundary(
+                                    child: IgnorePointer(
+                                      child: LinearProgressIndicator(
+                                        value:
+                                            engine.progress > 0 &&
+                                                engine.progress < 1
+                                            ? engine.progress
+                                            : null,
+                                        minHeight: 2.5,
+                                        backgroundColor: Colors.transparent,
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                              if (engine.pullProgress > 0.02)
+                                Positioned(
+                                  top: 10 + (engine.pullProgress * 46),
+                                  left: 0,
+                                  right: 0,
+                                  child: Center(
+                                    child: _buildPullRefreshBadge(
+                                      colors,
+                                      engine.pullProgress,
+                                    ),
+                                  ),
+                                ),
+                              if (!_isEditingOmnibox &&
+                                  !(incognito &&
+                                      widget.tabManager.isIncognitoLocked))
+                                ..._buildEdgeSwipeGestureZones(colors, engine),
+                              if (_downloadPopupMessage != null)
+                                Positioned(
+                                  left: 12,
+                                  right: 12,
+                                  bottom: 14,
+                                  child: _buildDownloadStartedPopupCard(colors),
+                                ),
+                              if (incognito &&
+                                  widget.tabManager.isIncognitoLocked)
+                                Positioned.fill(
+                                  child: _buildIncognitoLockOverlay(colors),
+                                ),
+                              if (_isEditingOmnibox || _showLinkActionsCard)
+                                Positioned.fill(
+                                  child: GestureDetector(
+                                    key: const Key(
+                                      'omnibox_outside_dismiss_scrim',
+                                    ),
+                                    behavior: HitTestBehavior.opaque,
+                                    onTap: _closeOmniboxOverlay,
+                                    child: Container(
+                                      color: Colors.black.withValues(
+                                        alpha: 0.18,
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                              if (showOverlayPanel)
+                                Positioned(
+                                  left: 10,
+                                  right: 10,
+                                  top: 8,
+                                  child: _buildOmniboxOverlayPanel(
+                                    context,
+                                    colors,
+                                    engine,
+                                    showLinkActions: showLinkActions,
+                                  ),
+                                ),
+                            ],
+                          ),
+                        ),
+                        if (_showInspectorPanel)
+                          DesktopInspectorPanel(
+                            engine: engine,
+                            onClose: () {
+                              setState(() => _showInspectorPanel = false);
+                              unawaited(engine.clearInspectorHighlight());
+                            },
+                          ),
+                      ],
+                    ),
+                  ),
+                ),
+              );
+            },
+          ),
+        );
+      },
+    );
+  }
+
+  List<Widget> _buildEdgeSwipeGestureZones(
+    ColorScheme colors,
+    BrowserEngine engine,
+  ) {
+    final double leftProgress = (_leftEdgeDragPx / 64.0).clamp(0.0, 1.0);
+    final double rightProgress = (_rightEdgeDragPx / 64.0).clamp(0.0, 1.0);
+
+    return <Widget>[
+      if (engine.canGoBack)
+        Positioned(
+          left: 0,
+          top: 0,
+          bottom: 0,
+          width: 22,
+          child: GestureDetector(
+            key: const Key('left_edge_back_gesture_zone'),
+            behavior: HitTestBehavior.translucent,
+            onHorizontalDragStart: (_) {
+              setState(() => _leftEdgeDragPx = 2.0);
+            },
+            onHorizontalDragUpdate: (DragUpdateDetails d) {
+              setState(() {
+                _leftEdgeDragPx = (_leftEdgeDragPx + d.delta.dx).clamp(
+                  0.0,
+                  110.0,
+                );
+              });
+            },
+            onHorizontalDragCancel: () {
+              if (_leftEdgeDragPx != 0) {
+                setState(() => _leftEdgeDragPx = 0.0);
               }
             },
-            child: Scaffold(
-              body: SafeArea(
-                child: Column(
-                  children: <Widget>[
-                    ClipRect(
-                      child: AnimatedSize(
-                        key: const Key('top_navigation_bar_wrapper'),
-                        duration: const Duration(milliseconds: 220),
-                        curve: Curves.easeOutCubic,
-                        alignment: Alignment.topCenter,
-                        child: showTopNavBar
-                            ? _buildCommandCapsuleBar(context, colors)
-                            : const SizedBox(
-                                width: double.infinity,
-                                height: 0,
-                              ),
-                      ),
-                    ),
-                    if (_showFindBar) _buildFindBar(colors),
-                    Expanded(
-                      child: Stack(
-                        children: <Widget>[
-                          RepaintBoundary(child: _buildTabsViewport(colors)),
-                          if (engine.isLoading)
-                            Positioned(
-                              top: 0,
-                              left: 0,
-                              right: 0,
-                              child: RepaintBoundary(
-                                child: IgnorePointer(
-                                  child: LinearProgressIndicator(
-                                    value:
-                                        engine.progress > 0 &&
-                                            engine.progress < 1
-                                        ? engine.progress
-                                        : null,
-                                    minHeight: 2.5,
-                                    backgroundColor: Colors.transparent,
-                                  ),
-                                ),
-                              ),
-                            ),
-                          if (engine.pullProgress > 0.02)
-                            Positioned(
-                              top: 10 + (engine.pullProgress * 46),
-                              left: 0,
-                              right: 0,
-                              child: Center(
-                                child: _buildPullRefreshBadge(
-                                  colors,
-                                  engine.pullProgress,
-                                ),
-                              ),
-                            ),
-                          if (incognito && widget.tabManager.isIncognitoLocked)
-                            Positioned.fill(
-                              child: _buildIncognitoLockOverlay(colors),
-                            ),
-                          if (_isEditingOmnibox || _showLinkActionsCard)
-                            Positioned.fill(
-                              child: GestureDetector(
-                                key: const Key('omnibox_outside_dismiss_scrim'),
-                                behavior: HitTestBehavior.opaque,
-                                onTap: _closeOmniboxOverlay,
-                                child: AnimatedOpacity(
-                                  duration: const Duration(milliseconds: 160),
-                                  opacity: 1,
-                                  child: Container(
-                                    color: Colors.black.withValues(alpha: 0.18),
-                                  ),
-                                ),
-                              ),
-                            ),
-                          if (showOverlayPanel)
-                            Positioned(
-                              left: 10,
-                              right: 10,
-                              top: 8,
-                              child: TweenAnimationBuilder<double>(
-                                duration: const Duration(milliseconds: 180),
-                                curve: Curves.easeOutCubic,
-                                tween: Tween<double>(begin: 0.0, end: 1.0),
-                                builder:
-                                    (
-                                      BuildContext context,
-                                      double t,
-                                      Widget? child,
-                                    ) {
-                                      return Opacity(
-                                        opacity: t,
-                                        child: Transform.translate(
-                                          offset: Offset(0, (1 - t) * -8),
-                                          child: child,
-                                        ),
-                                      );
-                                    },
-                                child: _buildOmniboxOverlayPanel(
-                                  context,
-                                  colors,
-                                  engine,
-                                  showLinkActions: showLinkActions,
-                                ),
-                              ),
-                            ),
-                        ],
-                      ),
-                    ),
-                    if (_showInspectorPanel)
-                      DesktopInspectorPanel(
-                        engine: engine,
-                        onClose: () {
-                          setState(() => _showInspectorPanel = false);
-                          unawaited(engine.clearInspectorHighlight());
-                        },
-                      ),
-                  ],
+            onHorizontalDragEnd: (DragEndDetails d) {
+              final double vx = d.primaryVelocity ?? 0.0;
+              final bool trigger = _leftEdgeDragPx >= 56.0 || vx > 360.0;
+              setState(() => _leftEdgeDragPx = 0.0);
+              if (trigger && engine.canGoBack) {
+                HapticFeedback.lightImpact();
+                unawaited(engine.goBack());
+              }
+            },
+          ),
+        ),
+      if (engine.canGoForward)
+        Positioned(
+          right: 0,
+          top: 0,
+          bottom: 0,
+          width: 22,
+          child: GestureDetector(
+            key: const Key('right_edge_forward_gesture_zone'),
+            behavior: HitTestBehavior.translucent,
+            onHorizontalDragStart: (_) {
+              setState(() => _rightEdgeDragPx = 2.0);
+            },
+            onHorizontalDragUpdate: (DragUpdateDetails d) {
+              setState(() {
+                _rightEdgeDragPx = (_rightEdgeDragPx - d.delta.dx).clamp(
+                  0.0,
+                  110.0,
+                );
+              });
+            },
+            onHorizontalDragCancel: () {
+              if (_rightEdgeDragPx != 0) {
+                setState(() => _rightEdgeDragPx = 0.0);
+              }
+            },
+            onHorizontalDragEnd: (DragEndDetails d) {
+              final double vx = d.primaryVelocity ?? 0.0;
+              final bool trigger = _rightEdgeDragPx >= 56.0 || vx < -360.0;
+              setState(() => _rightEdgeDragPx = 0.0);
+              if (trigger && engine.canGoForward) {
+                HapticFeedback.lightImpact();
+                unawaited(engine.goForward());
+              }
+            },
+          ),
+        ),
+      if (leftProgress > 0.04)
+        Positioned(
+          left: -28 + (leftProgress * 44),
+          top: 0,
+          bottom: 0,
+          child: Center(
+            child: IgnorePointer(
+              child: Material(
+                elevation: 6,
+                shape: const CircleBorder(),
+                color: leftProgress >= 0.88
+                    ? colors.primary
+                    : colors.surfaceContainerHighest,
+                child: SizedBox(
+                  width: 38,
+                  height: 38,
+                  child: Icon(
+                    Icons.arrow_back_ios_new_rounded,
+                    size: 17,
+                    color: leftProgress >= 0.88
+                        ? colors.onPrimary
+                        : colors.primary,
+                  ),
                 ),
               ),
             ),
           ),
-        );
-      },
+        ),
+      if (rightProgress > 0.04)
+        Positioned(
+          right: -28 + (rightProgress * 44),
+          top: 0,
+          bottom: 0,
+          child: Center(
+            child: IgnorePointer(
+              child: Material(
+                elevation: 6,
+                shape: const CircleBorder(),
+                color: rightProgress >= 0.88
+                    ? colors.primary
+                    : colors.surfaceContainerHighest,
+                child: SizedBox(
+                  width: 38,
+                  height: 38,
+                  child: Icon(
+                    Icons.arrow_forward_ios_rounded,
+                    size: 17,
+                    color: rightProgress >= 0.88
+                        ? colors.onPrimary
+                        : colors.primary,
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
+    ];
+  }
+
+  Widget _buildDownloadStartedPopupCard(ColorScheme colors) {
+    final bool isDark = Theme.of(context).brightness == Brightness.dark;
+    return Material(
+      elevation: 8,
+      color: isDark ? AppTheme.navySurface : Colors.white,
+      borderRadius: BorderRadius.circular(16),
+      child: InkWell(
+        key: const Key('download_started_popup_banner'),
+        borderRadius: BorderRadius.circular(16),
+        onTap: _openDownloadsTab,
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 11),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(16),
+            border: Border.all(
+              color: colors.primary.withValues(alpha: 0.45),
+              width: 1.2,
+            ),
+          ),
+          child: Row(
+            children: <Widget>[
+              Container(
+                width: 32,
+                height: 32,
+                decoration: BoxDecoration(
+                  color: AppTheme.shieldEmerald.withValues(alpha: 0.16),
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                child: const Icon(
+                  Icons.downloading_rounded,
+                  size: 18,
+                  color: AppTheme.shieldEmerald,
+                ),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: <Widget>[
+                    Text(
+                      _downloadPopupMessage ?? 'Download started',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        fontSize: 13,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                    Text(
+                      'Tap to view in Downloads tab',
+                      style: TextStyle(
+                        fontSize: 11,
+                        fontWeight: FontWeight.w600,
+                        color: colors.primary,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              IconButton(
+                tooltip: 'Dismiss',
+                visualDensity: VisualDensity.compact,
+                padding: EdgeInsets.zero,
+                constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
+                onPressed: _dismissDownloadPopup,
+                icon: Icon(
+                  Icons.close_rounded,
+                  size: 17,
+                  color: colors.onSurfaceVariant,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
     );
   }
 
@@ -559,12 +807,15 @@ class _BrowserScreenState extends State<BrowserScreen>
     return IndexedStack(
       index: activeIndex,
       children: <Widget>[
-        for (final BrowserTab tab in tabs)
+        for (int i = 0; i < tabs.length; i++)
           KeyedSubtree(
-            key: ValueKey<String>(tab.id),
-            child: RepaintBoundary(
-              key: tab.repaintKey,
-              child: _buildSingleTabBody(tab, colors),
+            key: ValueKey<String>(tabs[i].id),
+            child: TickerMode(
+              enabled: i == activeIndex,
+              child: RepaintBoundary(
+                key: tabs[i].repaintKey,
+                child: _buildSingleTabBody(tabs[i], colors),
+              ),
             ),
           ),
       ],
@@ -574,93 +825,107 @@ class _BrowserScreenState extends State<BrowserScreen>
   Widget _buildSingleTabBody(BrowserTab tab, ColorScheme colors) {
     final BrowserEngine engine = tab.engine;
 
-    Widget? overlayChild;
-    if (engine.isShowingStartPage) {
-      overlayChild = StartPage(
-        settings: widget.settings,
-        isIncognito: tab.isIncognito,
-        searchService: widget.searchService,
-        newsService: widget.newsService,
-        interests: widget.interests,
-        onSelectUrl: (String input) => engine.loadUserEntry(input),
-        onOpenInNewTab: (String url) =>
-            widget.tabManager.openNewTab(incognito: false, initialInput: url),
-        onOpenInIncognitoTab: (String url) =>
-            widget.tabManager.openNewTab(incognito: true, initialInput: url),
-        onVoiceSearch: _triggerVoiceSearch,
-      );
-    } else if (engine.errorMessage != null) {
-      overlayChild = Center(
-        child: SingleChildScrollView(
-          padding: const EdgeInsets.all(28),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: <Widget>[
-              Icon(Icons.wifi_off_rounded, size: 52, color: colors.error),
-              const SizedBox(height: 14),
-              const Text(
-                'Unable to reach site',
-                style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800),
-              ),
-              const SizedBox(height: 8),
-              Text(
-                engine.errorMessage!,
-                textAlign: TextAlign.center,
-                style: TextStyle(color: colors.onSurfaceVariant),
-              ),
-              const SizedBox(height: 20),
-              Wrap(
-                spacing: 12,
-                runSpacing: 8,
-                alignment: WrapAlignment.center,
+    return ListenableBuilder(
+      listenable: engine,
+      child: engine.controller != null
+          ? WebViewWidget(
+              key: ValueKey<String>('wv_${tab.id}'),
+              controller: engine.controller!,
+            )
+          : null,
+      builder: (BuildContext context, Widget? cachedWebView) {
+        Widget? overlayChild;
+        if (engine.isShowingDownloadsPage) {
+          overlayChild = DownloadsScreen(
+            downloads: widget.downloads,
+            embeddedInTab: true,
+          );
+        } else if (engine.isShowingStartPage) {
+          overlayChild = StartPage(
+            settings: widget.settings,
+            isIncognito: tab.isIncognito,
+            searchService: widget.searchService,
+            newsService: widget.newsService,
+            interests: widget.interests,
+            onSelectUrl: (String input) => engine.loadUserEntry(input),
+            onOpenInNewTab: (String url) => widget.tabManager.openNewTab(
+              incognito: false,
+              initialInput: url,
+            ),
+            onOpenInIncognitoTab: (String url) => widget.tabManager.openNewTab(
+              incognito: true,
+              initialInput: url,
+            ),
+            onVoiceSearch: _triggerVoiceSearch,
+          );
+        } else if (engine.errorMessage != null) {
+          overlayChild = Center(
+            child: SingleChildScrollView(
+              padding: const EdgeInsets.all(28),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
                 children: <Widget>[
-                  OutlinedButton.icon(
-                    onPressed: engine.goHome,
-                    icon: const Icon(Icons.home_outlined),
-                    label: const Text('Home'),
+                  Icon(Icons.wifi_off_rounded, size: 52, color: colors.error),
+                  const SizedBox(height: 14),
+                  const Text(
+                    'Unable to reach site',
+                    style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800),
                   ),
-                  FilledButton.icon(
-                    onPressed: engine.reloadOrStop,
-                    icon: const Icon(Icons.refresh_rounded),
-                    label: const Text('Retry'),
+                  const SizedBox(height: 8),
+                  Text(
+                    engine.errorMessage!,
+                    textAlign: TextAlign.center,
+                    style: TextStyle(color: colors.onSurfaceVariant),
+                  ),
+                  const SizedBox(height: 20),
+                  Wrap(
+                    spacing: 12,
+                    runSpacing: 8,
+                    alignment: WrapAlignment.center,
+                    children: <Widget>[
+                      OutlinedButton.icon(
+                        onPressed: engine.goHome,
+                        icon: const Icon(Icons.home_outlined),
+                        label: const Text('Home'),
+                      ),
+                      FilledButton.icon(
+                        onPressed: engine.reloadOrStop,
+                        icon: const Icon(Icons.refresh_rounded),
+                        label: const Text('Retry'),
+                      ),
+                    ],
                   ),
                 ],
               ),
-            ],
-          ),
-        ),
-      );
-    }
-
-    if (engine.controller == null) {
-      return overlayChild ??
-          Center(
-            child: Text(
-              engine.currentUrl ?? '',
-              style: const TextStyle(fontSize: 15),
             ),
           );
-    }
+        }
 
-    // Keep WebViewWidget onstage (never Offstage) so Android's SurfaceTexture &
-    // MediaCodec pipeline are already attached and initialized on FIRST load —
-    // ensuring YouTube and HTML5 videos play immediately without needing refresh!
-    return Stack(
-      fit: StackFit.expand,
-      children: <Widget>[
-        IgnorePointer(
-          ignoring: overlayChild != null,
-          child: WebViewWidget(
-            key: ValueKey<String>('wv_${tab.id}'),
-            controller: engine.controller!,
-          ),
-        ),
-        if (overlayChild != null)
-          ColoredBox(
-            color: Theme.of(context).scaffoldBackgroundColor,
-            child: overlayChild,
-          ),
-      ],
+        if (cachedWebView == null) {
+          return overlayChild ??
+              Center(
+                child: Text(
+                  engine.currentUrl ?? '',
+                  style: const TextStyle(fontSize: 15),
+                ),
+              );
+        }
+
+        // Keep WebViewWidget onstage (never Offstage) so Android's SurfaceTexture &
+        // MediaCodec pipeline are already attached and initialized on FIRST load —
+        // ensuring YouTube and HTML5 videos play immediately without needing refresh!
+        return Stack(
+          fit: StackFit.expand,
+          children: <Widget>[
+            IgnorePointer(ignoring: overlayChild != null, child: cachedWebView),
+            if (overlayChild != null)
+              ColoredBox(
+                color: Theme.of(context).scaffoldBackgroundColor,
+                child: overlayChild,
+              ),
+          ],
+        );
+      },
     );
   }
 
@@ -907,8 +1172,11 @@ class _BrowserScreenState extends State<BrowserScreen>
     );
   }
 
-  Widget _buildCommandCapsuleBar(BuildContext context, ColorScheme colors) {
-    final BrowserEngine engine = _activeEngine;
+  Widget _buildCommandCapsuleBar(
+    BuildContext context,
+    ColorScheme colors,
+    BrowserEngine engine,
+  ) {
     final bool incognito = widget.tabManager.isActiveIncognito;
     final bool isDark = Theme.of(context).brightness == Brightness.dark;
 
@@ -975,22 +1243,33 @@ class _BrowserScreenState extends State<BrowserScreen>
             ),
           const SizedBox(width: 2),
           Expanded(
-            child: Container(
-              height: 42,
-              decoration: BoxDecoration(
-                color: incognito
-                    ? const Color(0xFF0D1B22)
-                    : (isDark
-                          ? AppTheme.navySurface
-                          : colors.surfaceContainerHighest.withValues(
-                              alpha: 0.65,
-                            )),
-                borderRadius: BorderRadius.circular(21),
-                border: Border.all(
-                  color: colors.outlineVariant.withValues(alpha: 0.4),
+            child: GestureDetector(
+              key: const Key('top_bar_tab_swipe_detector'),
+              behavior: HitTestBehavior.translucent,
+              onHorizontalDragStart: (_) {
+                _topBarSwipeDx = 0.0;
+              },
+              onHorizontalDragUpdate: (DragUpdateDetails d) {
+                _topBarSwipeDx += d.delta.dx;
+              },
+              onHorizontalDragEnd: _handleTopBarHorizontalEnd,
+              child: Container(
+                height: 42,
+                decoration: BoxDecoration(
+                  color: incognito
+                      ? const Color(0xFF0D1B22)
+                      : (isDark
+                            ? AppTheme.navySurface
+                            : colors.surfaceContainerHighest.withValues(
+                                alpha: 0.65,
+                              )),
+                  borderRadius: BorderRadius.circular(21),
+                  border: Border.all(
+                    color: colors.outlineVariant.withValues(alpha: 0.4),
+                  ),
                 ),
+                child: _buildDisplayPill(context, colors, engine, incognito),
               ),
-              child: _buildDisplayPill(context, colors, engine, incognito),
             ),
           ),
           const SizedBox(width: 2),
@@ -1047,31 +1326,44 @@ class _BrowserScreenState extends State<BrowserScreen>
             ),
           ),
           const SizedBox(width: 2),
-          Stack(
-            clipBehavior: Clip.none,
-            children: <Widget>[
-              IconButton(
-                onPressed: () => _openBrowserMenu(context),
-                icon: const Icon(Icons.more_vert_rounded, size: 20),
-                tooltip: 'Browser Menu',
-                visualDensity: VisualDensity.compact,
-                padding: EdgeInsets.zero,
-                constraints: const BoxConstraints(minWidth: 32, minHeight: 36),
-              ),
-              if (widget.downloads.hasActiveDownloads || widget.vpn.isConnected)
-                Positioned(
-                  right: 5,
-                  top: 6,
-                  child: Container(
-                    width: 7.5,
-                    height: 7.5,
-                    decoration: const BoxDecoration(
-                      color: AppTheme.shieldEmerald,
-                      shape: BoxShape.circle,
+          ListenableBuilder(
+            listenable: Listenable.merge(<Listenable>[
+              widget.downloads,
+              widget.vpn,
+            ]),
+            builder: (BuildContext context, _) {
+              final bool showDot =
+                  widget.downloads.hasActiveDownloads || widget.vpn.isConnected;
+              return Stack(
+                clipBehavior: Clip.none,
+                children: <Widget>[
+                  IconButton(
+                    onPressed: () => _openBrowserMenu(context),
+                    icon: const Icon(Icons.more_vert_rounded, size: 20),
+                    tooltip: 'Browser Menu',
+                    visualDensity: VisualDensity.compact,
+                    padding: EdgeInsets.zero,
+                    constraints: const BoxConstraints(
+                      minWidth: 32,
+                      minHeight: 36,
                     ),
                   ),
-                ),
-            ],
+                  if (showDot)
+                    Positioned(
+                      right: 5,
+                      top: 6,
+                      child: Container(
+                        width: 7.5,
+                        height: 7.5,
+                        decoration: const BoxDecoration(
+                          color: AppTheme.shieldEmerald,
+                          shape: BoxShape.circle,
+                        ),
+                      ),
+                    ),
+                ],
+              );
+            },
           ),
         ],
       ),
@@ -1080,7 +1372,7 @@ class _BrowserScreenState extends State<BrowserScreen>
 
   Widget _buildWideEditingField(ColorScheme colors, BrowserEngine engine) {
     final bool hasText = _omniboxController.text.isNotEmpty;
-    final bool showMic = engine.isShowingStartPage && !hasText;
+    final bool showMic = !engine.isShowingWebPage && !hasText;
 
     return Row(
       children: <Widget>[
@@ -1161,51 +1453,64 @@ class _BrowserScreenState extends State<BrowserScreen>
   ) {
     return Row(
       children: <Widget>[
-        const SizedBox(width: 4),
-        SearchEngineChipButton(
-          currentEngine: widget.settings.searchEngine,
-          onSelected: (SearchEngine sel) =>
-              widget.settings.setSearchEngine(sel),
-        ),
-        InkWell(
-          key: const Key('site_permissions_button'),
-          borderRadius: BorderRadius.circular(18),
-          onTap: () {
-            if (engine.isShowingStartPage) {
-              _openShieldSheet(context);
-            } else {
-              SiteControlsSheet.show(
-                context,
-                engine: engine,
-                settings: widget.settings,
-              );
-            }
-          },
-          onLongPress: () => _openShieldSheet(context),
-          child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 6),
-            child: Icon(
-              widget.vpn.isConnected
-                  ? Icons.vpn_lock_rounded
-                  : (incognito
-                        ? Icons.shield_moon_rounded
-                        : (engine.isShowingStartPage
-                              ? Icons.shield_outlined
-                              : (engine.isSecure
-                                    ? Icons.lock_outline_rounded
-                                    : Icons.warning_amber_rounded))),
-              size: 16,
-              color: widget.vpn.isConnected
-                  ? AppTheme.shieldEmerald
-                  : (incognito
-                        ? AppTheme.incognitoCyan
-                        : (engine.isShowingStartPage
-                              ? colors.primary
-                              : (engine.isSecure
-                                    ? AppTheme.shieldEmerald
-                                    : AppTheme.warningAmber))),
+        const SizedBox(width: 3),
+        Flexible(
+          flex: 0,
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 88),
+            child: FittedBox(
+              fit: BoxFit.scaleDown,
+              child: SearchEngineChipButton(
+                currentEngine: widget.settings.searchEngine,
+                onSelected: (SearchEngine sel) =>
+                    widget.settings.setSearchEngine(sel),
+              ),
             ),
           ),
+        ),
+        ListenableBuilder(
+          listenable: widget.vpn,
+          builder: (BuildContext context, _) {
+            final bool vpnUp = widget.vpn.isConnected;
+            return InkWell(
+              key: const Key('site_permissions_button'),
+              borderRadius: BorderRadius.circular(18),
+              onTap: () {
+                SiteControlsSheet.show(
+                  context,
+                  engine: engine,
+                  settings: widget.settings,
+                );
+              },
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 6),
+                child: Icon(
+                  vpnUp
+                      ? Icons.vpn_lock_rounded
+                      : (incognito
+                            ? Icons.shield_moon_rounded
+                            : (engine.isShowingDownloadsPage
+                                  ? Icons.download_done_rounded
+                                  : (engine.isShowingStartPage
+                                        ? Icons.tune_rounded
+                                        : (engine.isSecure
+                                              ? Icons.lock_outline_rounded
+                                              : Icons.warning_amber_rounded)))),
+                  size: 15.5,
+                  color: vpnUp
+                      ? AppTheme.shieldEmerald
+                      : (incognito
+                            ? AppTheme.incognitoCyan
+                            : (engine.isShowingStartPage ||
+                                      engine.isShowingDownloadsPage
+                                  ? colors.primary
+                                  : (engine.isSecure
+                                        ? AppTheme.shieldEmerald
+                                        : AppTheme.warningAmber))),
+                ),
+              ),
+            );
+          },
         ),
         Expanded(
           child: GestureDetector(
@@ -1230,41 +1535,18 @@ class _BrowserScreenState extends State<BrowserScreen>
             ),
           ),
         ),
-        if (engine.pageBlockedCount > 0)
-          GestureDetector(
-            key: const Key('omnibox_shield_badge_button'),
-            onTap: () => _openShieldSheet(context),
-            child: AnimatedContainer(
-              duration: const Duration(milliseconds: 200),
-              curve: Curves.easeOutCubic,
-              margin: const EdgeInsets.only(right: 4),
-              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-              decoration: BoxDecoration(
-                color: AppTheme.shieldEmerald.withValues(alpha: 0.16),
-                borderRadius: BorderRadius.circular(999),
-              ),
-              child: Text(
-                '${engine.pageBlockedCount}',
-                style: const TextStyle(
-                  fontSize: 10.5,
-                  fontWeight: FontWeight.w800,
-                  color: AppTheme.shieldEmerald,
-                ),
-              ),
-            ),
-          ),
         if (engine.isShowingStartPage) ...<Widget>[
           IconButton(
             onPressed: _triggerVoiceSearch,
-            icon: Icon(Icons.mic_rounded, size: 18.5, color: colors.primary),
+            icon: Icon(Icons.mic_rounded, size: 18, color: colors.primary),
             visualDensity: VisualDensity.compact,
             padding: EdgeInsets.zero,
-            constraints: const BoxConstraints(minWidth: 30, minHeight: 32),
+            constraints: const BoxConstraints(minWidth: 26, minHeight: 32),
             tooltip: 'Voice Search',
           ),
           const SizedBox(width: 2),
         ] else
-          const SizedBox(width: 6),
+          const SizedBox(width: 5),
       ],
     );
   }
@@ -1348,36 +1630,9 @@ class _BrowserScreenState extends State<BrowserScreen>
     );
   }
 
-  void _openDownloadsScreen() {
-    Navigator.of(context).push(
-      MaterialPageRoute<void>(
-        builder: (_) => DownloadsScreen(downloads: widget.downloads),
-      ),
-    );
-  }
-
   void _openVpnScreen() {
     Navigator.of(context).push(
       MaterialPageRoute<void>(builder: (_) => HeavenVpnScreen(vpn: widget.vpn)),
-    );
-  }
-
-  Future<void> _openShieldSheet(BuildContext context) async {
-    await showModalBottomSheet<void>(
-      context: context,
-      isScrollControlled: true,
-      enableDrag: true,
-      useSafeArea: true,
-      showDragHandle: true,
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
-      ),
-      builder: (_) => ShieldSheet(
-        engine: _activeEngine,
-        settings: widget.settings,
-        vpn: widget.vpn,
-        onOpenVpnScreen: _openVpnScreen,
-      ),
     );
   }
 
@@ -1452,12 +1707,13 @@ class _BrowserScreenState extends State<BrowserScreen>
   Future<void> _openBrowserMenu(BuildContext context) async {
     final BrowserEngine engine = _activeEngine;
     final String? url = engine.currentUrl;
-    final bool hasWebPage = url != null && !engine.isShowingStartPage;
+    final bool hasWebPage = url != null && engine.isShowingWebPage;
     final bool bookmarked = widget.settings.isBookmarked(url);
 
     await showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,
+      showDragHandle: true,
       builder: (BuildContext sheetContext) {
         final ColorScheme colors = Theme.of(sheetContext).colorScheme;
         return SafeArea(
@@ -1528,7 +1784,7 @@ class _BrowserScreenState extends State<BrowserScreen>
                       ),
                       IconButton(
                         tooltip: 'Reload',
-                        onPressed: !engine.isShowingStartPage
+                        onPressed: hasWebPage
                             ? () {
                                 Navigator.pop(sheetContext);
                                 engine.reloadOrStop();
@@ -1604,6 +1860,7 @@ class _BrowserScreenState extends State<BrowserScreen>
                           },
                         ),
                         4 => _DeckActionTile(
+                          tileKey: const Key('browser_menu_downloads_tile'),
                           icon: Icons.download_rounded,
                           label: widget.downloads.activeCount > 0
                               ? 'Downloads (${widget.downloads.activeCount})'
@@ -1611,18 +1868,20 @@ class _BrowserScreenState extends State<BrowserScreen>
                           accent: AppTheme.shieldEmerald,
                           onTap: () {
                             Navigator.pop(sheetContext);
-                            _openDownloadsScreen();
+                            _openDownloadsTab();
                           },
                         ),
                         5 => _DeckActionTile(
-                          icon: widget.settings.shieldEnabled
-                              ? Icons.shield_rounded
-                              : Icons.shield_outlined,
-                          label: 'Shield',
-                          accent: AppTheme.shieldEmerald,
+                          icon: Icons.tune_rounded,
+                          label: 'Permissions',
+                          accent: colors.primary,
                           onTap: () {
                             Navigator.pop(sheetContext);
-                            _openShieldSheet(context);
+                            SiteControlsSheet.show(
+                              context,
+                              engine: engine,
+                              settings: widget.settings,
+                            );
                           },
                         ),
                         6 => _DeckActionTile(
@@ -1852,22 +2111,6 @@ class _BrowserScreenState extends State<BrowserScreen>
                   const Divider(height: 1),
                   SwitchListTile.adaptive(
                     dense: true,
-                    secondary: const Icon(Icons.data_saver_on_rounded),
-                    title: const Text('Ultra Data Saver (Text-Only)'),
-                    subtitle: const Text(
-                      'Block images & heavy assets on cellular',
-                    ),
-                    value: widget.settings.ultraDataSaverMode,
-                    onChanged: (bool value) async {
-                      Navigator.pop(sheetContext);
-                      await widget.settings.setUltraDataSaverMode(value);
-                      if (!engine.isShowingStartPage) {
-                        await engine.reloadFullPage();
-                      }
-                    },
-                  ),
-                  SwitchListTile.adaptive(
-                    dense: true,
                     secondary: const Icon(Icons.desktop_windows_outlined),
                     title: const Text('Desktop Site'),
                     subtitle: const Text('Full 1280px desktop layout'),
@@ -1978,7 +2221,7 @@ class _BrowserScreenState extends State<BrowserScreen>
         ? engine.currentUrl!
         : 'https://www.google.com';
     final String initialTitle =
-        (!engine.isShowingStartPage && engine.pageTitle != 'New Tab')
+        (engine.isShowingWebPage && engine.pageTitle != 'New Tab')
         ? engine.pageTitle.trim()
         : OmniboxParser.friendlySiteTitleFromDomain(
             OmniboxParser.cleanDomain(initialUrl),
@@ -2079,6 +2322,7 @@ class _DeckActionTile extends StatelessWidget {
     required this.label,
     required this.accent,
     required this.onTap,
+    this.tileKey,
     this.enabled = true,
   });
 
@@ -2086,6 +2330,7 @@ class _DeckActionTile extends StatelessWidget {
   final String label;
   final Color accent;
   final VoidCallback onTap;
+  final Key? tileKey;
   final bool enabled;
 
   @override
@@ -2094,6 +2339,7 @@ class _DeckActionTile extends StatelessWidget {
     return Opacity(
       opacity: enabled ? 1.0 : 0.38,
       child: InkWell(
+        key: tileKey,
         borderRadius: BorderRadius.circular(16),
         onTap: enabled ? onTap : null,
         child: Container(

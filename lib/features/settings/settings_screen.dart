@@ -5,7 +5,6 @@ import '../../core/theme/app_theme.dart';
 import '../../core/utils/omnibox_parser.dart';
 import '../../core/widgets/site_logo.dart';
 import '../downloads/downloads_controller.dart';
-import '../downloads/downloads_screen.dart';
 import '../shield/native_shield_bridge.dart';
 import '../tabs/tab_manager.dart';
 import 'browser_settings.dart';
@@ -291,35 +290,11 @@ class SettingsScreen extends StatelessWidget {
                   ],
                 ),
                 const SizedBox(height: 18),
-                _MinimalSectionLabel('Privacy & Shield', colors),
+                _MinimalSectionLabel('Privacy & Security', colors),
                 _MinimalGroup(
                   isDark: isDark,
                   colors: colors,
                   children: <Widget>[
-                    SwitchListTile.adaptive(
-                      dense: true,
-                      secondary: const Icon(Icons.shield_outlined, size: 20),
-                      title: const Text('Heaven Ad & Tracker Shield'),
-                      subtitle: Text(
-                        '${settings.totalTrackersBlocked} blocked • ${settings.formattedDataSaved} saved',
-                        style: const TextStyle(fontSize: 11.5),
-                      ),
-                      value: settings.shieldEnabled,
-                      onChanged: settings.setShieldEnabled,
-                    ),
-                    _thinDivider(colors),
-                    SwitchListTile.adaptive(
-                      dense: true,
-                      secondary: const Icon(Icons.gpp_good_outlined, size: 20),
-                      title: const Text('Anti-Redirect Protection'),
-                      subtitle: const Text(
-                        'Block unwanted ad & app-store redirects',
-                        style: TextStyle(fontSize: 11.5),
-                      ),
-                      value: settings.antiRedirectProtection,
-                      onChanged: settings.setAntiRedirectProtection,
-                    ),
-                    _thinDivider(colors),
                     SwitchListTile.adaptive(
                       dense: true,
                       secondary: const Icon(Icons.lock_outline_rounded, size: 20),
@@ -334,26 +309,6 @@ class SettingsScreen extends StatelessWidget {
                       title: const Text('Block Third-Party Cookies'),
                       value: settings.blockThirdPartyCookies,
                       onChanged: settings.setBlockThirdPartyCookies,
-                    ),
-                    _thinDivider(colors),
-                    SwitchListTile.adaptive(
-                      dense: true,
-                      secondary: const Icon(
-                        Icons.data_saver_on_rounded,
-                        size: 20,
-                      ),
-                      title: const Text('Ultra Data Saver'),
-                      subtitle: const Text(
-                        'Text-focused mode on slow connections',
-                        style: TextStyle(fontSize: 11.5),
-                      ),
-                      value: settings.ultraDataSaverMode,
-                      onChanged: (bool val) async {
-                        await settings.setUltraDataSaverMode(val);
-                        if (!tabManager.activeEngine.isShowingStartPage) {
-                          await tabManager.activeEngine.reloadFullPage();
-                        }
-                      },
                     ),
                     _thinDivider(colors),
                     SwitchListTile.adaptive(
@@ -430,12 +385,10 @@ class SettingsScreen extends StatelessWidget {
                           size: 18,
                           color: colors.onSurfaceVariant,
                         ),
-                        onTap: () => Navigator.of(context).push(
-                          MaterialPageRoute<void>(
-                            builder: (_) =>
-                                DownloadsScreen(downloads: downloads!),
-                          ),
-                        ),
+                        onTap: () {
+                          Navigator.of(context).pop();
+                          tabManager.openDownloadsTab();
+                        },
                       ),
                       _thinDivider(colors),
                     ],

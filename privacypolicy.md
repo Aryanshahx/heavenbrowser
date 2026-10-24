@@ -22,20 +22,18 @@ Heaven Browser is a fast, privacy-first mobile web browser built by **HyperTech 
 
 To deliver a responsive browsing experience, Heaven Browser stores the following data locally on your device only:
 
-1. **Persistent Open Tabs & Tab Groups:** Your open normal tabs, tab groups, and active tab position are saved locally so your workspace is restored when you reopen the app. You can close tabs individually or wipe all sessions at any time using **Burn All Tabs, Cookies & Storage**.
+1. **Persistent Open Tabs, Tab Previews & Tab Groups:** Your open normal tabs, tab preview thumbnails, tab groups, and active tab position are saved locally so your workspace is restored when you reopen the app. You can close tabs individually or wipe all sessions at any time using **Burn All Tabs & Site Data**.
 2. **Bookmarks, History & Quick-Launch Sites:** Pages you visit or bookmark outside Incognito Mode are saved locally on your device. Incognito Mode never records browsing history, search queries, or site usage, and scrubs session cookies and WebView storage when Incognito tabs are closed.
-3. **Heaven Shield & Data Saver Metrics:** Counts of blocked ad requests, blocked malicious redirects, and estimated mobile data bytes saved are tallied locally on your device.
-4. **Per-Site Permissions:** Your site-by-site decisions (Allow, Block, or Ask) for Location, Camera, Microphone, JavaScript, Pop-ups, Protected Media, and Web Notifications are stored locally and can be revoked in one tap from the **Per-Site Permission Dashboard**.
-5. **Downloaded Files & Media Streams:** Files, videos, and audio streams you choose to download are saved directly to your chosen local Downloads folder on your device.
-6. **Installed Extensions & Custom Scripts:** Unpacked Chrome extensions (`.crx` / `.zip`) and custom userscripts you explicitly install are stored locally inside the app's private directory.
+3. **Per-Site Permissions:** Your site-by-site decisions (Allow, Block, or Ask) for Location, Camera, Microphone, JavaScript, Pop-ups, Protected Media, and Web Notifications are stored locally and can be revoked in one tap from the **Per-Site Permission Dashboard**.
+4. **Downloaded Files & Media Streams:** Files, videos, and audio streams you choose to download are saved directly to your chosen local Downloads folder on your device and managed inside the built-in **Downloads** tab.
 
 ---
 
 ## 3. Search Engines & Direct Website Connections
 
-- **Default Search Engine:** Heaven Browser uses **Google Search** (`https://www.google.com`) as the default search engine, and lets you switch at any time to **DuckDuckGo**, **Brave Search**, **Bing**, or **Startpage**.
+- **Default Search Engine:** Heaven uses **Google Search** (`https://www.google.com`) as the default search engine, and lets you switch at any time to **Perplexity**, **DuckDuckGo**, **Brave Search**, **Bing**, or **Startpage**.
 - When you submit a search query, load a webpage, or request search autocomplete suggestions, your device connects directly to that search engine or website. Your interaction with external websites is governed by each destination site's own privacy policy.
-- When **HTTPS-First Upgrade** and **Send Do Not Track & GPC** are enabled, Heaven Browser upgrades eligible `http://` navigations to encrypted `https://` and transmits standard `DNT: 1` and `Sec-GPC: 1` privacy preference signals.
+- When **HTTPS Upgrade** and **Do Not Track / GPC** are enabled, Heaven upgrades eligible `http://` navigations to encrypted `https://` and sets standard `DNT` and `GPC` privacy signals.
 
 ---
 
@@ -53,10 +51,9 @@ Heaven Browser requests only the Android permissions required for features you a
 
 ---
 
-## 5. Heaven Shield, Anti-Redirect Firewall & Chrome Extensions
+## 5. Multi-Country VPN & Split Tunneling
 
-- **Native Ad, Tracker & Redirect Blocking:** Heaven Shield runs completely on-device, filtering known ad networks, tracking parameters (`utm_*`, `fbclid`, `gclid`, etc.), hidden clickjacking overlays, and unsolicited redirects to app stores (`market://`, `intent://`) or spam domains without sending the URLs you visit to any cloud lookup service.
-- **Chrome Extensions:** When you install an extension from the Chrome Web Store or from a local `.crx` / `.zip` package, the extension package is fetched directly from Google's Chrome Web Store CDN (or read from your selected local file) and executed locally. Because third-party extensions can read or modify page content on sites matching their manifest permissions, only install extensions you trust. You can disable or uninstall any extension at any time.
+- **Optional Built-In VPN:** When you explicitly connect a country in **Heaven VPN**, traffic is encrypted via OpenVPN or WireGuard using either Browser-Only Split Tunneling (so only Heaven uses the VPN) or Full-Device mode. Heaven never logs, inspects, or stores your VPN traffic.
 
 ---
 

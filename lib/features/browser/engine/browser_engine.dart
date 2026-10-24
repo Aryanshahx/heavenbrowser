@@ -11,7 +11,6 @@ import '../../../core/constants/app_constants.dart';
 import '../../../core/utils/omnibox_parser.dart';
 import '../../devtools/devtools_models.dart';
 import '../../settings/browser_settings.dart';
-import '../../shield/heaven_shield.dart';
 import '../../shield/native_shield_bridge.dart';
 
 class ReadableArticle {
@@ -34,7 +33,6 @@ class BrowserEngine extends ChangeNotifier {
     required this.settings,
     required this.isIncognito,
     this.enablePlatformWebView = true,
-    this.onPageLoadedForPreview,
     String? initialPersistedUrl,
     String? initialPersistedTitle,
   }) {
@@ -43,20 +41,31 @@ class BrowserEngine extends ChangeNotifier {
 
     final String cleanInitialUrl = (initialPersistedUrl ?? '').trim();
     if (cleanInitialUrl.isNotEmpty) {
-      _currentUrl = cleanInitialUrl;
-      _lastCompletedWebUrl = cleanInitialUrl;
-      _pageTitle = (initialPersistedTitle ?? '').trim().isNotEmpty
-          ? initialPersistedTitle!.trim()
-          : OmniboxParser.formatDisplayUrl(cleanInitialUrl);
-      _virtualHistory
-        ..clear()
-        ..add(cleanInitialUrl);
-      _virtualIndex = 0;
+      if (OmniboxParser.isDownloadsUrl(cleanInitialUrl)) {
+        _currentUrl = AppConstants.downloadsTabUrl;
+        _pageTitle = 'Downloads';
+        _virtualHistory
+          ..clear()
+          ..add(AppConstants.downloadsTabUrl);
+        _virtualIndex = 0;
+      } else {
+        _currentUrl = cleanInitialUrl;
+        _lastCompletedWebUrl = cleanInitialUrl;
+        _pageTitle = (initialPersistedTitle ?? '').trim().isNotEmpty
+            ? initialPersistedTitle!.trim()
+            : OmniboxParser.formatDisplayUrl(cleanInitialUrl);
+        _virtualHistory
+          ..clear()
+          ..add(cleanInitialUrl);
+        _virtualIndex = 0;
+      }
     }
 
     if (enablePlatformWebView) {
       _initializeController();
-      if (_currentUrl != null && _currentUrl!.isNotEmpty) {
+      if (_currentUrl != null &&
+          _currentUrl!.isNotEmpty &&
+          !isShowingDownloadsPage) {
         final Uri? restoredUri = Uri.tryParse(_currentUrl!);
         if (restoredUri != null) {
           unawaited(_loadRestoredUri(restoredUri));
@@ -66,7 +75,6 @@ class BrowserEngine extends ChangeNotifier {
   }
 
   final BrowserSettingsController settings;
-  VoidCallback? onPageLoadedForPreview;
   SitePermissionPromptCallback? onSitePermissionPrompt;
   final bool isIncognito;
   final bool enablePlatformWebView;
@@ -74,7 +82,6 @@ class BrowserEngine extends ChangeNotifier {
   WebViewController? _controller;
   int? _androidWebViewId;
   String? _pageIconUrl;
-  Timer? _previewCaptureTimer;
   int _lastAppliedSettingsRevision = -1;
 
   final List<String> _virtualHistory = <String>[''];
@@ -88,8 +95,6 @@ class BrowserEngine extends ChangeNotifier {
   bool _isNavBarVisible = true;
   bool _webViewCanGoBack = false;
   bool _webViewCanGoForward = false;
-  int _pageBlockedCount = 0;
-  final Set<String> _pageBlockedDomains = <String>{};
   String? _errorMessage;
   String? _lastCompletedWebUrl;
   int _lastDownloadInterceptMs = 0;
@@ -105,7 +110,6 @@ class BrowserEngine extends ChangeNotifier {
   bool? _appliedEffectiveDesktop;
   bool? _appliedAllow3pCookies;
   bool _mediaGestureConfigured = false;
-  int _lastBlockedUiNotifyMs = 0;
   double _lastNotifiedProgress = 0.0;
 
   // Desktop Inspect / DevTools runtime state
@@ -119,7 +123,10 @@ class BrowserEngine extends ChangeNotifier {
   int? get androidWebViewId => _androidWebViewId;
   String? get pageIconUrl => _pageIconUrl;
   String? get currentUrl => _currentUrl;
-  bool get isNavBarVisible => _isNavBarVisible || isShowingStartPage;
+  bool get isShowingStartPage => _currentUrl == null || _currentUrl!.isEmpty;
+  bool get isShowingDownloadsPage => OmniboxParser.isDownloadsUrl(_currentUrl);
+  bool get isShowingWebPage => !isShowingStartPage && !isShowingDownloadsPage;
+  bool get isNavBarVisible => _isNavBarVisible || !isShowingWebPage;
   bool get isMediaPlaying => _isMediaPlaying;
   String get playingMediaTitle => _playingMediaTitle;
 
@@ -136,24 +143,24 @@ class BrowserEngine extends ChangeNotifier {
   double get progress => _progress;
   double get pullProgress => _pullProgress;
   bool get isLoading => _isLoading;
-  bool get isShowingStartPage => _currentUrl == null || _currentUrl!.isEmpty;
 
   bool get canGoBack =>
-      (!isShowingStartPage && _webViewCanGoBack) || _virtualIndex > 0;
+      (isShowingWebPage && _webViewCanGoBack) || _virtualIndex > 0;
 
   bool get canGoForward =>
-      (!isShowingStartPage && _webViewCanGoForward) ||
+      (isShowingWebPage && _webViewCanGoForward) ||
       _virtualIndex < _virtualHistory.length - 1;
 
-  int get pageBlockedCount => _pageBlockedCount;
-  List<String> get pageBlockedDomains =>
-      _pageBlockedDomains.toList(growable: false);
   String? get errorMessage => _errorMessage;
 
-  bool get isSecure => _currentUrl != null && _currentUrl!.startsWith('https://');
+  bool get isSecure =>
+      isShowingDownloadsPage ||
+      (_currentUrl != null && _currentUrl!.startsWith('https://'));
 
   String? get currentHost {
-    if (_currentUrl == null || _currentUrl!.isEmpty) {
+    if (_currentUrl == null ||
+        _currentUrl!.isEmpty ||
+        isShowingDownloadsPage) {
       return null;
     }
     final Uri? parsed = Uri.tryParse(_currentUrl!);
@@ -187,7 +194,7 @@ class BrowserEngine extends ChangeNotifier {
   }
 
   void setNavBarVisible(bool visible) {
-    final bool next = (isShowingStartPage || _isLoading) ? true : visible;
+    final bool next = (!isShowingWebPage || _isLoading) ? true : visible;
     if (_isNavBarVisible != next) {
       _isNavBarVisible = next;
       notifyListeners();
@@ -197,7 +204,7 @@ class BrowserEngine extends ChangeNotifier {
   /// Updates top navigation bar visibility from scroll position & vertical delta:
   /// scrolling down hides the bar; scrolling up (or near top) reveals it.
   void handleWebScrollDelta(double scrollY, double deltaY) {
-    if (isShowingStartPage || _isLoading) {
+    if (!isShowingWebPage || _isLoading) {
       setNavBarVisible(true);
       return;
     }
@@ -209,7 +216,7 @@ class BrowserEngine extends ChangeNotifier {
   }
 
   Future<void> focusNativeWebView() async {
-    if (_androidWebViewId != null) {
+    if (_androidWebViewId != null && isShowingWebPage) {
       await NativeShieldBridge.instance.focusWebView(_androidWebViewId!);
     }
   }
@@ -225,12 +232,6 @@ class BrowserEngine extends ChangeNotifier {
           pageHost: uri.host,
         ),
       );
-      unawaited(
-        NativeShieldBridge.instance.approveExternalNavigation(
-          webViewId: _androidWebViewId!,
-          host: uri.host,
-        ),
-      );
     }
     await _applyControllerSettings(forHost: uri.host);
     await _controller?.loadRequest(uri, headers: _headersForTarget());
@@ -243,28 +244,6 @@ class BrowserEngine extends ChangeNotifier {
 
     unawaited(_applyControllerSettings());
     unawaited(_prewarmGoogleSearchConnection());
-
-    unawaited(
-      webController.addJavaScriptChannel(
-        'HeavenShieldChannel',
-        onMessageReceived: (JavaScriptMessage msg) {
-          final String payload = msg.message.trim();
-          if (payload.startsWith('ALLOW_NAV:')) {
-            final String allowedHost = payload.substring('ALLOW_NAV:'.length);
-            if (_androidWebViewId != null && allowedHost.isNotEmpty) {
-              unawaited(
-                NativeShieldBridge.instance.approveExternalNavigation(
-                  webViewId: _androidWebViewId!,
-                  host: allowedHost,
-                ),
-              );
-            }
-            return;
-          }
-          _recordBlockedResource(payload);
-        },
-      ),
-    );
 
     unawaited(
       webController.addJavaScriptChannel(
@@ -301,10 +280,9 @@ class BrowserEngine extends ChangeNotifier {
         NavigationDelegate(
           onNavigationRequest: _handleNavigationRequest,
           onPageStarted: (String url) {
-            if (url == 'about:blank' && isShowingStartPage) {
+            if (url == 'about:blank' && !isShowingWebPage) {
               return;
             }
-            _previewCaptureTimer?.cancel();
             final String? nextHost = Uri.tryParse(url)?.host;
             _currentUrl = url;
             _isNavBarVisible = true;
@@ -317,8 +295,6 @@ class BrowserEngine extends ChangeNotifier {
             _lastNotifiedProgress = 0.1;
             _pullProgress = 0;
             _errorMessage = null;
-            _pageBlockedCount = 0;
-            _pageBlockedDomains.clear();
             _syncVirtualEntryWithWebUrl(url);
             if (_androidWebViewId != null) {
               unawaited(
@@ -331,14 +307,14 @@ class BrowserEngine extends ChangeNotifier {
             notifyListeners();
           },
           onProgress: (int value) {
-            if (isShowingStartPage) {
+            if (!isShowingWebPage) {
               return;
             }
             final double nextProgress = (value.clamp(0, 100)) / 100.0;
             final bool nextLoading = value < 100;
             final bool loadingChanged = _isLoading != nextLoading;
             final bool significantStep =
-                (nextProgress - _lastNotifiedProgress).abs() >= 0.08 ||
+                (nextProgress - _lastNotifiedProgress).abs() >= 0.10 ||
                 value >= 100;
             _progress = nextProgress;
             _isLoading = nextLoading;
@@ -348,7 +324,7 @@ class BrowserEngine extends ChangeNotifier {
             }
           },
           onPageFinished: (String url) async {
-            if (url == 'about:blank' && isShowingStartPage) {
+            if (url == 'about:blank' && !isShowingWebPage) {
               _isLoading = false;
               _progress = 0;
               notifyListeners();
@@ -368,13 +344,13 @@ class BrowserEngine extends ChangeNotifier {
               await settings.recordPageVisit(url: url, title: _pageTitle);
             }
             notifyListeners();
-            _scheduleAutoPreviewCapture();
           },
           onUrlChange: (UrlChange change) {
             final String? nextUrl = change.url;
             if (nextUrl != null &&
                 nextUrl.isNotEmpty &&
-                nextUrl != 'about:blank') {
+                nextUrl != 'about:blank' &&
+                !isShowingDownloadsPage) {
               _currentUrl = nextUrl;
               _syncVirtualEntryWithWebUrl(nextUrl);
               unawaited(_refreshNavigationState());
@@ -428,15 +404,8 @@ class BrowserEngine extends ChangeNotifier {
           webViewId: androidCtrl.webViewIdentifier,
           desktopMode: settings.desktopMode,
           pageHost: currentHost,
-          onBlocked: (int _, String domain, int count, int bytesSaved) {
-            _recordBlockedResource(
-              domain,
-              count: count,
-              bytesSaved: bytesSaved,
-            );
-          },
           onPullProgress: (double value) {
-            if ((_pullProgress - value).abs() >= 0.02 || value == 0.0) {
+            if ((_pullProgress - value).abs() >= 0.025 || value == 0.0) {
               _pullProgress = value;
               notifyListeners();
             }
@@ -451,7 +420,8 @@ class BrowserEngine extends ChangeNotifier {
             _progress = 0;
             _errorMessage = null;
             if (wasEmptyPage && _lastCompletedWebUrl == null) {
-              _currentUrl = null;
+              openDownloadsPage();
+              return;
             } else if (_lastCompletedWebUrl != null) {
               _currentUrl = _lastCompletedWebUrl;
               _syncVirtualEntryWithWebUrl(_lastCompletedWebUrl!);
@@ -606,7 +576,7 @@ class BrowserEngine extends ChangeNotifier {
   }
 
   Future<Uint8List?> captureNativeWebViewPreview() async {
-    if (_androidWebViewId == null || isShowingStartPage) {
+    if (_androidWebViewId == null || !isShowingWebPage) {
       return null;
     }
     return NativeShieldBridge.instance.captureWebViewPreview(
@@ -637,52 +607,6 @@ class BrowserEngine extends ChangeNotifier {
     _virtualIndex = _virtualHistory.length - 1;
   }
 
-  void _scheduleAutoPreviewCapture() {
-    _previewCaptureTimer?.cancel();
-    if (!enablePlatformWebView || isShowingStartPage) {
-      return;
-    }
-    _previewCaptureTimer = Timer(const Duration(milliseconds: 680), () {
-      if (!isShowingStartPage) {
-        onPageLoadedForPreview?.call();
-      }
-    });
-  }
-
-  void _recordBlockedResource(
-    String domainOrTag, {
-    int count = 1,
-    int bytesSaved = 14200,
-  }) {
-    final int safeCount = count < 1 ? 1 : count;
-    _pageBlockedCount += safeCount;
-    if (domainOrTag.isNotEmpty) {
-      _pageBlockedDomains.add(domainOrTag);
-      if (_networkEntries.length < 250) {
-        _networkEntries.insert(
-          0,
-          DevToolsNetworkEntry(
-            url: 'https://$domainOrTag',
-            method: 'BLOCKED',
-            type: 'shield',
-            status: 0,
-            durationMs: 0,
-            blocked: true,
-          ),
-        );
-      }
-    }
-    unawaited(settings.incrementBlockedCount(safeCount, bytesSaved));
-    if (_isLoading) {
-      return;
-    }
-    final int now = DateTime.now().millisecondsSinceEpoch;
-    if (now - _lastBlockedUiNotifyMs >= 950) {
-      _lastBlockedUiNotifyMs = now;
-      notifyListeners();
-    }
-  }
-
   Future<NavigationDecision> _handleNavigationRequest(
     NavigationRequest request,
   ) async {
@@ -691,37 +615,19 @@ class BrowserEngine extends ChangeNotifier {
       return NavigationDecision.prevent;
     }
 
+    if (OmniboxParser.isDownloadsUrl(request.url)) {
+      openDownloadsPage();
+      return NavigationDecision.prevent;
+    }
+
     if (uri.scheme == 'about' || uri.scheme == 'data' || uri.scheme == 'blob') {
       return NavigationDecision.navigate;
     }
 
     if (uri.scheme != 'http' && uri.scheme != 'https') {
-      final bool blocksRedirect =
-          (settings.antiRedirectProtection || settings.shieldEnabled) &&
-          !settings.isHostTrusted(currentHost);
-      if (blocksRedirect && uri.scheme != 'mailto' && uri.scheme != 'tel') {
-        _recordBlockedResource('${uri.scheme}-redirect');
-        unawaited(settings.incrementRedirectBlockedCount());
-        return NavigationDecision.prevent;
-      }
       if (await canLaunchUrl(uri)) {
         await launchUrl(uri, mode: LaunchMode.externalApplication);
       }
-      return NavigationDecision.prevent;
-    }
-
-    final String destLowerHost = uri.host.toLowerCase();
-    final String prevLowerHost = (currentHost ?? '').toLowerCase();
-
-    // Automatic Anti-Redirect protection against unsolicited Play Store hijacks
-    if (request.isMainFrame &&
-        settings.antiRedirectProtection &&
-        !settings.isHostTrusted(currentHost) &&
-        destLowerHost == 'play.google.com' &&
-        prevLowerHost.isNotEmpty &&
-        !prevLowerHost.endsWith('google.com')) {
-      _recordBlockedResource('play.google.com-hijack');
-      unawaited(settings.incrementRedirectBlockedCount());
       return NavigationDecision.prevent;
     }
 
@@ -746,32 +652,6 @@ class BrowserEngine extends ChangeNotifier {
           desktopUri,
           headers: _headersForTarget(),
         );
-        return NavigationDecision.prevent;
-      }
-    }
-
-    final bool shieldActiveForSite =
-        settings.shieldEnabled && !settings.isHostTrusted(currentHost);
-
-    if (shieldActiveForSite &&
-        HeavenShield.shouldBlockUri(uri, pageHost: currentHost)) {
-      _recordBlockedResource(
-        HeavenShield.matchBlockedDomain(uri.host) ?? uri.host,
-      );
-      return NavigationDecision.prevent;
-    }
-
-    if (request.isMainFrame && shieldActiveForSite) {
-      final ({Uri uri, int removedCount}) stripped =
-          HeavenShield.stripTrackingParameters(uri);
-      if (stripped.removedCount > 0 && stripped.uri != uri) {
-        _pageBlockedCount += stripped.removedCount;
-        await settings.incrementBlockedCount(stripped.removedCount);
-        await _controller?.loadRequest(
-          stripped.uri,
-          headers: _headersForTarget(),
-        );
-        notifyListeners();
         return NavigationDecision.prevent;
       }
     }
@@ -898,7 +778,7 @@ class BrowserEngine extends ChangeNotifier {
     await _applyControllerSettings(force: true);
 
     final String? activeUrl = _currentUrl;
-    if (activeUrl != null && !isShowingStartPage && _controller != null) {
+    if (activeUrl != null && isShowingWebPage && _controller != null) {
       Uri? parsed = Uri.tryParse(activeUrl);
       if (parsed != null) {
         if (enabled) {
@@ -921,27 +801,17 @@ class BrowserEngine extends ChangeNotifier {
       return;
     }
 
-    final bool trusted = settings.isHostTrusted(parsed?.host);
-    final bool blockPopups = settings.arePopupsBlockedForHost(parsed?.host);
-    final StringBuffer combined = StringBuffer(
-      HeavenShield.buildProtectionScript(
-        shieldEnabled: settings.shieldEnabled && !trusted,
-        sendDntAndGpc: settings.sendDntAndGpc,
-      ),
-    );
-    if (blockPopups) {
+    final StringBuffer combined = StringBuffer();
+    if (settings.sendDntAndGpc) {
       combined.write(
-        '\n;(function(){try{window.open=function(){return null;};}catch(_){}})();',
-      );
-    }
-    if (settings.ultraDataSaverMode) {
-      combined.write(
-        '\n;(function(){try{if(!document.getElementById("__hb_uds")){var s=document.createElement("style");s.id="__hb_uds";s.textContent="img,picture,video,canvas,svg.hero,[style*=\\"background-image\\"]{display:none!important;}";(document.head||document.documentElement).appendChild(s);}}catch(_){}})();',
+        "(function(){try{Object.defineProperty(navigator,'globalPrivacyControl',{value:true,configurable:true});Object.defineProperty(navigator,'doNotTrack',{value:'1',configurable:true});}catch(_){}})();",
       );
     }
 
     try {
-      await webController.runJavaScript(combined.toString());
+      if (combined.isNotEmpty) {
+        await webController.runJavaScript(combined.toString());
+      }
       await webController.runJavaScript(_buildDevToolsAgentScript());
     } catch (_) {
       // Ignore JS errors on non-HTML responses.
@@ -970,7 +840,7 @@ class BrowserEngine extends ChangeNotifier {
 
   Future<void> _refreshNavigationState() async {
     final WebViewController? webController = _controller;
-    if (webController == null) {
+    if (webController == null || !isShowingWebPage) {
       return;
     }
     _webViewCanGoBack = await webController.canGoBack();
@@ -984,8 +854,26 @@ class BrowserEngine extends ChangeNotifier {
     notifyListeners();
   }
 
+  void openDownloadsPage() {
+    _pushVirtualLocation(AppConstants.downloadsTabUrl);
+    _currentUrl = AppConstants.downloadsTabUrl;
+    _pageTitle = 'Downloads';
+    _isLoading = false;
+    _isNavBarVisible = true;
+    _progress = 0;
+    _pullProgress = 0;
+    _errorMessage = null;
+    _webViewCanGoBack = false;
+    _webViewCanGoForward = false;
+    notifyListeners();
+  }
+
   Future<void> loadUserEntry(String rawInput) async {
     final String trimmed = rawInput.trim();
+    if (OmniboxParser.isDownloadsUrl(trimmed)) {
+      openDownloadsPage();
+      return;
+    }
     if (!isIncognito &&
         trimmed.isNotEmpty &&
         !OmniboxParser.looksLikeDirectDestination(trimmed)) {
@@ -1000,9 +888,11 @@ class BrowserEngine extends ChangeNotifier {
   }
 
   Future<void> loadUri(Uri uri) async {
+    if (OmniboxParser.isDownloadsUrl(uri.toString())) {
+      openDownloadsPage();
+      return;
+    }
     _errorMessage = null;
-    _pageBlockedCount = 0;
-    _pageBlockedDomains.clear();
     _pullProgress = 0;
     _isNavBarVisible = true;
 
@@ -1018,17 +908,6 @@ class BrowserEngine extends ChangeNotifier {
         OmniboxParser.unwrapGoogleRedirectUri(migratedUri) ?? migratedUri;
     if (settings.desktopMode) {
       finalUri = rewriteMobileToDesktopUri(finalUri);
-    }
-    final bool shieldActive =
-        settings.shieldEnabled && !settings.isHostTrusted(finalUri.host);
-    if (shieldActive) {
-      final ({Uri uri, int removedCount}) stripped =
-          HeavenShield.stripTrackingParameters(finalUri);
-      finalUri = stripped.uri;
-      if (stripped.removedCount > 0) {
-        _pageBlockedCount += stripped.removedCount;
-        await settings.incrementBlockedCount(stripped.removedCount);
-      }
     }
     if (settings.httpsUpgrade &&
         finalUri.scheme == 'http' &&
@@ -1051,12 +930,6 @@ class BrowserEngine extends ChangeNotifier {
         NativeShieldBridge.instance.updatePageHost(
           webViewId: _androidWebViewId!,
           pageHost: finalUri.host,
-        ),
-      );
-      unawaited(
-        NativeShieldBridge.instance.approveExternalNavigation(
-          webViewId: _androidWebViewId!,
-          host: finalUri.host,
         ),
       );
     }
@@ -1083,8 +956,6 @@ class BrowserEngine extends ChangeNotifier {
     _progress = 0;
     _pullProgress = 0;
     _errorMessage = null;
-    _pageBlockedCount = 0;
-    _pageBlockedDomains.clear();
     _isMediaPlaying = false;
     _webViewCanGoBack = false;
     _webViewCanGoForward = false;
@@ -1094,7 +965,7 @@ class BrowserEngine extends ChangeNotifier {
 
   Future<void> goBack() async {
     _isNavBarVisible = true;
-    if (!isShowingStartPage &&
+    if (isShowingWebPage &&
         _controller != null &&
         await _controller!.canGoBack()) {
       await _controller!.goBack();
@@ -1110,7 +981,7 @@ class BrowserEngine extends ChangeNotifier {
 
   Future<void> goForward() async {
     _isNavBarVisible = true;
-    if (!isShowingStartPage &&
+    if (isShowingWebPage &&
         _controller != null &&
         await _controller!.canGoForward()) {
       await _controller!.goForward();
@@ -1137,6 +1008,16 @@ class BrowserEngine extends ChangeNotifier {
       notifyListeners();
       return;
     }
+    if (OmniboxParser.isDownloadsUrl(target)) {
+      _currentUrl = AppConstants.downloadsTabUrl;
+      _pageTitle = 'Downloads';
+      _isLoading = false;
+      _progress = 0;
+      _webViewCanGoBack = false;
+      _webViewCanGoForward = false;
+      notifyListeners();
+      return;
+    }
 
     _currentUrl = target;
     _pageTitle = OmniboxParser.formatDisplayUrl(target);
@@ -1153,7 +1034,7 @@ class BrowserEngine extends ChangeNotifier {
   Future<void> reloadFullPage() async {
     _errorMessage = null;
     _isNavBarVisible = true;
-    if (isShowingStartPage) {
+    if (!isShowingWebPage) {
       notifyListeners();
       return;
     }
@@ -1162,7 +1043,7 @@ class BrowserEngine extends ChangeNotifier {
 
   Future<void> reloadOrStop() async {
     _isNavBarVisible = true;
-    if (_controller == null) {
+    if (!isShowingWebPage || _controller == null) {
       return;
     }
     if (_isLoading) {
@@ -1177,6 +1058,7 @@ class BrowserEngine extends ChangeNotifier {
 
   Future<int> findInPage(String term) async {
     if (_controller == null ||
+        !isShowingWebPage ||
         term.trim().isEmpty ||
         !settings.javascriptEnabled) {
       return 0;
@@ -1200,7 +1082,7 @@ class BrowserEngine extends ChangeNotifier {
 
   Future<ReadableArticle?> extractReadableArticle() async {
     if (_controller == null ||
-        isShowingStartPage ||
+        !isShowingWebPage ||
         !settings.javascriptEnabled) {
       return null;
     }
@@ -1718,10 +1600,9 @@ class BrowserEngine extends ChangeNotifier {
   return JSON.stringify({ list: list });
 })()
 ''');
-    final List<DevToolsNetworkEntry> combined = <DevToolsNetworkEntry>[
-      ..._networkEntries.where((DevToolsNetworkEntry e) => e.blocked),
-      ..._networkEntries.where((DevToolsNetworkEntry e) => !e.blocked),
-    ];
+    final List<DevToolsNetworkEntry> combined = List<DevToolsNetworkEntry>.of(
+      _networkEntries,
+    );
     final Set<String> seenUrls = <String>{
       for (final DevToolsNetworkEntry e in combined) e.url,
     };
@@ -1827,7 +1708,6 @@ class BrowserEngine extends ChangeNotifier {
 
   @override
   void dispose() {
-    _previewCaptureTimer?.cancel();
     settings.removeListener(_onSettingsChanged);
     if (_androidWebViewId != null) {
       NativeShieldBridge.instance.detachWebView(_androidWebViewId!);

@@ -52,8 +52,6 @@ class SiteControlsSheet extends StatelessWidget {
             ? host
             : 'Current Tab';
         final bool hasWebHost = host != null && host.isNotEmpty;
-        final bool shieldOnForSite =
-            settings.shieldEnabled && !settings.isHostTrusted(host);
 
         final List<SitePermissionType> dashboardPermissions =
             const <SitePermissionType>[
@@ -194,28 +192,6 @@ class SiteControlsSheet extends StatelessWidget {
                     ),
                   ),
                   const SizedBox(height: 12),
-                  SwitchListTile(
-                    contentPadding: EdgeInsets.zero,
-                    secondary: Icon(
-                      Icons.shield_rounded,
-                      color: colors.primary,
-                    ),
-                    title: const Text(
-                      'Heaven Shield for this site',
-                      style: TextStyle(fontWeight: FontWeight.w700),
-                    ),
-                    subtitle: Text(
-                      '${engine.pageBlockedCount} ads & trackers blocked on this page',
-                      style: const TextStyle(fontSize: 12),
-                    ),
-                    value: shieldOnForSite,
-                    onChanged: hasWebHost
-                        ? (_) async {
-                            await settings.toggleHostTrust(host);
-                            await engine.reloadFullPage();
-                          }
-                        : null,
-                  ),
                   SwitchListTile(
                     contentPadding: EdgeInsets.zero,
                     secondary: Icon(

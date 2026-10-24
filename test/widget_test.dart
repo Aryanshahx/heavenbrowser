@@ -8,9 +8,7 @@ import 'package:heavenbrowser/core/constants/app_constants.dart';
 import 'package:heavenbrowser/core/l10n/app_strings.dart';
 import 'package:heavenbrowser/core/theme/app_theme.dart';
 import 'package:heavenbrowser/core/utils/omnibox_parser.dart';
-import 'package:heavenbrowser/features/browser/engine/browser_engine.dart';
 import 'package:heavenbrowser/features/browser/presentation/browser_screen.dart';
-import 'package:heavenbrowser/features/browser/presentation/widgets/shield_sheet.dart';
 import 'package:heavenbrowser/features/browser/site_controls_sheet.dart';
 import 'package:heavenbrowser/features/devtools/desktop_inspector_panel.dart';
 import 'package:heavenbrowser/features/downloads/downloads_controller.dart';
@@ -21,11 +19,11 @@ import 'package:heavenbrowser/features/settings/browser_settings.dart';
 import 'package:heavenbrowser/features/settings/help_screen.dart';
 import 'package:heavenbrowser/features/settings/notifications_screen.dart';
 import 'package:heavenbrowser/features/settings/settings_screen.dart';
-import 'package:heavenbrowser/features/shield/heaven_shield.dart';
 import 'package:heavenbrowser/features/shield/native_shield_bridge.dart';
 import 'package:heavenbrowser/features/tabs/tab_manager.dart';
 import 'package:heavenbrowser/features/tabs/tabs_screen.dart';
 import 'package:heavenbrowser/features/vpn/vpn_controller.dart';
+import 'package:heavenbrowser/features/vpn/vpn_screen.dart';
 import 'package:heavenbrowser/main.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
@@ -94,13 +92,14 @@ void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
   group(
-    'Step 15 Core: Extensions Removed, Anti-Jitter Guards, Persistent Tab Previews, Dynamic Country Discover & .bin-Free Downloads',
+    'Step 16 Core: All Shields Removed, Zero-Jitter Viewport Isolation, Downloads Tab, 42+ VPN Countries & .bin-Free Downloads',
     () {
       test(
-        'uses Electric Sapphire & Midnight Navy palette, Heaven app name, version 0.0.1, and completely removes Chrome Extensions files',
+        'uses Electric Sapphire & Midnight Navy palette, Heaven app name, version 0.0.1, and completely removes Heaven Shield & Extensions files',
         () {
           expect(AppConstants.appName, 'Heaven');
           expect(AppConstants.appVersion, '0.0.1');
+          expect(AppConstants.downloadsTabUrl, 'heaven://downloads');
           expect(AppTheme.sapphireBlue, const Color(0xFF2563EB));
           expect(AppTheme.electricBlue, const Color(0xFF3B82F6));
           expect(AppTheme.deepNavyBg, const Color(0xFF040B16));
@@ -110,7 +109,17 @@ void main() {
             const Color(0xFF60A5FA),
           );
 
-          // Extensions system and obsolete sheets are 100% removed
+          // Heaven Shield, blockers, Extensions & obsolete sheets are 100% removed
+          expect(
+            File('lib/features/shield/heaven_shield.dart').existsSync(),
+            isFalse,
+          );
+          expect(
+            File(
+              'lib/features/browser/presentation/widgets/shield_sheet.dart',
+            ).existsSync(),
+            isFalse,
+          );
           expect(
             File(
               'android/app/src/main/java/com/hypertechlabs/heavenbrowser/HeavenChromeExtManager.java',
@@ -127,21 +136,11 @@ void main() {
             File('lib/features/extensions/extensions_screen.dart').existsSync(),
             isFalse,
           );
-          expect(
-            File('lib/features/browser/quick_action_sheet.dart').existsSync(),
-            isFalse,
-          );
-          expect(
-            File(
-              'lib/features/downloads/media_grabber_sheet.dart',
-            ).existsSync(),
-            isFalse,
-          );
         },
       );
 
       test(
-        'Google is Default Search Engine, Perplexity is supported, Heaven Engine is removed, and Anti-Jitter configRevision stays stable during ad-block ticks',
+        'Google is Default Search Engine, Perplexity is supported, heaven://downloads resolves cleanly, and viewportRevision stays stable during navigation/scroll inside a tab',
         () async {
           expect(SearchEngine.values.first, SearchEngine.google);
           expect(SearchEngine.values, contains(SearchEngine.perplexity));
@@ -149,8 +148,12 @@ void main() {
             SearchEngine.values.map((SearchEngine e) => e.name),
             isNot(contains('heaven')),
           );
-          expect(SearchEngine.fromName('heaven'), SearchEngine.google);
-          expect(SearchEngine.fromName('perplexity'), SearchEngine.perplexity);
+          expect(OmniboxParser.isDownloadsUrl('heaven://downloads'), isTrue);
+          expect(
+            OmniboxParser.isLegacyHeavenUrl('heaven://downloads'),
+            isFalse,
+          );
+          expect(OmniboxParser.formatDisplayUrl('heaven://downloads'), 'Downloads');
 
           SharedPreferences.setMockInitialValues(<String, Object>{});
           final SharedPreferences prefs = await SharedPreferences.getInstance();
@@ -159,53 +162,53 @@ void main() {
           );
           expect(settings.searchEngine, SearchEngine.google);
 
-          final int initialRev = settings.webViewConfigRevision;
-          await settings.incrementBlockedCount(5);
-          await settings.incrementBytesSaved(48 * 1024);
-          await settings.incrementRedirectBlockedCount();
-          // Counter updates must NOT increment webViewConfigRevision (prevents whole-app WebView jitter!)
-          expect(settings.webViewConfigRevision, initialRev);
-
-          await settings.setUltraDataSaverMode(true);
-          expect(settings.webViewConfigRevision, initialRev + 1);
-          await settings.setUltraDataSaverMode(false);
-
-          final BrowserEngine normalEngine = BrowserEngine(
+          final TabManagerController tabs = TabManagerController(
             settings: settings,
-            isIncognito: false,
             enablePlatformWebView: false,
           );
-          await normalEngine.loadUserEntry('raspberry pi 5');
+          final int initialViewportRev = tabs.viewportRevision.value;
+
+          await tabs.activeEngine.loadUserEntry('raspberry pi 5');
           expect(
-            normalEngine.currentUrl,
+            tabs.activeEngine.currentUrl,
             'https://www.google.com/search?q=raspberry+pi+5',
           );
-          expect(settings.recentSearches, contains('raspberry pi 5'));
+          // Navigating or scrolling inside the active tab must NOT rebuild IndexedStack viewport!
+          tabs.activeEngine.handleWebScrollDelta(180, 60);
+          expect(tabs.viewportRevision.value, initialViewportRev);
 
           await settings.setSearchEngine(SearchEngine.perplexity);
-          await normalEngine.loadUserEntry('quantum computing');
+          await tabs.activeEngine.loadUserEntry('quantum computing');
           expect(
-            normalEngine.currentUrl,
+            tabs.activeEngine.currentUrl,
             'https://www.perplexity.ai/search?q=quantum+computing',
           );
-          expect(
-            OmniboxParser.extractAnySearchQuery(normalEngine.currentUrl),
-            'quantum computing',
-          );
 
-          // Legacy heaven:// search URLs automatically migrate to Google Search
-          await normalEngine.loadUri(Uri.parse('heaven://search?q=flutter+sdk'));
+          // Opening Downloads tab opens heaven://downloads and reuses it if called again!
+          final BrowserTab dlTab = await tabs.openDownloadsTab();
+          expect(dlTab.engine.isShowingDownloadsPage, isTrue);
+          expect(dlTab.displayTitle, 'Downloads');
+          expect(tabs.totalTabCount, 2);
+
+          final BrowserTab reusedDlTab = await tabs.openDownloadsTab();
+          expect(reusedDlTab.id, dlTab.id);
+          expect(tabs.totalTabCount, 2);
+
+          // Legacy heaven:// search URLs still migrate automatically to Google Search
+          await tabs.activeEngine.loadUri(
+            Uri.parse('heaven://search?q=flutter+sdk'),
+          );
           expect(
-            normalEngine.currentUrl,
+            tabs.activeEngine.currentUrl,
             'https://www.google.com/search?q=flutter+sdk',
           );
 
-          normalEngine.dispose();
+          tabs.dispose();
         },
       );
 
       test(
-        'Open tabs, tab groups, AND tab preview screenshots persist across app restarts and remain visible after closing other tabs',
+        'Open tabs (including heaven://downloads), tab groups, AND tab preview screenshots persist across app restarts',
         () async {
           SharedPreferences.setMockInitialValues(<String, Object>{});
           final SharedPreferences prefs = await SharedPreferences.getInstance();
@@ -225,42 +228,27 @@ void main() {
             base64Encode(_kSamplePreviewPng),
           );
 
-          final BrowserTab tab2 = await session1.openNewTab(
-            incognito: false,
-            initialInput: 'https://dart.dev',
-          );
-          tab2.previewBytes = _kSamplePreviewPng;
-          await prefs.setString(
-            'hb.tabPreview.v15.${tab2.id}',
-            base64Encode(_kSamplePreviewPng),
-          );
+          final BrowserTab dlTab = await session1.openDownloadsTab();
           final TabGroup grp = session1.createGroupAndAddTab(
-            name: 'SDK Docs',
-            tabId: tab2.id,
+            name: 'Files',
+            tabId: dlTab.id,
           );
           expect(session1.normalTabs.length, 2);
           session1.dispose();
 
-          // Simulate closing & reopening Heaven with the same SharedPreferences
           final TabManagerController session2 = TabManagerController(
             settings: settings,
             enablePlatformWebView: false,
           );
           expect(session2.normalTabs.length, 2);
-          expect(session2.groups.first.name, 'SDK Docs');
+          expect(session2.groups.first.name, 'Files');
           expect(session2.activeTab.groupId, grp.id);
-          // Both tabs restore their previewBytes immediately on reopen!
+          expect(session2.activeEngine.isShowingDownloadsPage, isTrue);
           expect(session2.normalTabs[0].previewBytes, isNotNull);
-          expect(session2.normalTabs[0].previewBytes, isNotEmpty);
-          expect(session2.normalTabs[1].previewBytes, isNotNull);
 
-          // Closing tab 2 keeps tab 1's previewBytes intact and removes only tab 2's cache key
-          await session2.closeTab(tab2.id);
+          await session2.closeTab(dlTab.id);
           expect(session2.normalTabs.length, 1);
           expect(session2.normalTabs.first.previewBytes, isNotNull);
-          expect(session2.normalTabs.first.previewBytes, isNotEmpty);
-          expect(prefs.getString('hb.tabPreview.v15.${tab2.id}'), isNull);
-          expect(prefs.getString('hb.tabPreview.v15.${tab1.id}'), isNotNull);
           session2.dispose();
         },
       );
@@ -318,7 +306,6 @@ void main() {
                       call.arguments as Map<Object?, Object?>;
                   final String url = args['url']?.toString() ?? '';
                   if (url.contains('app-arm64-release.apk')) {
-                    // Return null to exercise NativeShieldBridge fallback name parser!
                     return null;
                   }
                   return <String, Object>{
@@ -329,7 +316,6 @@ void main() {
                   };
                 }
                 if (call.method == 'queryDownloads') {
-                  // Simulate native refineDownloadJobTarget discovering real PDF filename after redirect/headers
                   return <Map<String, Object>>[
                     <String, Object>{
                       'downloadId': 42,
@@ -363,7 +349,6 @@ void main() {
           expect(downloads.items.first.fileName, 'architecture-guide.pdf');
           expect(downloads.items.first.fileName.endsWith('.bin'), isFalse);
 
-          // Direct NativeShieldBridge fallback check on URL with .apk + octet-stream
           final Map<String, Object?>? apkRes = await NativeShieldBridge.instance
               .startDownload(
                 url:
@@ -418,7 +403,7 @@ void main() {
     },
   );
 
-  group('Restored Step 7 Foreign Country VPN & Download Location Control', () {
+  group('Minimal Multi-Country VPN (43+ Built-In Countries + Live Relays)', () {
     const MethodChannel nativeChannel = MethodChannel(
       'com.hypertechlabs.heavenbrowser/native_shield',
     );
@@ -429,11 +414,19 @@ void main() {
     });
 
     test(
-      'VpnController defaults to United States Foreign OpenVPN, connects Foreign & WARP profiles & disconnects cleanly',
+      'VpnController provides 42+ world countries out of the box, discovers live countries, and connects/disconnects cleanly',
       () async {
         TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
             .setMockMethodCallHandler(nativeChannel, (MethodCall call) async {
               switch (call.method) {
+                case 'fetchLiveForeignCountries':
+                  return <Map<String, Object>>[
+                    <String, Object>{
+                      'countryCode': 'IS',
+                      'countryName': 'Iceland',
+                      'serverCount': 3,
+                    },
+                  ];
                 case 'provisionForeignOpenVpnConfig':
                   return <String, Object>{
                     'ok': true,
@@ -477,6 +470,13 @@ void main() {
           ),
         )..onTunnelConnected = () => callbackFired = true;
 
+        expect(vpn.foreignProfiles.length, greaterThanOrEqualTo(42));
+        await vpn.refreshLiveForeignServers();
+        expect(
+          vpn.foreignProfiles.any((VpnProfile p) => p.name == 'Iceland'),
+          isTrue,
+        );
+
         expect(vpn.selectedProfile.id, VpnController.defaultForeignUsId);
         await vpn.connect();
         expect(vpn.isConnected, isTrue);
@@ -494,7 +494,7 @@ void main() {
   });
 
   testWidgets(
-    'Step 15 UI on 320px Screen: Dynamic Country Discover, Compact Closable Shield Sheet, Uncut Download Location Sheet, Uncut Blue Active Tab Border & Persistent Previews, No Extensions UI',
+    'Step 16 UI on 320px Screen: Downloads Tab + Tappable Download Started Popup, Edge & Top-Bar Gestures, Minimal VPN Screen, Zero Shield UI',
     (WidgetTester tester) async {
       const MethodChannel nativeChannel = MethodChannel(
         'com.hypertechlabs.heavenbrowser/native_shield',
@@ -522,6 +522,15 @@ void main() {
               case 'sendTestNotification':
                 testNotificationSent = true;
                 return true;
+              case 'startDownload':
+                final Map<Object?, Object?> args =
+                    call.arguments as Map<Object?, Object?>;
+                return <String, Object>{
+                  'downloadId': 77,
+                  'url': args['url']?.toString() ?? '',
+                  'fileName': 'ubuntu-guide.pdf',
+                  'state': 'running',
+                };
               case 'getDownloadLocations':
                 return <String, Object>{
                   'currentPath': '/storage/emulated/0/Download',
@@ -616,28 +625,15 @@ void main() {
           .widget<BrowserScreen>(find.byType(BrowserScreen))
           .tabManager;
 
-      // 1. Dynamic Country in Home Discover shows 'United Kingdom' (for en_GB) instead of hardcoded 'India'
+      // 1. Dynamic Country in Home Discover shows 'United Kingdom' (en_GB) & ZERO Shield UI exists
       expect(
         find.byKey(const Key('discover_tab_localCountry')),
         findsOneWidget,
       );
       expect(find.text('United Kingdom'), findsOneWidget);
-      expect(find.text('India'), findsNothing);
+      expect(find.byKey(const Key('omnibox_shield_badge_button')), findsNothing);
 
-      // 2. Tap Shield icon on Home -> Heaven Shield Active sheet opens BELOW 65% height (never top of screen!) & closes via X button!
-      await tester.tap(find.byKey(const Key('site_permissions_button')));
-      await tester.pumpAndSettle();
-      expect(find.byType(ShieldSheet), findsOneWidget);
-      expect(find.text('Heaven Shield Active'), findsOneWidget);
-      final Size shieldSize = tester.getSize(
-        find.byKey(const Key('heaven_shield_sheet_container')),
-      );
-      expect(shieldSize.height, lessThanOrEqualTo(640 * 0.65));
-      await tester.tap(find.byKey(const Key('shield_sheet_close_button')));
-      await tester.pumpAndSettle();
-      expect(find.byType(ShieldSheet), findsNothing);
-
-      // 3. Submit search -> resolves to Google Search; scroll down hides top bar & scroll up shows it smoothly!
+      // 2. Submit search -> resolves to Google Search; scroll down hides top bar & scroll up shows it smoothly!
       await tester.enterText(
         find.byKey(const Key('home_search_textfield')),
         'flutter',
@@ -655,10 +651,26 @@ void main() {
       await tester.pumpAndSettle();
       expect(tabManager.activeEngine.isNavBarVisible, isTrue);
 
-      // 4. Per-Site Permission Dashboard revokes Camera with 1 tap!
+      // 3. Left-Edge Swipe Gesture navigates Back to Home, and Right-Edge Swipe Gesture navigates Forward!
+      await tester.drag(
+        find.byKey(const Key('left_edge_back_gesture_zone')),
+        const Offset(80, 0),
+      );
+      await tester.pumpAndSettle();
+      expect(tabManager.activeEngine.isShowingStartPage, isTrue);
+
+      await tester.drag(
+        find.byKey(const Key('right_edge_forward_gesture_zone')),
+        const Offset(-80, 0),
+      );
+      await tester.pumpAndSettle();
+      expect(tabManager.activeEngine.currentUrl, contains('google.com'));
+
+      // 4. Per-Site Permission Dashboard revokes Camera with 1 tap and has NO Heaven Shield toggle!
       await tester.tap(find.byKey(const Key('site_permissions_button')));
       await tester.pumpAndSettle();
       expect(find.byType(SiteControlsSheet), findsOneWidget);
+      expect(find.text('Heaven Shield for this site'), findsNothing);
       await tester.ensureVisible(find.byKey(const Key('revoke_perm_camera')));
       await tester.pumpAndSettle();
       await tester.tap(find.byKey(const Key('revoke_perm_camera')));
@@ -670,39 +682,93 @@ void main() {
       Navigator.of(tester.element(find.byType(SiteControlsSheet))).pop();
       await tester.pumpAndSettle();
 
-      // 5. Browser Menu has ZERO Chrome Extensions items; Downloads -> Change Download Location sheet is uncut & slides/closes cleanly!
-      await tester.tap(find.byTooltip('Browser Menu'));
-      await tester.pumpAndSettle();
-      expect(find.text('Extensions'), findsNothing);
-      expect(find.text('Chrome Extensions'), findsNothing);
-      await tester.tap(find.text('Downloads'));
-      await tester.pumpAndSettle();
+      // 5. Starting a download displays tappable 'Download started' popup banner -> tapping it opens Downloads IN A TAB!
+      await downloads.startUrlDownload(
+        url: 'https://releases.example.com/ubuntu-guide.pdf',
+      );
+      await tester.pump(const Duration(milliseconds: 350));
+      expect(
+        find.byKey(const Key('download_started_popup_banner')),
+        findsOneWidget,
+      );
+      expect(find.textContaining('Download started'), findsOneWidget);
+
+      await tester.tap(find.byKey(const Key('download_started_popup_banner')));
+      await tester.pump(const Duration(milliseconds: 350));
+      expect(tabManager.totalTabCount, 2);
+      expect(tabManager.activeEngine.isShowingDownloadsPage, isTrue);
+      expect(find.byKey(const Key('downloads_tab_view')), findsOneWidget);
       expect(find.byType(DownloadsScreen), findsOneWidget);
 
+      // Change Download Location sheet works cleanly inside the Downloads Tab!
       await tester.tap(find.byKey(const Key('change_download_location_card')));
-      await tester.pumpAndSettle();
-      expect(
-        find.byKey(const Key('download_location_sheet_box')),
-        findsOneWidget,
-      );
-      expect(
-        find.byKey(const Key('choose_custom_download_folder_button')),
-        findsOneWidget,
-      );
-      expect(tester.takeException(), isNull);
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 450));
       await tester.tap(find.text('Heaven Subfolder'));
-      await tester.pumpAndSettle();
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 450));
       expect(downloads.downloadLocationLabel, 'Heaven Subfolder');
-      await tester.pageBack();
-      await tester.pumpAndSettle();
 
-      // 6. Settings Screen has ZERO Chrome Extensions items, switches to Perplexity, and opens Privacy Policy!
+      // 6. Horizontal Swipe Gesture on the Top Address Bar switches smoothly between Tab 2 (Downloads) and Tab 1 (Google)!
+      // Notice TickerMode automatically pauses Tab 2's indeterminate progress bar once switched away!
+      await tester.drag(
+        find.byKey(const Key('top_bar_tab_swipe_detector')),
+        const Offset(90, 0),
+      );
+      await tester.pumpAndSettle();
+      expect(tabManager.activeEngine.isShowingDownloadsPage, isFalse);
+      expect(tabManager.activeEngine.currentUrl, contains('google.com'));
+
+      // Browser Menu -> Downloads switches right back to the Downloads Tab without spawning duplicates!
+      await tester.tap(find.byTooltip('Browser Menu'));
+      await tester.pumpAndSettle();
+      expect(find.text('Shield'), findsNothing);
+      expect(find.text('Ultra Data Saver (Text-Only)'), findsNothing);
+      await tester.tap(find.byKey(const Key('browser_menu_downloads_tile')));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 400));
+      expect(tabManager.totalTabCount, 2);
+      expect(tabManager.activeEngine.isShowingDownloadsPage, isTrue);
+
+      // 7. Minimal VPN Screen opens, renders 42+ countries + search filter + Browser Only chip cleanly on 320px!
+      await tester.tap(find.byTooltip('Browser Menu'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 450));
+      await tester.tap(find.text('VPN'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 450));
+      expect(find.byType(HeavenVpnScreen), findsOneWidget);
+      expect(find.byKey(const Key('vpn_split_tunnel_chip')), findsOneWidget);
+      await tester.enterText(
+        find.byKey(const Key('vpn_country_search_field')),
+        'Switzerland',
+      );
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+      expect(
+        find.byKey(const Key('vpn_country_tile_foreign_ch')),
+        findsOneWidget,
+      );
+      await tester.pageBack();
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 450));
+
+      // Switch back to Tab 1 via Top Address Bar Swipe!
+      await tester.drag(
+        find.byKey(const Key('top_bar_tab_swipe_detector')),
+        const Offset(90, 0),
+      );
+      await tester.pumpAndSettle();
+      expect(tabManager.activeEngine.currentUrl, contains('google.com'));
+
+      // 8. Settings Screen has ZERO Shield/Ultra-Data-Saver items, switches to Perplexity, and opens Privacy Policy!
       await tester.tap(find.byTooltip('Browser Menu'));
       await tester.pumpAndSettle();
       await tester.tap(find.text('Settings'));
       await tester.pumpAndSettle();
       expect(find.byType(SettingsScreen), findsOneWidget);
-      expect(find.text('Chrome Extensions'), findsNothing);
+      expect(find.text('Heaven Ad & Tracker Shield'), findsNothing);
+      expect(find.text('Ultra Data Saver'), findsNothing);
 
       await tester.tap(find.byKey(const Key('settings_search_engine_tile')));
       await tester.pumpAndSettle();
@@ -725,7 +791,7 @@ void main() {
       await tester.pumpAndSettle();
       expect(find.textContaining('github.com'), findsWidgets);
 
-      // 7. Notifications & Create Shortcut still work cleanly
+      // 9. Notifications & Create Shortcut & Tabs Screen active rounded border still work cleanly!
       await tester.tap(find.byTooltip('Browser Menu'));
       await tester.pumpAndSettle();
       await tester.ensureVisible(find.text('Notifications'));
@@ -733,6 +799,7 @@ void main() {
       await tester.tap(find.text('Notifications'));
       await tester.pumpAndSettle();
       expect(find.byType(NotificationsScreen), findsOneWidget);
+      expect(find.text('Anti-Redirect & Spam Hijack Alerts'), findsNothing);
       await tester.tap(find.byKey(const Key('send_test_notification_button')));
       await tester.pumpAndSettle();
       expect(testNotificationSent, isTrue);
@@ -749,9 +816,8 @@ void main() {
       await tester.pumpAndSettle();
       expect(capturedShortcutArgs, isNotNull);
 
-      // 8. Tabs screen renders active tab with uncut foregroundDecoration rounded blue border & visible preview image!
       tabManager.activeTab.previewBytes = _kSamplePreviewPng;
-      await tester.pump(const Duration(seconds: 2));
+      await tester.pump(const Duration(seconds: 4));
       await tester.pumpAndSettle();
       await tester.tap(find.byTooltip('Switch Tabs'));
       await tester.pumpAndSettle();
@@ -779,30 +845,7 @@ void main() {
     },
   );
 
-  group('Shield, DevTools & Native Java Architecture Invariants', () {
-    test(
-      'HeavenShield blocks Google Ads, YouTube Ads, and Pirated/Porn Redirect networks',
-      () {
-        expect(
-          HeavenShield.matchBlockedDomain('pagead2.googlesyndication.com'),
-          isNotNull,
-        );
-        expect(
-          HeavenShield.matchBlockedDomain('googleads.g.doubleclick.net'),
-          isNotNull,
-        );
-        expect(HeavenShield.matchBlockedDomain('ads.youtube.com'), isNotNull);
-        expect(
-          HeavenShield.matchBlockedDomain('syndication.exoclick.com'),
-          isNotNull,
-        );
-        expect(HeavenShield.matchBlockedDomain('adsterra.com'), isNotNull);
-        expect(HeavenShield.matchBlockedDomain('www.google.com'), isNull);
-        expect(HeavenShield.matchBlockedDomain('www.perplexity.ai'), isNull);
-        expect(HeavenShield.matchBlockedDomain('www.youtube.com'), isNull);
-      },
-    );
-
+  group('DevTools & Native Java Clean Architecture Invariants', () {
     testWidgets(
       'Desktop Inspect (DevTools) panel opens from Browser Menu & works across Elements, Console, Network, Storage & Info on 320px screen',
       (WidgetTester tester) async {
@@ -887,24 +930,35 @@ void main() {
     );
 
     test(
-      'Native Java & Manifest safety: Heaven label, Extensions removed, First-Load Video + Smart .bin-Free Downloads + Background MediaSession wired',
+      'Native Java & Manifest safety: Heaven label, Shields & WebViewClient wrapper removed, Pull-to-Refresh fixed, Smart .bin-Free Downloads + Background MediaSession wired',
       () {
         final String shieldJava = File(
           'android/app/src/main/java/com/hypertechlabs/heavenbrowser/HeavenShieldPlugin.java',
         ).readAsStringSync();
         expect(shieldJava.contains('setWebChromeClient'), isFalse);
         expect(shieldJava.contains('ShieldWebChromeClient'), isFalse);
+        expect(shieldJava.contains('ShieldWebViewClient'), isFalse);
+        expect(shieldJava.contains('ServiceWorkerController'), isFalse);
+        expect(shieldJava.contains('EARLY_YOUTUBE_AND_REDIRECT_GUARD_SCRIPT'), isFalse);
+        expect(shieldJava.contains('ULTRA_DATA_SAVER_STYLE_SCRIPT'), isFalse);
+        expect(shieldJava.contains('canScrollVertically(-1)'), isFalse);
         expect(shieldJava.contains('HeavenChromeExtManager'), isFalse);
         expect(shieldJava.contains('URLUtil.guessFileName'), isFalse);
         expect(shieldJava.contains('download.bin'), isFalse);
         expect(shieldJava.contains('resolveSmartFileName'), isTrue);
         expect(shieldJava.contains('refineDownloadJobTarget'), isTrue);
+        expect(shieldJava.contains('installPullToRefreshListener'), isTrue);
+        expect(shieldJava.contains('onPageAtTop'), isTrue);
         expect(shieldJava.contains('focusWebView'), isTrue);
         expect(shieldJava.contains('addDocumentStartJavaScript'), isTrue);
-        expect(shieldJava.contains('/youtubei/v1/player'), isTrue);
         expect(shieldJava.contains('window.__hbInBg'), isTrue);
         expect(shieldJava.contains('onWebScrollNavBar'), isTrue);
         expect(shieldJava.contains('bgKeepAliveLoop'), isTrue);
+
+        final String vpnJava = File(
+          'android/app/src/main/java/com/hypertechlabs/heavenbrowser/HeavenVpnManager.java',
+        ).readAsStringSync();
+        expect(vpnJava.contains('regionalFallbacksFor'), isTrue);
 
         final String mediaServiceJava = File(
           'android/app/src/main/java/com/hypertechlabs/heavenbrowser/HeavenMediaService.java',

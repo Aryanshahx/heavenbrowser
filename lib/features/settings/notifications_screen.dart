@@ -277,23 +277,6 @@ class _NotificationsScreenState extends State<NotificationsScreen>
                   children: <Widget>[
                     SwitchListTile.adaptive(
                       secondary: Icon(
-                        Icons.gpp_good_rounded,
-                        color: colors.primary,
-                      ),
-                      title: const Text(
-                        'Anti-Redirect & Spam Hijack Alerts',
-                        style: TextStyle(fontWeight: FontWeight.w700),
-                      ),
-                      subtitle: const Text(
-                        'Show banner when Heaven blocks Play Store or ad hijacks',
-                        style: TextStyle(fontSize: 12),
-                      ),
-                      value: widget.settings.securityRedirectAlertsEnabled,
-                      onChanged: widget.settings.setSecurityRedirectAlertsEnabled,
-                    ),
-                    const Divider(height: 1),
-                    SwitchListTile.adaptive(
-                      secondary: Icon(
                         Icons.language_rounded,
                         color: colors.primary,
                       ),

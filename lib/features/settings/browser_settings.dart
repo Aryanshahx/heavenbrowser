@@ -162,9 +162,6 @@ class HistoryItem {
 class BrowserSettingsController extends ChangeNotifier {
   BrowserSettingsController(this._prefs) {
     _load();
-    NativeShieldBridge.instance.onBytesSaved = (int bytes) {
-      unawaited(incrementBytesSaved(bytes));
-    };
   }
 
   final SharedPreferences _prefs;
@@ -172,7 +169,6 @@ class BrowserSettingsController extends ChangeNotifier {
   static const String _keySearchEngine = 'hb.searchEngine.v13';
   static const String _legacyKeySearchEngine = 'hb.searchEngine.v3';
   static const String _keyThemeMode = 'hb.themeMode.v3';
-  static const String _keyShieldEnabled = 'hb.shieldEnabled';
   static const String _keyHttpsUpgrade = 'hb.httpsUpgrade';
   static const String _keyBlockThirdPartyCookies = 'hb.blockThirdPartyCookies';
   static const String _keySendDntGpc = 'hb.sendDntGpc';
@@ -180,23 +176,16 @@ class BrowserSettingsController extends ChangeNotifier {
   static const String _keyJavascriptEnabled = 'hb.javascriptEnabled';
   static const String _keyDesktopMode = 'hb.desktopMode';
   static const String _keyTextScalePercent = 'hb.textScalePercent';
-  static const String _keyTotalBlocked = 'hb.totalBlocked';
-  static const String _keyBytesSaved = 'hb.bytesSaved.v13';
-  static const String _keyRedirectsBlocked = 'hb.redirectsBlocked.v13';
-  static const String _keyTrustedHosts = 'hb.trustedHosts';
   static const String _keyJsDisabledHosts = 'hb.jsDisabledHosts.v8';
   static const String _keyPopupAllowedHosts = 'hb.popupAllowedHosts.v8';
   static const String _keySitePermissions = 'hb.sitePermissions.v13';
   static const String _keyRecentSearches = 'hb.recentSearches.v8';
   static const String _keyLanguage = 'hb.language.v8';
-  static const String _keyUltraDataSaver = 'hb.ultraDataSaver.v13';
   static const String _keyBgMedia = 'hb.bgMedia.v13';
   static const String _keyBiometricIncognito = 'hb.biometricIncognito.v13';
   static const String _keyBiometricApp = 'hb.biometricApp.v13';
-  static const String _keyAntiRedirect = 'hb.antiRedirect.v13';
   static const String _keyDownloadNotifs = 'hb.downloadNotifs.v8';
   static const String _keyBgPlayNotifs = 'hb.bgPlayNotifs.v13';
-  static const String _keySecurityAlertNotifs = 'hb.securityAlertNotifs.v13';
   static const String _keyWebNotifs = 'hb.webNotifs.v8';
   static const String _keySiteUsage = 'hb.siteUsage.v3';
   static const String _keyHiddenDomains = 'hb.hiddenQuickDomains.v3';
@@ -207,28 +196,20 @@ class BrowserSettingsController extends ChangeNotifier {
   SearchEngine _searchEngine = SearchEngine.google;
   ThemeMode _themeMode = ThemeMode.dark;
   BrowserLanguage _language = BrowserLanguage.en;
-  bool _shieldEnabled = true;
   bool _httpsUpgrade = true;
   bool _blockThirdPartyCookies = true;
   bool _sendDntAndGpc = true;
   bool _clearOnExit = false;
   bool _javascriptEnabled = true;
   bool _desktopMode = false;
-  bool _ultraDataSaverMode = false;
   bool _backgroundMediaEnabled = true;
   bool _biometricLockIncognito = false;
   bool _biometricLockApp = false;
-  bool _antiRedirectProtection = true;
   bool _downloadNotificationsEnabled = true;
   bool _backgroundPlayNotificationEnabled = true;
-  bool _securityRedirectAlertsEnabled = true;
   bool _webNotificationsEnabled = false;
   int _textScalePercent = 100;
-  int _totalTrackersBlocked = 0;
-  int _estimatedBytesSaved = 0;
-  int _antiRedirectsBlockedCount = 0;
 
-  final Set<String> _trustedHosts = <String>{};
   final Set<String> _jsDisabledHosts = <String>{};
   final Set<String> _popupAllowedHosts = <String>{};
   final Map<String, Map<SitePermissionType, SitePermissionDecision>>
@@ -247,44 +228,24 @@ class BrowserSettingsController extends ChangeNotifier {
   SearchEngine get searchEngine => _searchEngine;
   ThemeMode get themeMode => _themeMode;
   BrowserLanguage get language => _language;
-  bool get shieldEnabled => _shieldEnabled;
   bool get httpsUpgrade => _httpsUpgrade;
   bool get blockThirdPartyCookies => _blockThirdPartyCookies;
   bool get sendDntAndGpc => _sendDntAndGpc;
   bool get clearOnExit => _clearOnExit;
   bool get javascriptEnabled => _javascriptEnabled;
   bool get desktopMode => _desktopMode;
-  bool get ultraDataSaverMode => _ultraDataSaverMode;
   bool get backgroundMediaEnabled => _backgroundMediaEnabled;
   bool get biometricLockIncognito => _biometricLockIncognito;
   bool get biometricLockApp => _biometricLockApp;
-  bool get antiRedirectProtection => _antiRedirectProtection;
   bool get downloadNotificationsEnabled => _downloadNotificationsEnabled;
   bool get backgroundPlayNotificationEnabled =>
       _backgroundPlayNotificationEnabled;
-  bool get securityRedirectAlertsEnabled => _securityRedirectAlertsEnabled;
   bool get webNotificationsEnabled => _webNotificationsEnabled;
   int get textScalePercent => _textScalePercent;
-  int get totalTrackersBlocked => _totalTrackersBlocked;
-  int get estimatedBytesSaved => _estimatedBytesSaved;
-  int get antiRedirectsBlockedCount => _antiRedirectsBlockedCount;
-  Set<String> get trustedHosts => Set<String>.unmodifiable(_trustedHosts);
   List<String> get recentSearches => List<String>.unmodifiable(_recentSearches);
   List<BookmarkItem> get bookmarks =>
       List<BookmarkItem>.unmodifiable(_bookmarks);
   List<HistoryItem> get history => List<HistoryItem>.unmodifiable(_history);
-
-  String get formattedDataSaved {
-    final int b = _estimatedBytesSaved;
-    if (b <= 0) return '0 KB';
-    if (b < 1024 * 1024) {
-      return '${(b / 1024).toStringAsFixed(1)} KB';
-    }
-    if (b < 1024 * 1024 * 1024) {
-      return '${(b / (1024 * 1024)).toStringAsFixed(1)} MB';
-    }
-    return '${(b / (1024 * 1024 * 1024)).toStringAsFixed(2)} GB';
-  }
 
   List<SiteUsageEntry> get quickLaunchSites {
     final List<SiteUsageEntry> pinned = <SiteUsageEntry>[];
@@ -328,7 +289,6 @@ class BrowserSettingsController extends ChangeNotifier {
       'system' => ThemeMode.system,
       _ => ThemeMode.dark,
     };
-    _shieldEnabled = _prefs.getBool(_keyShieldEnabled) ?? true;
     _httpsUpgrade = _prefs.getBool(_keyHttpsUpgrade) ?? true;
     _blockThirdPartyCookies =
         _prefs.getBool(_keyBlockThirdPartyCookies) ?? true;
@@ -340,22 +300,15 @@ class BrowserSettingsController extends ChangeNotifier {
       75,
       175,
     );
-    _totalTrackersBlocked = _prefs.getInt(_keyTotalBlocked) ?? 0;
-    _estimatedBytesSaved = _prefs.getInt(_keyBytesSaved) ?? 0;
-    _antiRedirectsBlockedCount = _prefs.getInt(_keyRedirectsBlocked) ?? 0;
     _language = BrowserLanguage.fromCode(_prefs.getString(_keyLanguage));
-    _ultraDataSaverMode = _prefs.getBool(_keyUltraDataSaver) ?? false;
     _backgroundMediaEnabled = _prefs.getBool(_keyBgMedia) ?? true;
     _biometricLockIncognito =
         _prefs.getBool(_keyBiometricIncognito) ?? false;
     _biometricLockApp = _prefs.getBool(_keyBiometricApp) ?? false;
-    _antiRedirectProtection = _prefs.getBool(_keyAntiRedirect) ?? true;
     _downloadNotificationsEnabled =
         _prefs.getBool(_keyDownloadNotifs) ?? true;
     _backgroundPlayNotificationEnabled =
         _prefs.getBool(_keyBgPlayNotifs) ?? true;
-    _securityRedirectAlertsEnabled =
-        _prefs.getBool(_keySecurityAlertNotifs) ?? true;
     _webNotificationsEnabled = _prefs.getBool(_keyWebNotifs) ?? false;
 
     final List<String>? savedJsDisabled = _prefs.getStringList(
@@ -410,13 +363,6 @@ class BrowserSettingsController extends ChangeNotifier {
           .where((String s) => s.isNotEmpty)
           .take(15)
           .toList();
-    }
-
-    final List<String>? savedTrusted = _prefs.getStringList(_keyTrustedHosts);
-    if (savedTrusted != null) {
-      _trustedHosts
-        ..clear()
-        ..addAll(savedTrusted);
     }
 
     final List<String>? hidden = _prefs.getStringList(_keyHiddenDomains);
@@ -477,42 +423,16 @@ class BrowserSettingsController extends ChangeNotifier {
       }
     }
 
-    _pushNativeShieldConfig();
+    _pushNativeBrowserConfig();
   }
 
-  void _pushNativeShieldConfig() {
-    NativeShieldBridge.instance.syncShieldConfig(
-      shieldEnabled: _shieldEnabled,
+  void _pushNativeBrowserConfig() {
+    NativeShieldBridge.instance.syncBrowserConfig(
       desktopMode: _desktopMode,
-      trustedHosts: _trustedHosts,
-      sendDntAndGpc: _sendDntAndGpc,
-      ultraDataSaverMode: _ultraDataSaverMode,
       backgroundMediaEnabled: _backgroundMediaEnabled,
-      antiRedirectProtection: _antiRedirectProtection,
       webNotificationsEnabled: _webNotificationsEnabled,
       backgroundPlayNotificationEnabled: _backgroundPlayNotificationEnabled,
     );
-  }
-
-  bool isHostTrusted(String? host) {
-    if (host == null || host.isEmpty) {
-      return false;
-    }
-    return _trustedHosts.contains(OmniboxParser.cleanDomain(host));
-  }
-
-  Future<void> toggleHostTrust(String host) async {
-    final String normalized = OmniboxParser.cleanDomain(host);
-    if (normalized.isEmpty) {
-      return;
-    }
-    if (!_trustedHosts.remove(normalized)) {
-      _trustedHosts.add(normalized);
-    }
-    await _prefs.setStringList(_keyTrustedHosts, _trustedHosts.toList());
-    _webViewConfigRevision += 1;
-    _pushNativeShieldConfig();
-    notifyListeners();
   }
 
   SitePermissionDecision getSitePermission(
@@ -846,49 +766,6 @@ class BrowserSettingsController extends ChangeNotifier {
     await _prefs.setString(_keyHistory, encoded);
   }
 
-  int _lastBlockedNotifyMs = 0;
-
-  Future<void> incrementBlockedCount([
-    int delta = 1,
-    int bytesSavedDelta = 14200,
-  ]) async {
-    if (delta <= 0) {
-      return;
-    }
-    _totalTrackersBlocked += delta;
-    if (bytesSavedDelta > 0) {
-      _estimatedBytesSaved += bytesSavedDelta;
-      await _prefs.setInt(_keyBytesSaved, _estimatedBytesSaved);
-    }
-    await _prefs.setInt(_keyTotalBlocked, _totalTrackersBlocked);
-    final int now = DateTime.now().millisecondsSinceEpoch;
-    if (now - _lastBlockedNotifyMs >= 1100) {
-      _lastBlockedNotifyMs = now;
-      notifyListeners();
-    }
-  }
-
-  Future<void> incrementBytesSaved(int bytes) async {
-    if (bytes <= 0) return;
-    _estimatedBytesSaved += bytes;
-    await _prefs.setInt(_keyBytesSaved, _estimatedBytesSaved);
-    final int now = DateTime.now().millisecondsSinceEpoch;
-    if (now - _lastBlockedNotifyMs >= 1100) {
-      _lastBlockedNotifyMs = now;
-      notifyListeners();
-    }
-  }
-
-  Future<void> incrementRedirectBlockedCount() async {
-    _antiRedirectsBlockedCount += 1;
-    await _prefs.setInt(_keyRedirectsBlocked, _antiRedirectsBlockedCount);
-    final int now = DateTime.now().millisecondsSinceEpoch;
-    if (now - _lastBlockedNotifyMs >= 900) {
-      _lastBlockedNotifyMs = now;
-      notifyListeners();
-    }
-  }
-
   Future<void> setSearchEngine(SearchEngine engine) async {
     _searchEngine = engine;
     await _prefs.setString(_keySearchEngine, engine.name);
@@ -906,18 +783,10 @@ class BrowserSettingsController extends ChangeNotifier {
     notifyListeners();
   }
 
-  Future<void> setUltraDataSaverMode(bool value) async {
-    _ultraDataSaverMode = value;
-    _webViewConfigRevision += 1;
-    await _prefs.setBool(_keyUltraDataSaver, value);
-    _pushNativeShieldConfig();
-    notifyListeners();
-  }
-
   Future<void> setBackgroundMediaEnabled(bool value) async {
     _backgroundMediaEnabled = value;
     await _prefs.setBool(_keyBgMedia, value);
-    _pushNativeShieldConfig();
+    _pushNativeBrowserConfig();
     notifyListeners();
   }
 
@@ -930,21 +799,6 @@ class BrowserSettingsController extends ChangeNotifier {
   Future<void> setBiometricLockApp(bool value) async {
     _biometricLockApp = value;
     await _prefs.setBool(_keyBiometricApp, value);
-    notifyListeners();
-  }
-
-  Future<void> setAntiRedirectProtection(bool value) async {
-    _antiRedirectProtection = value;
-    await _prefs.setBool(_keyAntiRedirect, value);
-    _pushNativeShieldConfig();
-    notifyListeners();
-  }
-
-  Future<void> setShieldEnabled(bool value) async {
-    _shieldEnabled = value;
-    _webViewConfigRevision += 1;
-    await _prefs.setBool(_keyShieldEnabled, value);
-    _pushNativeShieldConfig();
     notifyListeners();
   }
 
@@ -964,7 +818,6 @@ class BrowserSettingsController extends ChangeNotifier {
   Future<void> setSendDntAndGpc(bool value) async {
     _sendDntAndGpc = value;
     await _prefs.setBool(_keySendDntGpc, value);
-    _pushNativeShieldConfig();
     notifyListeners();
   }
 
@@ -985,7 +838,7 @@ class BrowserSettingsController extends ChangeNotifier {
     _desktopMode = value;
     _webViewConfigRevision += 1;
     await _prefs.setBool(_keyDesktopMode, value);
-    _pushNativeShieldConfig();
+    _pushNativeBrowserConfig();
     notifyListeners();
   }
 
@@ -1013,20 +866,14 @@ class BrowserSettingsController extends ChangeNotifier {
   Future<void> setBackgroundPlayNotificationEnabled(bool value) async {
     _backgroundPlayNotificationEnabled = value;
     await _prefs.setBool(_keyBgPlayNotifs, value);
-    _pushNativeShieldConfig();
-    notifyListeners();
-  }
-
-  Future<void> setSecurityRedirectAlertsEnabled(bool value) async {
-    _securityRedirectAlertsEnabled = value;
-    await _prefs.setBool(_keySecurityAlertNotifs, value);
+    _pushNativeBrowserConfig();
     notifyListeners();
   }
 
   Future<void> setWebNotificationsEnabled(bool value) async {
     _webNotificationsEnabled = value;
     await _prefs.setBool(_keyWebNotifs, value);
-    _pushNativeShieldConfig();
+    _pushNativeBrowserConfig();
     notifyListeners();
   }
 
