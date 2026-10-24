@@ -9,10 +9,12 @@ class DownloadsScreen extends StatelessWidget {
     super.key,
     required this.downloads,
     this.embeddedInTab = false,
+    this.topOverlayInset = 0,
   });
 
   final DownloadsController downloads;
   final bool embeddedInTab;
+  final double topOverlayInset;
 
   List<Widget> _buildHeaderActions(BuildContext context) {
     return <Widget>[
@@ -59,7 +61,12 @@ class DownloadsScreen extends StatelessWidget {
           children: <Widget>[
             if (embeddedInTab)
               Padding(
-                padding: const EdgeInsets.fromLTRB(16, 10, 8, 2),
+                padding: EdgeInsets.fromLTRB(
+                  16,
+                  10 + topOverlayInset,
+                  8,
+                  2,
+                ),
                 child: Row(
                   children: <Widget>[
                     Container(

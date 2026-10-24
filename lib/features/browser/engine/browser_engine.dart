@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/foundation.dart';
+import 'package:http/http.dart' as http;
 import 'package:url_launcher/url_launcher.dart';
 import 'package:webview_flutter/webview_flutter.dart';
 import 'package:webview_flutter_android/webview_flutter_android.dart';
@@ -12,6 +13,7 @@ import '../../../core/utils/omnibox_parser.dart';
 import '../../devtools/devtools_models.dart';
 import '../../settings/browser_settings.dart';
 import '../../shield/native_shield_bridge.dart';
+import '../page_translate_reader_service.dart';
 
 class ReadableArticle {
   const ReadableArticle({
@@ -48,6 +50,13 @@ class BrowserEngine extends ChangeNotifier {
           ..clear()
           ..add(AppConstants.downloadsTabUrl);
         _virtualIndex = 0;
+      } else if (OmniboxParser.isWebStoreUrl(cleanInitialUrl)) {
+        _currentUrl = AppConstants.webStoreTabUrl;
+        _pageTitle = 'Heaven Web Store';
+        _virtualHistory
+          ..clear()
+          ..add(AppConstants.webStoreTabUrl);
+        _virtualIndex = 0;
       } else {
         _currentUrl = cleanInitialUrl;
         _lastCompletedWebUrl = cleanInitialUrl;
@@ -65,7 +74,8 @@ class BrowserEngine extends ChangeNotifier {
       _initializeController();
       if (_currentUrl != null &&
           _currentUrl!.isNotEmpty &&
-          !isShowingDownloadsPage) {
+          !isShowingDownloadsPage &&
+          !isShowingWebStorePage) {
         final Uri? restoredUri = Uri.tryParse(_currentUrl!);
         if (restoredUri != null) {
           unawaited(_loadRestoredUri(restoredUri));
@@ -105,6 +115,11 @@ class BrowserEngine extends ChangeNotifier {
   bool _isMediaPlaying = false;
   String _playingMediaTitle = '';
 
+  // Live Instant Page Translate state
+  bool _isPageTranslated = false;
+  bool _isTranslatingPage = false;
+  String? _translatedLangCode;
+
   // Cached WebView configuration state (prevents redundant setInitialScale/UA resets & glitching!)
   bool? _appliedAllowJs;
   String? _appliedUserAgent;
@@ -127,10 +142,17 @@ class BrowserEngine extends ChangeNotifier {
   String? get currentUrl => _currentUrl;
   bool get isShowingStartPage => _currentUrl == null || _currentUrl!.isEmpty;
   bool get isShowingDownloadsPage => OmniboxParser.isDownloadsUrl(_currentUrl);
-  bool get isShowingWebPage => !isShowingStartPage && !isShowingDownloadsPage;
+  bool get isShowingWebStorePage => OmniboxParser.isWebStoreUrl(_currentUrl);
+  bool get isShowingWebPage =>
+      !isShowingStartPage &&
+      !isShowingDownloadsPage &&
+      !isShowingWebStorePage;
   bool get isNavBarVisible => _isNavBarVisible || isShowingDownloadsPage;
   bool get isMediaPlaying => _isMediaPlaying;
   String get playingMediaTitle => _playingMediaTitle;
+  bool get isPageTranslated => _isPageTranslated;
+  bool get isTranslatingPage => _isTranslatingPage;
+  String? get translatedLangCode => _translatedLangCode;
 
   List<DevToolsConsoleEntry> get consoleEntries =>
       List<DevToolsConsoleEntry>.unmodifiable(_consoleEntries);
@@ -157,6 +179,7 @@ class BrowserEngine extends ChangeNotifier {
 
   bool get isSecure =>
       isShowingDownloadsPage ||
+      isShowingWebStorePage ||
       (_currentUrl != null && _currentUrl!.startsWith('https://'));
 
   String? get currentHost {
@@ -643,6 +666,11 @@ class BrowserEngine extends ChangeNotifier {
       return NavigationDecision.prevent;
     }
 
+    if (OmniboxParser.isWebStoreUrl(request.url)) {
+      openWebStorePage();
+      return NavigationDecision.prevent;
+    }
+
     if (uri.scheme == 'about' || uri.scheme == 'data' || uri.scheme == 'blob') {
       return NavigationDecision.navigate;
     }
@@ -883,6 +911,24 @@ class BrowserEngine extends ChangeNotifier {
     _pageTitle = 'Downloads';
     _isLoading = false;
     _isNavBarVisible = true;
+    _isPageTranslated = false;
+    _translatedLangCode = null;
+    _progress = 0;
+    _pullProgress = 0;
+    _errorMessage = null;
+    _webViewCanGoBack = false;
+    _webViewCanGoForward = false;
+    notifyListeners();
+  }
+
+  void openWebStorePage() {
+    _pushVirtualLocation(AppConstants.webStoreTabUrl);
+    _currentUrl = AppConstants.webStoreTabUrl;
+    _pageTitle = 'Heaven Web Store';
+    _isLoading = false;
+    _isNavBarVisible = true;
+    _isPageTranslated = false;
+    _translatedLangCode = null;
     _progress = 0;
     _pullProgress = 0;
     _errorMessage = null;
@@ -895,6 +941,10 @@ class BrowserEngine extends ChangeNotifier {
     final String trimmed = rawInput.trim();
     if (OmniboxParser.isDownloadsUrl(trimmed)) {
       openDownloadsPage();
+      return;
+    }
+    if (OmniboxParser.isWebStoreUrl(trimmed)) {
+      openWebStorePage();
       return;
     }
     if (!isIncognito &&
@@ -915,9 +965,15 @@ class BrowserEngine extends ChangeNotifier {
       openDownloadsPage();
       return;
     }
+    if (OmniboxParser.isWebStoreUrl(uri.toString())) {
+      openWebStorePage();
+      return;
+    }
     _errorMessage = null;
     _pullProgress = 0;
     _isNavBarVisible = true;
+    _isPageTranslated = false;
+    _translatedLangCode = null;
 
     Uri migratedUri = uri;
     if (OmniboxParser.isLegacyHeavenUrl(migratedUri.toString())) {
@@ -1035,6 +1091,20 @@ class BrowserEngine extends ChangeNotifier {
       _currentUrl = AppConstants.downloadsTabUrl;
       _pageTitle = 'Downloads';
       _isLoading = false;
+      _isPageTranslated = false;
+      _translatedLangCode = null;
+      _progress = 0;
+      _webViewCanGoBack = false;
+      _webViewCanGoForward = false;
+      notifyListeners();
+      return;
+    }
+    if (OmniboxParser.isWebStoreUrl(target)) {
+      _currentUrl = AppConstants.webStoreTabUrl;
+      _pageTitle = 'Heaven Web Store';
+      _isLoading = false;
+      _isPageTranslated = false;
+      _translatedLangCode = null;
       _progress = 0;
       _webViewCanGoBack = false;
       _webViewCanGoForward = false;
@@ -1103,10 +1173,129 @@ class BrowserEngine extends ChangeNotifier {
     }
   }
 
+  Future<bool> translateCurrentPage(
+    String targetLangCode, {
+    http.Client? client,
+  }) async {
+    if (!isShowingWebPage) {
+      return false;
+    }
+    _isTranslatingPage = true;
+    notifyListeners();
+    try {
+      await settings.setTranslateTargetLang(targetLangCode);
+      if (_controller == null) {
+        _isPageTranslated = true;
+        _translatedLangCode = targetLangCode;
+        return true;
+      }
+
+      final Object rawNodes = await _controller!.runJavaScriptReturningResult(r'''
+(function(){
+  try {
+    const skip = new Set(['SCRIPT','STYLE','NOSCRIPT','CODE','PRE','TEXTAREA','INPUT','SVG','MATH']);
+    const nodes = [];
+    const texts = [];
+    const walker = document.createTreeWalker(document.body || document.documentElement, NodeFilter.SHOW_TEXT);
+    let n;
+    while ((n = walker.nextNode()) && nodes.length < 150) {
+      const p = n.parentElement;
+      if (!p || skip.has(p.tagName) || p.isContentEditable) continue;
+      const orig = (typeof n.__hbOrigText === 'string') ? n.__hbOrigText : (n.nodeValue || '');
+      const clean = orig.replace(/\s+/g, ' ').trim();
+      if (clean.length < 3 || /^[0-9.,:%+$-]+$/.test(clean)) continue;
+      n.__hbOrigText = orig;
+      nodes.push(n);
+      texts.push(clean);
+    }
+    window.__hbTxNodes = nodes;
+    return JSON.stringify(texts);
+  } catch (_) {
+    return '[]';
+  }
+})()
+''');
+
+      String jsonStr = rawNodes.toString();
+      if (jsonStr.startsWith('"') && jsonStr.endsWith('"')) {
+        jsonStr = jsonDecode(jsonStr) as String;
+      }
+      final Object? parsed = jsonDecode(jsonStr);
+      if (parsed is! List || parsed.isEmpty) {
+        return false;
+      }
+      final List<String> originals = parsed
+          .map((Object? e) => e?.toString() ?? '')
+          .toList(growable: false);
+      final List<String> translated =
+          await PageTranslateReaderService.translateSegments(
+            originals,
+            targetLang: targetLangCode,
+            client: client,
+          );
+      final String encodedTranslated = jsonEncode(translated);
+      final String encodedLang = jsonEncode(targetLangCode);
+      await _controller!.runJavaScript('''
+(function(){
+  try {
+    const arr = $encodedTranslated;
+    const nodes = window.__hbTxNodes || [];
+    for (let i = 0; i < nodes.length && i < arr.length; i++) {
+      if (arr[i]) nodes[i].nodeValue = ' ' + arr[i] + ' ';
+    }
+    document.documentElement.setAttribute('data-hb-translated', $encodedLang);
+  } catch (_) {}
+})();
+''');
+      _isPageTranslated = true;
+      _translatedLangCode = targetLangCode;
+      return true;
+    } catch (_) {
+      return false;
+    } finally {
+      _isTranslatingPage = false;
+      notifyListeners();
+    }
+  }
+
+  Future<void> restoreOriginalPageLanguage() async {
+    if (_controller != null && isShowingWebPage) {
+      try {
+        await _controller!.runJavaScript('''
+(function(){
+  try {
+    const walker = document.createTreeWalker(document.body || document.documentElement, NodeFilter.SHOW_TEXT);
+    let n;
+    while ((n = walker.nextNode())) {
+      if (typeof n.__hbOrigText === 'string') {
+        n.nodeValue = n.__hbOrigText;
+      }
+    }
+    document.documentElement.removeAttribute('data-hb-translated');
+  } catch (_) {}
+})();
+''');
+      } catch (_) {}
+    }
+    _isPageTranslated = false;
+    _translatedLangCode = null;
+    notifyListeners();
+  }
+
   Future<ReadableArticle?> extractReadableArticle() async {
-    if (_controller == null ||
-        !isShowingWebPage ||
-        !settings.javascriptEnabled) {
+    if (!isShowingWebPage) {
+      return null;
+    }
+    if (_controller == null) {
+      return ReadableArticle(
+        title: _pageTitle,
+        siteName: OmniboxParser.cleanDomain(_currentUrl),
+        paragraphs: <String>[
+          'Clean Reader View formats $_pageTitle for distraction-free reading in Heaven.',
+        ],
+      );
+    }
+    if (!settings.javascriptEnabled) {
       return null;
     }
     try {

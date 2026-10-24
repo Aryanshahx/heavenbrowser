@@ -1,480 +1,476 @@
 import 'package:flutter/material.dart';
 
 import '../../core/theme/app_theme.dart';
+import '../../core/utils/omnibox_parser.dart';
 import '../settings/browser_settings.dart';
-import '../shield/brave_shield_status.dart';
-import '../shield/native_shield_bridge.dart';
 import 'engine/browser_engine.dart';
+import 'page_translate_reader_service.dart';
 
-class SiteControlsSheet extends StatefulWidget {
-  const SiteControlsSheet({
+class TranslateReaderSheet extends StatefulWidget {
+  const TranslateReaderSheet({
     super.key,
     required this.engine,
     required this.settings,
+    required this.onOpenCleanReader,
+    required this.onClearSiteData,
   });
 
   final BrowserEngine engine;
   final BrowserSettingsController settings;
-
-  static Future<void> show(
-    BuildContext context, {
-    required BrowserEngine engine,
-    required BrowserSettingsController settings,
-  }) {
-    return showModalBottomSheet<void>(
-      context: context,
-      isScrollControlled: true,
-      showDragHandle: true,
-      builder: (_) => SiteControlsSheet(engine: engine, settings: settings),
-    );
-  }
-
-  static IconData _iconForPermission(SitePermissionType type) {
-    return switch (type) {
-      SitePermissionType.location => Icons.location_on_outlined,
-      SitePermissionType.camera => Icons.videocam_outlined,
-      SitePermissionType.microphone => Icons.mic_none_rounded,
-      SitePermissionType.notifications => Icons.notifications_outlined,
-      SitePermissionType.popups => Icons.open_in_new_off_rounded,
-      SitePermissionType.javascript => Icons.javascript_rounded,
-      SitePermissionType.protectedMedia => Icons.enhanced_encryption_outlined,
-    };
-  }
+  final Future<void> Function() onOpenCleanReader;
+  final VoidCallback onClearSiteData;
 
   @override
-  State<SiteControlsSheet> createState() => _SiteControlsSheetState();
+  State<TranslateReaderSheet> createState() => _TranslateReaderSheetState();
 }
 
-class _SiteControlsSheetState extends State<SiteControlsSheet> {
-  BraveShieldStats _shieldStats = const BraveShieldStats();
-
-  BrowserEngine get engine => widget.engine;
-  BrowserSettingsController get settings => widget.settings;
-
-  @override
-  void initState() {
-    super.initState();
-    _loadShieldStats();
-  }
-
-  Future<void> _loadShieldStats() async {
-    final BraveShieldStats fetched = await NativeShieldBridge.instance
-        .getBraveShieldStats(webViewId: engine.androidWebViewId ?? -1);
-    if (mounted) {
-      setState(() => _shieldStats = fetched);
-    }
-  }
-
+class _TranslateReaderSheetState extends State<TranslateReaderSheet> {
   @override
   Widget build(BuildContext context) {
-    return ListenableBuilder(
-      listenable: Listenable.merge(<Listenable>[engine, settings]),
+    final ColorScheme colors = Theme.of(context).colorScheme;
+    final String host = OmniboxParser.cleanDomain(widget.engine.currentUrl);
+    final bool isHttps =
+        widget.engine.currentUrl?.startsWith('https://') ?? false;
+
+    return AnimatedBuilder(
+      animation: Listenable.merge(<Listenable>[widget.settings, widget.engine]),
       builder: (BuildContext context, _) {
-        final ColorScheme colors = Theme.of(context).colorScheme;
-        final bool isDark = Theme.of(context).brightness == Brightness.dark;
-        final String? host = engine.currentHost;
-        final String displayHost = (host != null && host.isNotEmpty)
-            ? host
-            : 'Current Tab';
-        final bool hasWebHost = host != null && host.isNotEmpty;
-
-        final List<SitePermissionType> dashboardPermissions =
-            const <SitePermissionType>[
-              SitePermissionType.location,
-              SitePermissionType.camera,
-              SitePermissionType.microphone,
-              SitePermissionType.notifications,
-              SitePermissionType.popups,
-              SitePermissionType.javascript,
-              SitePermissionType.protectedMedia,
-            ];
-
-        final int activeSensitiveCount = hasWebHost
-            ? <SitePermissionType>[
-                    SitePermissionType.location,
-                    SitePermissionType.camera,
-                    SitePermissionType.microphone,
-                    SitePermissionType.notifications,
-                    SitePermissionType.popups,
-                  ]
-                  .where(
-                    (SitePermissionType t) =>
-                        settings.getSitePermission(host, t) ==
-                        SitePermissionDecision.allow,
-                  )
-                  .length
-            : 0;
+        final String selectedLangCode = widget.settings.translateTargetLang;
+        final TranslateLanguage selectedLang =
+            PageTranslateReaderService.languageByCode(selectedLangCode);
+        final bool isTranslated = widget.engine.isPageTranslated;
+        final bool isTranslating = widget.engine.isTranslatingPage;
 
         return SafeArea(
-          child: ConstrainedBox(
-            constraints: BoxConstraints(
-              maxHeight: MediaQuery.sizeOf(context).height * 0.84,
-            ),
-            child: SingleChildScrollView(
-              padding: const EdgeInsets.fromLTRB(16, 4, 16, 20),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: <Widget>[
-                  Row(
-                    children: <Widget>[
-                      Container(
-                        width: 40,
-                        height: 40,
-                        decoration: BoxDecoration(
-                          color:
-                              (engine.isSecure ? Colors.green : Colors.orange)
-                                  .withValues(alpha: 0.14),
-                          borderRadius: BorderRadius.circular(12),
-                        ),
-                        child: Icon(
-                          engine.isSecure
-                              ? Icons.verified_user_rounded
-                              : Icons.info_outline_rounded,
-                          color: engine.isSecure ? Colors.green : Colors.orange,
-                          size: 20,
-                        ),
+          child: SingleChildScrollView(
+            key: const Key('translate_reader_sheet'),
+            padding: const EdgeInsets.fromLTRB(18, 6, 18, 22),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: <Widget>[
+                Row(
+                  children: <Widget>[
+                    Container(
+                      width: 38,
+                      height: 38,
+                      decoration: BoxDecoration(
+                        color:
+                            (isHttps ? AppTheme.shieldEmerald : colors.error)
+                                .withValues(alpha: 0.14),
+                        borderRadius: BorderRadius.circular(11),
                       ),
-                      const SizedBox(width: 12),
-                      Expanded(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
+                      child: Icon(
+                        isHttps
+                            ? Icons.lock_rounded
+                            : Icons.info_outline_rounded,
+                        color: isHttps ? AppTheme.shieldEmerald : colors.error,
+                        size: 19,
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: <Widget>[
+                          Text(
+                            host.isEmpty ? 'Translate & Reader' : host,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(
+                              fontSize: 15.5,
+                              fontWeight: FontWeight.w800,
+                            ),
+                          ),
+                          const SizedBox(height: 2),
+                          Text(
+                            isHttps
+                                ? 'Encrypted HTTPS • Instant Translate & Reader'
+                                : 'Instant Page Translate & Clean Reader Mode',
+                            style: TextStyle(
+                              fontSize: 12,
+                              fontWeight: FontWeight.w600,
+                              color: isHttps
+                                  ? AppTheme.shieldEmerald
+                                  : colors.onSurfaceVariant,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 16),
+
+                // 1. Instant Page Translate Card
+                Material(
+                  color: colors.surfaceContainerHigh,
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(16),
+                    side: BorderSide(
+                      color: isTranslated
+                          ? AppTheme.heavenAccent.withValues(alpha: 0.55)
+                          : colors.outlineVariant.withValues(alpha: 0.3),
+                    ),
+                  ),
+                  clipBehavior: Clip.antiAlias,
+                  child: Padding(
+                    padding: const EdgeInsets.all(14),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: <Widget>[
+                        Row(
                           children: <Widget>[
-                            Text(
-                              displayHost,
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                              style: const TextStyle(
-                                fontSize: 16,
-                                fontWeight: FontWeight.w800,
+                            const Icon(
+                              Icons.translate_rounded,
+                              size: 20,
+                              color: AppTheme.heavenAccent,
+                            ),
+                            const SizedBox(width: 8),
+                            const Expanded(
+                              child: Text(
+                                'Instant Page Translate',
+                                style: TextStyle(
+                                  fontSize: 14,
+                                  fontWeight: FontWeight.w800,
+                                ),
                               ),
                             ),
-                            Text(
-                              engine.isSecure
-                                  ? 'Encrypted HTTPS • Per-Site Permission Dashboard'
-                                  : 'Local or unencrypted page',
-                              style: TextStyle(
-                                fontSize: 11.5,
-                                color: colors.onSurfaceVariant,
+                            if (isTranslated)
+                              Container(
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 8,
+                                  vertical: 3,
+                                ),
+                                decoration: BoxDecoration(
+                                  color: AppTheme.shieldEmerald.withValues(
+                                    alpha: 0.16,
+                                  ),
+                                  borderRadius: BorderRadius.circular(999),
+                                ),
+                                child: Text(
+                                  'Translated (${widget.engine.translatedLangCode?.toUpperCase() ?? selectedLang.code.toUpperCase()})',
+                                  style: const TextStyle(
+                                    fontSize: 10.5,
+                                    fontWeight: FontWeight.w800,
+                                    color: AppTheme.shieldEmerald,
+                                  ),
+                                ),
                               ),
+                          ],
+                        ),
+                        const SizedBox(height: 5),
+                        Text(
+                          'Translates live webpages & search results in-place without reloading.',
+                          style: TextStyle(
+                            fontSize: 12,
+                            color: colors.onSurfaceVariant,
+                          ),
+                        ),
+                        const SizedBox(height: 11),
+                        SizedBox(
+                          height: 36,
+                          child: ListView.separated(
+                            scrollDirection: Axis.horizontal,
+                            itemCount: PageTranslateReaderService
+                                .supportedLanguages
+                                .length,
+                            separatorBuilder:
+                                (BuildContext context, int index) =>
+                                    const SizedBox(width: 7),
+                            itemBuilder: (BuildContext context, int index) {
+                              final TranslateLanguage lang =
+                                  PageTranslateReaderService
+                                      .supportedLanguages[index];
+                              final bool selected =
+                                  lang.code.toLowerCase() ==
+                                  selectedLangCode.toLowerCase();
+                              return ChoiceChip(
+                                key: Key('translate_lang_chip_${lang.code}'),
+                                visualDensity: VisualDensity.compact,
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 6,
+                                ),
+                                label: Text(
+                                  lang.name == lang.nativeLabel
+                                      ? lang.name
+                                      : '${lang.name} • ${lang.nativeLabel}',
+                                  style: TextStyle(
+                                    fontSize: 11.5,
+                                    fontWeight: FontWeight.w700,
+                                    color: selected
+                                        ? Colors.white
+                                        : colors.onSurface,
+                                  ),
+                                ),
+                                selected: selected,
+                                selectedColor: AppTheme.heavenBlue,
+                                backgroundColor: colors.surface,
+                                showCheckmark: false,
+                                onSelected: (_) {
+                                  widget.settings.setTranslateTargetLang(
+                                    lang.code,
+                                  );
+                                },
+                              );
+                            },
+                          ),
+                        ),
+                        const SizedBox(height: 12),
+                        Row(
+                          children: <Widget>[
+                            Expanded(
+                              child: FilledButton.icon(
+                                key: const Key('translate_page_now_button'),
+                                onPressed:
+                                    (!widget.engine.isShowingWebPage ||
+                                        isTranslating)
+                                    ? null
+                                    : () async {
+                                        final ScaffoldMessengerState messenger =
+                                            ScaffoldMessenger.of(context);
+                                        final bool ok = await widget.engine
+                                            .translateCurrentPage(
+                                              selectedLang.code,
+                                            );
+                                        if (!mounted) return;
+                                        messenger.showSnackBar(
+                                          SnackBar(
+                                            content: Text(
+                                              ok
+                                                  ? 'Page translated to ${selectedLang.name}'
+                                                  : 'Unable to translate this page right now',
+                                            ),
+                                            duration: const Duration(
+                                              seconds: 2,
+                                            ),
+                                          ),
+                                        );
+                                      },
+                                icon: isTranslating
+                                    ? const SizedBox(
+                                        width: 15,
+                                        height: 15,
+                                        child: CircularProgressIndicator(
+                                          strokeWidth: 2,
+                                          color: Colors.white,
+                                        ),
+                                      )
+                                    : const Icon(
+                                        Icons.g_translate_rounded,
+                                        size: 17,
+                                      ),
+                                label: Text(
+                                  isTranslating
+                                      ? 'Translating...'
+                                      : 'Translate to ${selectedLang.name}',
+                                  style: const TextStyle(
+                                    fontSize: 12.5,
+                                    fontWeight: FontWeight.w800,
+                                  ),
+                                ),
+                                style: FilledButton.styleFrom(
+                                  backgroundColor: AppTheme.heavenBlue,
+                                  foregroundColor: Colors.white,
+                                  padding: const EdgeInsets.symmetric(
+                                    vertical: 11,
+                                  ),
+                                  shape: RoundedRectangleBorder(
+                                    borderRadius: BorderRadius.circular(12),
+                                  ),
+                                ),
+                              ),
+                            ),
+                            if (isTranslated) ...<Widget>[
+                              const SizedBox(width: 8),
+                              OutlinedButton(
+                                key: const Key(
+                                  'restore_original_language_button',
+                                ),
+                                onPressed: () async {
+                                  await widget.engine
+                                      .restoreOriginalPageLanguage();
+                                },
+                                style: OutlinedButton.styleFrom(
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 12,
+                                    vertical: 11,
+                                  ),
+                                  shape: RoundedRectangleBorder(
+                                    borderRadius: BorderRadius.circular(12),
+                                  ),
+                                ),
+                                child: const Text(
+                                  'Original',
+                                  style: TextStyle(
+                                    fontSize: 12,
+                                    fontWeight: FontWeight.w800,
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ],
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+
+                const SizedBox(height: 12),
+
+                // 2. Clean Reader Mode Card
+                Material(
+                  color: colors.surfaceContainerHigh,
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(16),
+                    side: BorderSide(
+                      color: colors.outlineVariant.withValues(alpha: 0.3),
+                    ),
+                  ),
+                  clipBehavior: Clip.antiAlias,
+                  child: ListTile(
+                    key: const Key('open_clean_reader_button'),
+                    enabled: widget.engine.isShowingWebPage,
+                    leading: Container(
+                      width: 38,
+                      height: 38,
+                      decoration: BoxDecoration(
+                        color: AppTheme.heavenAccent.withValues(alpha: 0.16),
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                      child: const Icon(
+                        Icons.auto_stories_rounded,
+                        color: AppTheme.heavenAccent,
+                        size: 20,
+                      ),
+                    ),
+                    title: const Text(
+                      'Clean Reader Mode',
+                      style: TextStyle(
+                        fontSize: 14,
+                        fontWeight: FontWeight.w800,
+                      ),
+                    ),
+                    subtitle: const Text(
+                      'Distraction-free article view with Midnight, Sepia & font controls',
+                      style: TextStyle(fontSize: 12),
+                    ),
+                    trailing: const Icon(Icons.chevron_right_rounded),
+                    onTap: !widget.engine.isShowingWebPage
+                        ? null
+                        : () async {
+                            Navigator.of(context).pop();
+                            await widget.onOpenCleanReader();
+                          },
+                  ),
+                ),
+
+                const SizedBox(height: 12),
+
+                // 3. Compact Page View Controls (Desktop Site + Text Zoom + Clear Site Cookies)
+                Material(
+                  color: colors.surfaceContainerHigh,
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(16),
+                  ),
+                  clipBehavior: Clip.antiAlias,
+                  child: Column(
+                    children: <Widget>[
+                      SwitchListTile.adaptive(
+                        dense: true,
+                        secondary: const Icon(
+                          Icons.desktop_windows_outlined,
+                          size: 20,
+                        ),
+                        title: const Text(
+                          'Desktop Site',
+                          style: TextStyle(
+                            fontSize: 13.5,
+                            fontWeight: FontWeight.w700,
+                          ),
+                        ),
+                        value: widget.settings.desktopMode,
+                        onChanged: (bool v) =>
+                            widget.engine.setDesktopModeAndReload(v),
+                      ),
+                      Divider(
+                        height: 1,
+                        color: colors.outlineVariant.withValues(alpha: 0.3),
+                      ),
+                      Padding(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 16,
+                          vertical: 8,
+                        ),
+                        child: Row(
+                          children: <Widget>[
+                            const Icon(Icons.format_size_rounded, size: 19),
+                            const SizedBox(width: 12),
+                            const Expanded(
+                              child: Text(
+                                'Page Text Size',
+                                style: TextStyle(
+                                  fontSize: 13.5,
+                                  fontWeight: FontWeight.w700,
+                                ),
+                              ),
+                            ),
+                            IconButton(
+                              visualDensity: VisualDensity.compact,
+                              icon: const Icon(Icons.remove_rounded, size: 18),
+                              onPressed: () =>
+                                  widget.settings.setTextScalePercent(
+                                    widget.settings.textScalePercent - 10,
+                                  ),
+                            ),
+                            Text(
+                              '${widget.settings.textScalePercent}%',
+                              style: const TextStyle(
+                                fontWeight: FontWeight.w800,
+                                fontSize: 13,
+                              ),
+                            ),
+                            IconButton(
+                              visualDensity: VisualDensity.compact,
+                              icon: const Icon(Icons.add_rounded, size: 18),
+                              onPressed: () =>
+                                  widget.settings.setTextScalePercent(
+                                    widget.settings.textScalePercent + 10,
+                                  ),
                             ),
                           ],
                         ),
                       ),
-                      if (hasWebHost && activeSensitiveCount > 0)
-                        FilledButton.tonalIcon(
-                          key: const Key('revoke_all_site_permissions_button'),
-                          style: FilledButton.styleFrom(
-                            visualDensity: VisualDensity.compact,
-                            foregroundColor: colors.error,
-                          ),
-                          onPressed: () async {
-                            await settings.revokeAllPermissionsForSite(host);
-                            await engine.reloadFullPage();
-                          },
-                          icon: const Icon(Icons.gpp_bad_outlined, size: 16),
-                          label: const Text('Revoke All'),
-                        ),
                     ],
                   ),
-                  const SizedBox(height: 12),
-                  _buildBraveShieldsCard(
-                    colors,
-                    isDark: isDark,
-                    host: host,
-                    hasWebHost: hasWebHost,
-                  ),
-                  const SizedBox(height: 12),
-                  const Divider(height: 1),
+                ),
+
+                if (host.isNotEmpty) ...<Widget>[
                   const SizedBox(height: 10),
-                  const Text(
-                    'PER-SITE HARDWARE & WEB PERMISSIONS',
-                    style: TextStyle(
-                      fontSize: 11,
-                      fontWeight: FontWeight.w800,
-                      letterSpacing: 0.7,
-                    ),
-                  ),
-                  const SizedBox(height: 8),
-                  Container(
-                    decoration: BoxDecoration(
-                      color: isDark ? AppTheme.navySurface : Colors.white,
-                      borderRadius: BorderRadius.circular(16),
-                      border: Border.all(
-                        color: colors.outlineVariant.withValues(alpha: 0.35),
+                  SizedBox(
+                    width: double.infinity,
+                    child: OutlinedButton.icon(
+                      icon: const Icon(Icons.cookie_outlined, size: 17),
+                      label: Text('Clear Cookies & Site Data for $host'),
+                      style: OutlinedButton.styleFrom(
+                        foregroundColor: colors.error,
+                        padding: const EdgeInsets.symmetric(vertical: 11),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(13),
+                        ),
                       ),
-                    ),
-                    child: Column(
-                      children: <Widget>[
-                        for (
-                          int i = 0;
-                          i < dashboardPermissions.length;
-                          i++
-                        ) ...<Widget>[
-                          if (i > 0) const Divider(height: 1),
-                          _buildPermissionRow(
-                            context,
-                            colors,
-                            host: host,
-                            hasWebHost: hasWebHost,
-                            type: dashboardPermissions[i],
-                          ),
-                        ],
-                      ],
-                    ),
-                  ),
-                  const SizedBox(height: 12),
-                  SwitchListTile(
-                    contentPadding: EdgeInsets.zero,
-                    secondary: Icon(
-                      Icons.desktop_windows_rounded,
-                      color: colors.primary,
-                    ),
-                    title: const Text(
-                      'Desktop Site',
-                      style: TextStyle(fontWeight: FontWeight.w700),
-                    ),
-                    value: settings.desktopMode,
-                    onChanged: (bool v) => engine.setDesktopModeAndReload(v),
-                  ),
-                  Padding(
-                    padding: const EdgeInsets.symmetric(vertical: 4),
-                    child: Row(
-                      children: <Widget>[
-                        Icon(Icons.format_size_rounded, color: colors.primary),
-                        const SizedBox(width: 14),
-                        const Expanded(
-                          child: Text(
-                            'Page Text Size',
-                            style: TextStyle(fontWeight: FontWeight.w700),
-                          ),
-                        ),
-                        IconButton(
-                          onPressed: () => settings.setTextScalePercent(
-                            settings.textScalePercent - 10,
-                          ),
-                          icon: const Icon(Icons.remove_circle_outline_rounded),
-                        ),
-                        Text(
-                          '${settings.textScalePercent}%',
-                          style: const TextStyle(fontWeight: FontWeight.w800),
-                        ),
-                        IconButton(
-                          onPressed: () => settings.setTextScalePercent(
-                            settings.textScalePercent + 10,
-                          ),
-                          icon: const Icon(Icons.add_circle_outline_rounded),
-                        ),
-                      ],
-                    ),
-                  ),
-                  if (hasWebHost) ...<Widget>[
-                    const SizedBox(height: 8),
-                    OutlinedButton.icon(
-                      onPressed: () async {
-                        await NativeShieldBridge.instance.clearSiteData(
-                          domain: host,
-                        );
-                        await engine.reloadFullPage();
-                        if (context.mounted) {
-                          Navigator.pop(context);
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            SnackBar(
-                              content: Text(
-                                'Cleared cookies & site data for $host',
-                              ),
-                              behavior: SnackBarBehavior.floating,
-                            ),
-                          );
-                        }
+                      onPressed: () {
+                        Navigator.of(context).pop();
+                        widget.onClearSiteData();
                       },
-                      icon: const Icon(Icons.cleaning_services_rounded),
-                      label: const Text('Clear Site Cookies & Storage'),
                     ),
-                  ],
+                  ),
                 ],
-              ),
+              ],
             ),
           ),
         );
       },
-    );
-  }
-
-  Widget _buildBraveShieldsCard(
-    ColorScheme colors, {
-    required bool isDark,
-    required String? host,
-    required bool hasWebHost,
-  }) {
-    final bool shieldsUp = settings.isBraveShieldEnabledForHost(host);
-    final int blocked = hasWebHost
-        ? _shieldStats.tabBlocked
-        : _shieldStats.totalBlocked;
-    final int surrogates = hasWebHost
-        ? _shieldStats.tabSurrogates
-        : _shieldStats.totalSurrogates;
-
-    final String subtitleText = shieldsUp
-        ? '$blocked ads & trackers blocked'
-              '${surrogates > 0 ? ' • $surrogates SugarCoat' : ''}'
-              '${settings.farblingEnabled ? ' • Farbling on' : ''}'
-        : 'Shields Down for ${hasWebHost ? host : 'all sites'}';
-
-    return Material(
-      color: isDark ? AppTheme.navySurface : Colors.white,
-      shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(16),
-        side: BorderSide(
-          color: shieldsUp
-              ? AppTheme.shieldEmerald.withValues(alpha: 0.45)
-              : colors.outlineVariant.withValues(alpha: 0.35),
-        ),
-      ),
-      clipBehavior: Clip.antiAlias,
-      child: SwitchListTile.adaptive(
-        key: const Key('site_brave_shields_switch'),
-        dense: true,
-        secondary: Icon(
-          shieldsUp ? Icons.shield_rounded : Icons.shield_outlined,
-          color: shieldsUp ? AppTheme.shieldEmerald : colors.onSurfaceVariant,
-          size: 21,
-        ),
-        title: const Text(
-          'Brave Shields',
-          style: TextStyle(fontWeight: FontWeight.w800, fontSize: 13.8),
-        ),
-        subtitle: Text(
-          subtitleText,
-          maxLines: 2,
-          overflow: TextOverflow.ellipsis,
-          style: const TextStyle(fontSize: 11.5),
-        ),
-        value: shieldsUp,
-        onChanged: (bool value) async {
-          if (hasWebHost && host != null) {
-            if (value && !settings.braveShieldsEnabled) {
-              await settings.setBraveShieldsEnabled(true);
-            }
-            await settings.setBraveShieldForHost(host, value);
-            await engine.reloadFullPage();
-          } else {
-            await settings.setBraveShieldsEnabled(value);
-          }
-          await _loadShieldStats();
-        },
-      ),
-    );
-  }
-
-  Widget _buildPermissionRow(
-    BuildContext context,
-    ColorScheme colors, {
-    required String? host,
-    required bool hasWebHost,
-    required SitePermissionType type,
-  }) {
-    final SitePermissionDecision decision = settings.getSitePermission(
-      host,
-      type,
-    );
-    final Color badgeColor = switch (decision) {
-      SitePermissionDecision.allow => AppTheme.shieldEmerald,
-      SitePermissionDecision.block => AppTheme.fireCrimson,
-      SitePermissionDecision.ask => colors.primary,
-    };
-
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
-      child: Row(
-        children: <Widget>[
-            Icon(SiteControlsSheet._iconForPermission(type), size: 20, color: colors.primary),
-          const SizedBox(width: 10),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: <Widget>[
-                Text(
-                  type.label,
-                  style: const TextStyle(
-                    fontSize: 13.5,
-                    fontWeight: FontWeight.w700,
-                  ),
-                ),
-                Text(
-                  type.description,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: TextStyle(
-                    fontSize: 11,
-                    color: colors.onSurfaceVariant,
-                  ),
-                ),
-              ],
-            ),
-          ),
-          const SizedBox(width: 8),
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-            decoration: BoxDecoration(
-              color: badgeColor.withValues(alpha: 0.14),
-              borderRadius: BorderRadius.circular(999),
-            ),
-            child: Text(
-              decision.label,
-              style: TextStyle(
-                fontSize: 11,
-                fontWeight: FontWeight.w800,
-                color: badgeColor,
-              ),
-            ),
-          ),
-          const SizedBox(width: 6),
-          if (decision == SitePermissionDecision.allow)
-            TextButton(
-              key: Key('revoke_perm_${type.name}'),
-              style: TextButton.styleFrom(
-                visualDensity: VisualDensity.compact,
-                padding: const EdgeInsets.symmetric(horizontal: 8),
-                minimumSize: const Size(0, 30),
-                foregroundColor: colors.error,
-              ),
-              onPressed: hasWebHost
-                  ? () async {
-                      await settings.revokeSitePermission(host!, type);
-                      await engine.reloadFullPage();
-                    }
-                  : null,
-              child: const Text(
-                'Revoke',
-                style: TextStyle(fontSize: 12, fontWeight: FontWeight.w800),
-              ),
-            )
-          else
-            TextButton(
-              key: Key('allow_perm_${type.name}'),
-              style: TextButton.styleFrom(
-                visualDensity: VisualDensity.compact,
-                padding: const EdgeInsets.symmetric(horizontal: 8),
-                minimumSize: const Size(0, 30),
-              ),
-              onPressed: hasWebHost
-                  ? () async {
-                      await settings.setSitePermission(
-                        host!,
-                        type,
-                        SitePermissionDecision.allow,
-                      );
-                      await engine.reloadFullPage();
-                    }
-                  : null,
-              child: const Text(
-                'Allow',
-                style: TextStyle(fontSize: 12, fontWeight: FontWeight.w800),
-              ),
-            ),
-        ],
-      ),
     );
   }
 }

@@ -10,6 +10,7 @@ class AppConstants {
   static const String privacyPolicyUrl =
       'https://github.com/Aryanshahx/heavenbrowser/blob/main/privacypolicy.md';
   static const String downloadsTabUrl = 'heaven://downloads';
+  static const String webStoreTabUrl = 'heaven://store';
   static const String logoAssetPath = 'assets/images/heaven_logo.png';
 
   static const String mobileUserAgent =

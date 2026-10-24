@@ -6,6 +6,7 @@ import 'package:flutter/services.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:webview_flutter/webview_flutter.dart';
+import 'package:webview_flutter_android/webview_flutter_android.dart';
 
 import '../../../core/constants/app_constants.dart';
 import '../../../core/theme/app_theme.dart';
@@ -23,6 +24,7 @@ import '../../settings/languages_screen.dart';
 import '../../settings/notifications_screen.dart';
 import '../../settings/settings_screen.dart';
 import '../../shield/native_shield_bridge.dart';
+import '../../store/heaven_web_store_screen.dart';
 import '../../tabs/tab_manager.dart';
 import '../../tabs/tabs_screen.dart';
 import '../../vpn/vpn_controller.dart';
@@ -157,9 +159,7 @@ class _BrowserScreenState extends State<BrowserScreen>
         return AlertDialog(
           icon: const Icon(Icons.security_rounded, size: 32),
           title: Text('$host wants permission'),
-          content: Text(
-            'Allow $host to access $joined?\n\nYou can revoke this anytime with 1 tap from the Site Permission Dashboard.',
-          ),
+          content: Text('Allow $host to access $joined?'),
           actions: <Widget>[
             TextButton(
               onPressed: () => Navigator.pop(dialogContext, false),
@@ -180,6 +180,9 @@ class _BrowserScreenState extends State<BrowserScreen>
     final String? url = engine.currentUrl;
     if (OmniboxParser.isDownloadsUrl(url)) {
       return AppConstants.downloadsTabUrl;
+    }
+    if (OmniboxParser.isWebStoreUrl(url)) {
+      return AppConstants.webStoreTabUrl;
     }
     final String searchQ = OmniboxParser.extractAnySearchQuery(url);
     if (searchQ.isNotEmpty) {
@@ -269,7 +272,8 @@ class _BrowserScreenState extends State<BrowserScreen>
       return;
     }
     if (!widget.tabManager.isActiveIncognito &&
-        !OmniboxParser.isDownloadsUrl(raw)) {
+        !OmniboxParser.isDownloadsUrl(raw) &&
+        !OmniboxParser.isWebStoreUrl(raw)) {
       unawaited(widget.interests.recordActivity(text: raw, weight: 2.2));
     }
     await _activeEngine.loadUserEntry(raw);
@@ -350,7 +354,7 @@ class _BrowserScreenState extends State<BrowserScreen>
             builder: (BuildContext context, _) {
               final bool showTopNavBar =
                   _isEditingOmnibox ||
-                  !engine.isShowingWebPage ||
+                  engine.isShowingDownloadsPage ||
                   engine.isNavBarVisible;
 
               return PopScope<void>(
@@ -385,50 +389,25 @@ class _BrowserScreenState extends State<BrowserScreen>
                   body: SafeArea(
                     child: Column(
                       children: <Widget>[
-                        _SmoothAutoHideTopBar(
-                          key: const Key('top_navigation_bar_wrapper'),
-                          visible: showTopNavBar,
-                          child: _buildCommandCapsuleBar(
-                            context,
-                            colors,
-                            engine,
-                          ),
-                        ),
-                        if (_showFindBar) _buildFindBar(colors),
                         Expanded(
                           child: Stack(
                             children: <Widget>[
-                              RepaintBoundary(
-                                child: ValueListenableBuilder<int>(
-                                  valueListenable:
-                                      widget.tabManager.viewportRevision,
-                                  builder: (BuildContext context, int _, _) {
-                                    return _buildTabsViewport(colors);
-                                  },
-                                ),
-                              ),
-                              if (engine.isLoading)
-                                Positioned(
-                                  top: 0,
-                                  left: 0,
-                                  right: 0,
-                                  child: RepaintBoundary(
-                                    child: IgnorePointer(
-                                      child: LinearProgressIndicator(
-                                        value:
-                                            engine.progress > 0 &&
-                                                engine.progress < 1
-                                            ? engine.progress
-                                            : null,
-                                        minHeight: 2.5,
-                                        backgroundColor: Colors.transparent,
-                                      ),
-                                    ),
+                              Positioned.fill(
+                                child: RepaintBoundary(
+                                  child: ValueListenableBuilder<int>(
+                                    valueListenable:
+                                        widget.tabManager.viewportRevision,
+                                    builder: (BuildContext context, int _, _) {
+                                      return _buildTabsViewport(colors);
+                                    },
                                   ),
                                 ),
+                              ),
                               if (engine.pullProgress > 0.02)
                                 Positioned(
-                                  top: 10 + (engine.pullProgress * 46),
+                                  top:
+                                      (showTopNavBar ? 62 : 12) +
+                                      (engine.pullProgress * 46),
                                   left: 0,
                                   right: 0,
                                   child: Center(
@@ -469,11 +448,52 @@ class _BrowserScreenState extends State<BrowserScreen>
                                     ),
                                   ),
                                 ),
+                              Positioned(
+                                top: 0,
+                                left: 0,
+                                right: 0,
+                                child: Column(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: <Widget>[
+                                    _SmoothAutoHideTopBar(
+                                      key: const Key(
+                                        'top_navigation_bar_wrapper',
+                                      ),
+                                      visible: showTopNavBar,
+                                      child: ColoredBox(
+                                        color: effectiveTheme
+                                            .scaffoldBackgroundColor
+                                            .withValues(alpha: 0.96),
+                                        child: _buildCommandCapsuleBar(
+                                          context,
+                                          colors,
+                                          engine,
+                                        ),
+                                      ),
+                                    ),
+                                    if (_showFindBar) _buildFindBar(colors),
+                                    if (engine.isLoading)
+                                      RepaintBoundary(
+                                        child: IgnorePointer(
+                                          child: LinearProgressIndicator(
+                                            value:
+                                                engine.progress > 0 &&
+                                                    engine.progress < 1
+                                                ? engine.progress
+                                                : null,
+                                            minHeight: 2.5,
+                                            backgroundColor: Colors.transparent,
+                                          ),
+                                        ),
+                                      ),
+                                  ],
+                                ),
+                              ),
                               if (showOverlayPanel)
                                 Positioned(
                                   left: 10,
                                   right: 10,
-                                  top: 8,
+                                  top: 56,
                                   child: _buildOmniboxOverlayPanel(
                                     context,
                                     colors,
@@ -824,16 +844,30 @@ class _BrowserScreenState extends State<BrowserScreen>
     );
   }
 
+  Widget _buildHardwareWebView(BrowserTab tab, BrowserEngine engine) {
+    final WebViewController ctrl = engine.controller!;
+    if (ctrl.platform is AndroidWebViewController) {
+      return WebViewWidget.fromPlatformCreationParams(
+        params: AndroidWebViewWidgetCreationParams(
+          key: ValueKey<String>('wv_${tab.id}'),
+          controller: ctrl.platform,
+          displayWithHybridComposition: true,
+        ),
+      );
+    }
+    return WebViewWidget(
+      key: ValueKey<String>('wv_${tab.id}'),
+      controller: ctrl,
+    );
+  }
+
   Widget _buildSingleTabBody(BrowserTab tab, ColorScheme colors) {
     final BrowserEngine engine = tab.engine;
 
     return ListenableBuilder(
       listenable: engine,
       child: engine.controller != null
-          ? WebViewWidget(
-              key: ValueKey<String>('wv_${tab.id}'),
-              controller: engine.controller!,
-            )
+          ? _buildHardwareWebView(tab, engine)
           : null,
       builder: (BuildContext context, Widget? cachedWebView) {
         Widget? overlayChild;
@@ -841,6 +875,26 @@ class _BrowserScreenState extends State<BrowserScreen>
           overlayChild = DownloadsScreen(
             downloads: widget.downloads,
             embeddedInTab: true,
+            topOverlayInset: 54,
+          );
+        } else if (engine.isShowingWebStorePage) {
+          overlayChild = NotificationListener<ScrollUpdateNotification>(
+            onNotification: (ScrollUpdateNotification notif) {
+              if (notif.metrics.axis == Axis.vertical &&
+                  !_isEditingOmnibox &&
+                  !_showLinkActionsCard) {
+                engine.handleWebScrollDelta(
+                  notif.metrics.pixels,
+                  notif.scrollDelta ?? 0.0,
+                );
+              }
+              return false;
+            },
+            child: HeavenWebStoreScreen(
+              settings: widget.settings,
+              embeddedInTab: true,
+              topOverlayInset: 54,
+            ),
           );
         } else if (engine.isShowingStartPage) {
           overlayChild = NotificationListener<ScrollUpdateNotification>(
@@ -861,6 +915,7 @@ class _BrowserScreenState extends State<BrowserScreen>
               searchService: widget.searchService,
               newsService: widget.newsService,
               interests: widget.interests,
+              topOverlayInset: 54,
               onSelectUrl: (String input) => engine.loadUserEntry(input),
               onOpenInNewTab: (String url) => widget.tabManager.openNewTab(
                 incognito: false,
@@ -1488,41 +1543,43 @@ class _BrowserScreenState extends State<BrowserScreen>
           listenable: widget.vpn,
           builder: (BuildContext context, _) {
             final bool vpnUp = widget.vpn.isConnected;
+            final bool translated = engine.isPageTranslated;
             return InkWell(
-              key: const Key('site_permissions_button'),
+              key: const Key('translate_reader_button'),
               borderRadius: BorderRadius.circular(18),
-              onTap: () {
-                SiteControlsSheet.show(
-                  context,
-                  engine: engine,
-                  settings: widget.settings,
-                );
-              },
+              onTap: () => _openTranslateReaderSheet(context, engine),
               child: Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 6),
+                padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 6),
                 child: Icon(
-                  vpnUp
-                      ? Icons.vpn_lock_rounded
-                      : (incognito
-                            ? Icons.shield_moon_rounded
-                            : (engine.isShowingDownloadsPage
-                                  ? Icons.download_done_rounded
-                                  : (engine.isShowingStartPage
-                                        ? Icons.tune_rounded
+                  translated
+                      ? Icons.translate_rounded
+                      : (vpnUp
+                            ? Icons.vpn_lock_rounded
+                            : (incognito
+                                  ? Icons.shield_moon_rounded
+                                  : (engine.isShowingDownloadsPage
+                                        ? Icons.download_done_rounded
+                                        : (engine.isShowingWebStorePage
+                                              ? Icons.extension_rounded
+                                              : (engine.isShowingStartPage
+                                                    ? Icons.translate_rounded
+                                                    : (engine.isSecure
+                                                          ? Icons.translate_rounded
+                                                          : Icons.warning_amber_rounded)))))),
+                  size: 16,
+                  color: translated
+                      ? AppTheme.heavenAccent
+                      : (vpnUp
+                            ? AppTheme.shieldEmerald
+                            : (incognito
+                                  ? AppTheme.incognitoCyan
+                                  : (engine.isShowingStartPage ||
+                                            engine.isShowingDownloadsPage ||
+                                            engine.isShowingWebStorePage
+                                        ? colors.primary
                                         : (engine.isSecure
-                                              ? Icons.lock_outline_rounded
-                                              : Icons.warning_amber_rounded)))),
-                  size: 15.5,
-                  color: vpnUp
-                      ? AppTheme.shieldEmerald
-                      : (incognito
-                            ? AppTheme.incognitoCyan
-                            : (engine.isShowingStartPage ||
-                                      engine.isShowingDownloadsPage
-                                  ? colors.primary
-                                  : (engine.isSecure
-                                        ? AppTheme.shieldEmerald
-                                        : AppTheme.warningAmber))),
+                                              ? AppTheme.shieldEmerald
+                                              : AppTheme.warningAmber)))),
                 ),
               ),
             );
@@ -1652,6 +1709,38 @@ class _BrowserScreenState extends State<BrowserScreen>
     );
   }
 
+  Future<void> _openWebStoreTab() async {
+    await widget.tabManager.openWebStoreTab();
+  }
+
+  Future<void> _openTranslateReaderSheet(
+    BuildContext context,
+    BrowserEngine engine,
+  ) async {
+    await showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      showDragHandle: true,
+      builder: (BuildContext sheetContext) {
+        return TranslateReaderSheet(
+          engine: engine,
+          settings: widget.settings,
+          onOpenCleanReader: _triggerReaderMode,
+          onClearSiteData: () async {
+            await engine.burnBrowsingData();
+            if (!mounted) return;
+            ScaffoldMessenger.of(this.context).showSnackBar(
+              const SnackBar(
+                content: Text('Site cookies & storage cleared'),
+                behavior: SnackBarBehavior.floating,
+              ),
+            );
+          },
+        );
+      },
+    );
+  }
+
   Future<void> _triggerReaderMode() async {
     final ReadableArticle? article = await _activeEngine
         .extractReadableArticle();
@@ -1671,7 +1760,10 @@ class _BrowserScreenState extends State<BrowserScreen>
       context: context,
       isScrollControlled: true,
       backgroundColor: Colors.transparent,
-      builder: (_) => ReaderModeSheet(article: article),
+      builder: (_) => ReaderModeSheet(
+        article: article,
+        settings: widget.settings,
+      ),
     );
   }
 
@@ -1888,20 +1980,18 @@ class _BrowserScreenState extends State<BrowserScreen>
                           },
                         ),
                         5 => _DeckActionTile(
-                          icon: Icons.tune_rounded,
-                          label: 'Permissions',
-                          accent: colors.primary,
+                          tileKey: const Key('browser_menu_web_store_tile'),
+                          icon: Icons.extension_rounded,
+                          label: 'Web Store',
+                          accent: AppTheme.heavenAccent,
                           onTap: () {
                             Navigator.pop(sheetContext);
-                            SiteControlsSheet.show(
-                              context,
-                              engine: engine,
-                              settings: widget.settings,
-                            );
+                            _openWebStoreTab();
                           },
                         ),
                         6 => _DeckActionTile(
-                          icon: Icons.menu_book_rounded,
+                          tileKey: const Key('browser_menu_clean_reader_tile'),
+                          icon: Icons.auto_stories_rounded,
                           label: 'Reader',
                           accent: colors.primary,
                           enabled: hasWebPage,
@@ -1983,25 +2073,41 @@ class _BrowserScreenState extends State<BrowserScreen>
                       },
                     ),
                   ListTile(
+                    key: const Key('browser_menu_translate_reader_tile'),
                     dense: true,
                     contentPadding: const EdgeInsets.symmetric(horizontal: 8),
                     leading: Icon(
-                      Icons.admin_panel_settings_outlined,
+                      Icons.translate_rounded,
                       size: 20,
                       color: colors.primary,
                     ),
-                    title: const Text('Site Permission Dashboard'),
+                    title: const Text('Translate & Reader'),
                     subtitle: const Text(
-                      'Location, Camera, Mic & 1-tap revoke',
+                      'Instant 20-language page translate & Clean Reader',
                       style: TextStyle(fontSize: 11),
                     ),
                     onTap: () {
                       Navigator.pop(sheetContext);
-                      SiteControlsSheet.show(
-                        context,
-                        engine: engine,
-                        settings: widget.settings,
-                      );
+                      _openTranslateReaderSheet(context, engine);
+                    },
+                  ),
+                  ListTile(
+                    key: const Key('browser_menu_extensions_list_tile'),
+                    dense: true,
+                    contentPadding: const EdgeInsets.symmetric(horizontal: 8),
+                    leading: const Icon(
+                      Icons.extension_rounded,
+                      size: 20,
+                      color: AppTheme.heavenAccent,
+                    ),
+                    title: const Text('Heaven Web Store'),
+                    subtitle: Text(
+                      '${widget.settings.activeExtensionCount} of 10 curated Chrome extensions active',
+                      style: const TextStyle(fontSize: 11),
+                    ),
+                    onTap: () {
+                      Navigator.pop(sheetContext);
+                      _openWebStoreTab();
                     },
                   ),
                   ListTile(
@@ -2477,10 +2583,11 @@ class _CreateShortcutDialogState extends State<_CreateShortcutDialog> {
   }
 }
 
-/// Smoothly glides and fades the top search/navigation bar upward out of view
-/// when scrolling down and smoothly slides it back down when scrolling up,
-/// using RenderObject-level transitions (`SizeTransition` + `FadeTransition`)
-/// so zero widgets rebuild during animation frames.
+/// Smoothly glides and fades the floating top search/navigation bar upward
+/// out of view when scrolling down and glides it back down when scrolling up,
+/// using pure GPU compositor transforms (`SlideTransition` + `FadeTransition`
+/// inside `RepaintBoundary`) over a constant-size viewport — zero website pull
+/// and zero `WebView` platform-view resize events.
 class _SmoothAutoHideTopBar extends StatefulWidget {
   const _SmoothAutoHideTopBar({
     super.key,
@@ -2498,7 +2605,7 @@ class _SmoothAutoHideTopBar extends StatefulWidget {
 class _SmoothAutoHideTopBarState extends State<_SmoothAutoHideTopBar>
     with SingleTickerProviderStateMixin {
   late final AnimationController _controller;
-  late final Animation<double> _sizeFactor;
+  late final Animation<Offset> _slideOffset;
   late final Animation<double> _opacityFactor;
 
   @override
@@ -2507,18 +2614,23 @@ class _SmoothAutoHideTopBarState extends State<_SmoothAutoHideTopBar>
     _controller = AnimationController(
       vsync: this,
       value: widget.visible ? 1.0 : 0.0,
-      duration: const Duration(milliseconds: 230),
-      reverseDuration: const Duration(milliseconds: 270),
+      duration: const Duration(milliseconds: 220),
+      reverseDuration: const Duration(milliseconds: 250),
     );
-    _sizeFactor = CurvedAnimation(
-      parent: _controller,
-      curve: Curves.easeOutCubic,
-      reverseCurve: Curves.fastOutSlowIn,
+    _slideOffset = Tween<Offset>(
+      begin: const Offset(0.0, -1.12),
+      end: Offset.zero,
+    ).animate(
+      CurvedAnimation(
+        parent: _controller,
+        curve: Curves.easeOutCubic,
+        reverseCurve: Curves.fastOutSlowIn,
+      ),
     );
     _opacityFactor = CurvedAnimation(
       parent: _controller,
-      curve: const Interval(0.15, 1.0, curve: Curves.easeOut),
-      reverseCurve: const Interval(0.0, 0.85, curve: Curves.easeIn),
+      curve: const Interval(0.12, 1.0, curve: Curves.easeOut),
+      reverseCurve: const Interval(0.0, 0.88, curve: Curves.easeIn),
     );
   }
 
@@ -2542,23 +2654,17 @@ class _SmoothAutoHideTopBarState extends State<_SmoothAutoHideTopBar>
 
   @override
   Widget build(BuildContext context) {
-    final Widget content = FadeTransition(
-      opacity: _opacityFactor,
-      child: IgnorePointer(ignoring: !widget.visible, child: widget.child),
-    );
-    return SizedBox(
-      width: double.infinity,
+    return RepaintBoundary(
       child: ClipRect(
-        child: AnimatedBuilder(
-          animation: _sizeFactor,
-          child: content,
-          builder: (BuildContext context, Widget? child) {
-            return Align(
-              alignment: Alignment.bottomCenter,
-              heightFactor: _sizeFactor.value,
-              child: child,
-            );
-          },
+        child: SlideTransition(
+          position: _slideOffset,
+          child: FadeTransition(
+            opacity: _opacityFactor,
+            child: IgnorePointer(
+              ignoring: !widget.visible,
+              child: widget.child,
+            ),
+          ),
         ),
       ),
     );

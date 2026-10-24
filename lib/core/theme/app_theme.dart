@@ -6,6 +6,8 @@ class AppTheme {
   // Electric Sapphire & Celestial Sky Blue Palette (matched to Blue App Icon)
   static const Color sapphireBlue = Color(0xFF2563EB);
   static const Color electricBlue = Color(0xFF3B82F6);
+  static const Color heavenBlue = sapphireBlue;
+  static const Color heavenAccent = Color(0xFF60A5FA);
   static const Color skyHighlight = Color(0xFF93C5FD);
   static const Color deepNavyBg = Color(0xFF040B16);
   static const Color navySurface = Color(0xFF0B162C);

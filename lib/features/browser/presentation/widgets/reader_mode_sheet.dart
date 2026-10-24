@@ -1,9 +1,12 @@
 import 'package:flutter/material.dart';
 
+import '../../../../core/theme/app_theme.dart';
+import '../../../settings/browser_settings.dart';
 import '../../engine/browser_engine.dart';
+import '../../page_translate_reader_service.dart';
 
 enum _ReaderPalette {
-  obsidian(label: 'Obsidian', bg: Color(0xFF0A0F1D), fg: Color(0xFFE5ECF6)),
+  midnight(label: 'Midnight', bg: Color(0xFF040B16), fg: Color(0xFFE8EEF8)),
   sepia(label: 'Sepia', bg: Color(0xFFF6EFE2), fg: Color(0xFF2B2118)),
   paper(label: 'Paper', bg: Color(0xFFFFFFFF), fg: Color(0xFF111827));
 
@@ -16,67 +19,148 @@ enum _ReaderPalette {
   final String label;
   final Color bg;
   final Color fg;
+
+  static _ReaderPalette fromKey(String key) {
+    for (final _ReaderPalette p in _ReaderPalette.values) {
+      if (p.name == key) return p;
+    }
+    return _ReaderPalette.midnight;
+  }
 }
 
 class ReaderModeSheet extends StatefulWidget {
-  const ReaderModeSheet({super.key, required this.article});
+  const ReaderModeSheet({super.key, required this.article, this.settings});
 
   final ReadableArticle article;
+  final BrowserSettingsController? settings;
 
   @override
   State<ReaderModeSheet> createState() => _ReaderModeSheetState();
 }
 
 class _ReaderModeSheetState extends State<ReaderModeSheet> {
-  double _fontSize = 17;
-  _ReaderPalette _palette = _ReaderPalette.obsidian;
+  late double _fontSize;
+  late _ReaderPalette _palette;
+  bool _isTranslating = false;
+  bool _isTranslated = false;
+  String? _translatedTitle;
+  List<String>? _translatedParagraphs;
+
+  @override
+  void initState() {
+    super.initState();
+    _fontSize = widget.settings?.readerFontSize ?? 18.0;
+    _palette = _ReaderPalette.fromKey(
+      widget.settings?.readerTheme ?? 'midnight',
+    );
+  }
+
+  int _estimateReadMinutes() {
+    final int words = widget.article.paragraphs
+        .join(' ')
+        .split(RegExp(r'\s+'))
+        .where((String s) => s.isNotEmpty)
+        .length;
+    return (words / 210).ceil().clamp(1, 90);
+  }
+
+  Future<void> _toggleReaderTranslation() async {
+    if (_isTranslated) {
+      setState(() {
+        _isTranslated = false;
+        _translatedTitle = null;
+        _translatedParagraphs = null;
+      });
+      return;
+    }
+    final String targetLang = widget.settings?.translateTargetLang ?? 'en';
+    setState(() => _isTranslating = true);
+    try {
+      final List<String> input = <String>[
+        widget.article.title,
+        ...widget.article.paragraphs,
+      ];
+      final List<String> out =
+          await PageTranslateReaderService.translateSegments(
+            input,
+            targetLang: targetLang,
+          );
+      if (!mounted) return;
+      if (out.isNotEmpty) {
+        setState(() {
+          _translatedTitle = out.first;
+          _translatedParagraphs = out.sublist(1);
+          _isTranslated = true;
+        });
+      }
+    } finally {
+      if (mounted) {
+        setState(() => _isTranslating = false);
+      }
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
+    final String activeTitle = _translatedTitle ?? widget.article.title;
+    final List<String> activeParagraphs =
+        _translatedParagraphs ?? widget.article.paragraphs;
+    final TranslateLanguage targetLang =
+        PageTranslateReaderService.languageByCode(
+          widget.settings?.translateTargetLang ?? 'en',
+        );
+
     return Container(
-      height: MediaQuery.of(context).size.height * 0.90,
+      key: const Key('clean_reader_view_modal'),
+      height: MediaQuery.of(context).size.height * 0.91,
       decoration: BoxDecoration(
         color: _palette.bg,
-        borderRadius: const BorderRadius.vertical(top: Radius.circular(28)),
+        borderRadius: const BorderRadius.vertical(top: Radius.circular(26)),
       ),
       child: SafeArea(
         child: Column(
           children: <Widget>[
             Padding(
-              padding: const EdgeInsets.fromLTRB(16, 4, 12, 8),
+              padding: const EdgeInsets.fromLTRB(16, 6, 10, 8),
               child: Row(
                 children: <Widget>[
                   Icon(
-                    Icons.menu_book_rounded,
-                    color: _palette.fg.withValues(alpha: 0.8),
+                    Icons.auto_stories_rounded,
+                    color: _palette.fg.withValues(alpha: 0.85),
                     size: 20,
                   ),
                   const SizedBox(width: 8),
-                  Text(
-                    'Heaven Reader',
-                    style: TextStyle(
-                      color: _palette.fg,
-                      fontWeight: FontWeight.w800,
-                      fontSize: 15,
+                  Expanded(
+                    child: Text(
+                      'Clean Reader • ${_estimateReadMinutes()} min read',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        color: _palette.fg,
+                        fontWeight: FontWeight.w800,
+                        fontSize: 14,
+                      ),
                     ),
                   ),
-                  const Spacer(),
                   for (final _ReaderPalette p in _ReaderPalette.values)
                     Padding(
                       padding: const EdgeInsets.only(right: 6),
                       child: InkWell(
                         borderRadius: BorderRadius.circular(999),
-                        onTap: () => setState(() => _palette = p),
+                        onTap: () {
+                          setState(() => _palette = p);
+                          widget.settings?.setReaderTheme(p.name);
+                        },
                         child: Container(
-                          width: 24,
-                          height: 24,
+                          width: 22,
+                          height: 22,
                           decoration: BoxDecoration(
                             color: p.bg,
                             shape: BoxShape.circle,
                             border: Border.all(
                               color: _palette == p
-                                  ? const Color(0xFF00E5FF)
-                                  : Colors.grey,
+                                  ? AppTheme.heavenAccent
+                                  : Colors.grey.withValues(alpha: 0.6),
                               width: _palette == p ? 2.2 : 1,
                             ),
                           ),
@@ -84,21 +168,77 @@ class _ReaderModeSheetState extends State<ReaderModeSheet> {
                       ),
                     ),
                   IconButton(
-                    icon: Icon(Icons.text_decrease_rounded, color: _palette.fg),
+                    key: const Key('reader_translate_button'),
+                    visualDensity: VisualDensity.compact,
+                    padding: EdgeInsets.zero,
+                    constraints: const BoxConstraints(
+                      minWidth: 32,
+                      minHeight: 36,
+                    ),
+                    icon: _isTranslating
+                        ? const SizedBox(
+                            width: 16,
+                            height: 16,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          )
+                        : Icon(
+                            Icons.translate_rounded,
+                            color: _isTranslated
+                                ? AppTheme.heavenAccent
+                                : _palette.fg,
+                            size: 19,
+                          ),
+                    tooltip: _isTranslated
+                        ? 'Show Original'
+                        : 'Translate (${targetLang.name})',
+                    onPressed: _isTranslating ? null : _toggleReaderTranslation,
+                  ),
+                  IconButton(
+                    visualDensity: VisualDensity.compact,
+                    padding: EdgeInsets.zero,
+                    constraints: const BoxConstraints(
+                      minWidth: 32,
+                      minHeight: 36,
+                    ),
+                    icon: Icon(
+                      Icons.text_decrease_rounded,
+                      color: _palette.fg,
+                      size: 19,
+                    ),
                     tooltip: 'Smaller text',
-                    onPressed: () => setState(
-                      () => _fontSize = (_fontSize - 1.5).clamp(13.0, 26.0),
-                    ),
+                    onPressed: () {
+                      final double next = (_fontSize - 1.5).clamp(14.0, 26.0);
+                      setState(() => _fontSize = next);
+                      widget.settings?.setReaderFontSize(next);
+                    },
                   ),
                   IconButton(
-                    icon: Icon(Icons.text_increase_rounded, color: _palette.fg),
+                    visualDensity: VisualDensity.compact,
+                    padding: EdgeInsets.zero,
+                    constraints: const BoxConstraints(
+                      minWidth: 32,
+                      minHeight: 36,
+                    ),
+                    icon: Icon(
+                      Icons.text_increase_rounded,
+                      color: _palette.fg,
+                      size: 19,
+                    ),
                     tooltip: 'Larger text',
-                    onPressed: () => setState(
-                      () => _fontSize = (_fontSize + 1.5).clamp(13.0, 26.0),
-                    ),
+                    onPressed: () {
+                      final double next = (_fontSize + 1.5).clamp(14.0, 26.0);
+                      setState(() => _fontSize = next);
+                      widget.settings?.setReaderFontSize(next);
+                    },
                   ),
                   IconButton(
-                    icon: Icon(Icons.close_rounded, color: _palette.fg),
+                    visualDensity: VisualDensity.compact,
+                    padding: EdgeInsets.zero,
+                    constraints: const BoxConstraints(
+                      minWidth: 32,
+                      minHeight: 36,
+                    ),
+                    icon: Icon(Icons.close_rounded, color: _palette.fg, size: 20),
                     onPressed: () => Navigator.pop(context),
                   ),
                 ],
@@ -121,16 +261,16 @@ class _ReaderModeSheetState extends State<ReaderModeSheet> {
                     ),
                   const SizedBox(height: 8),
                   Text(
-                    widget.article.title,
+                    activeTitle,
                     style: TextStyle(
                       color: _palette.fg,
-                      fontSize: _fontSize + 7,
+                      fontSize: _fontSize + 6,
                       fontWeight: FontWeight.w800,
                       height: 1.25,
                     ),
                   ),
                   const SizedBox(height: 18),
-                  for (final String p in widget.article.paragraphs)
+                  for (final String p in activeParagraphs)
                     Padding(
                       padding: const EdgeInsets.only(bottom: 16),
                       child: SelectableText(

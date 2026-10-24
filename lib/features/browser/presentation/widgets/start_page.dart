@@ -22,6 +22,7 @@ class StartPage extends StatefulWidget {
     required this.onOpenInNewTab,
     required this.onOpenInIncognitoTab,
     required this.onVoiceSearch,
+    this.topOverlayInset = 0,
   });
 
   final BrowserSettingsController settings;
@@ -33,6 +34,7 @@ class StartPage extends StatefulWidget {
   final ValueChanged<String> onOpenInNewTab;
   final ValueChanged<String> onOpenInIncognitoTab;
   final VoidCallback onVoiceSearch;
+  final double topOverlayInset;
 
   @override
   State<StartPage> createState() => _StartPageState();
@@ -166,7 +168,12 @@ class _StartPageState extends State<StartPage> {
             physics: const AlwaysScrollableScrollPhysics(),
             slivers: <Widget>[
               SliverPadding(
-                padding: const EdgeInsets.fromLTRB(18, 26, 18, 12),
+                padding: EdgeInsets.fromLTRB(
+                  18,
+                  22 + widget.topOverlayInset,
+                  18,
+                  12,
+                ),
                 sliver: SliverToBoxAdapter(
                   child: Column(
                     children: <Widget>[

@@ -24,7 +24,7 @@ To deliver a responsive browsing experience, Heaven Browser stores the following
 
 1. **Persistent Open Tabs, Tab Previews & Tab Groups:** Your open normal tabs, tab preview thumbnails, tab groups, and active tab position are saved locally so your workspace is restored when you reopen the app. You can close tabs individually or wipe all sessions at any time using **Burn All Tabs & Site Data**.
 2. **Bookmarks, History & Quick-Launch Sites:** Pages you visit or bookmark outside Incognito Mode are saved locally on your device. Incognito Mode never records browsing history, search queries, or site usage, and scrubs session cookies and WebView storage when Incognito tabs are closed.
-3. **Per-Site Permissions:** Your site-by-site decisions (Allow, Block, or Ask) for Location, Camera, Microphone, JavaScript, Pop-ups, Protected Media, and Web Notifications are stored locally and can be revoked in one tap from the **Per-Site Permission Dashboard**.
+3. **Heaven Web Store Extensions & Reader Preferences:** Your enabled extensions from the built-in **Heaven Web Store** (curated Top 10 Chrome Desktop extensions), preferred translation language, and Clean Reader font/theme settings are saved locally on your device.
 4. **Downloaded Files & Media Streams:** Files, videos, and audio streams you choose to download are saved directly to your chosen local Downloads folder on your device and managed inside the built-in **Downloads** tab.
 
 ---
@@ -44,16 +44,17 @@ Heaven Browser requests only the Android permissions required for features you a
 - **Internet & Network State (`INTERNET`, `ACCESS_NETWORK_STATE`):** Required to load websites, download files, and check network connectivity.
 - **Notifications (`POST_NOTIFICATIONS`):** Requested when opening the app so Heaven Browser can display live download progress alerts, offline media stream completion alerts, and background audio playback controls. You can customize or disable notification categories at any time in **Settings -> Notifications** or Android System Settings.
 - **Biometric Authentication (`USE_BIOMETRIC`, `USE_FINGERPRINT`):** Used solely to unlock **Incognito Tabs** or the **Heaven Browser App Lock** via Android's native `BiometricPrompt` (fingerprint or face unlock). Heaven Browser never reads, stores, or transmits raw biometric data; verification is handled entirely by the Android operating system hardware keystore.
-- **Camera, Microphone & Location (`CAMERA`, `RECORD_AUDIO`, `ACCESS_FINE_LOCATION`, `ACCESS_COARSE_LOCATION`):** Never accessed in the background by Heaven Browser itself. These permissions are requested **only** when a website you are visiting explicitly asks to use your camera, microphone, or location **and** you approve that site in Heaven Browser's permission prompt. You can revoke access for any site in a single tap via the **Per-Site Permission Dashboard**.
-- **Foreground Media Playback & Wake Lock (`FOREGROUND_SERVICE`, `FOREGROUND_SERVICE_MEDIA_PLAYBACK`, `WAKE_LOCK`):** Used only while you play background audio/video with the screen locked or in Picture-in-Picture (PiP) mode so Android does not interrupt active playback.
+- **Camera, Microphone & Location (`CAMERA`, `RECORD_AUDIO`, `ACCESS_FINE_LOCATION`, `ACCESS_COARSE_LOCATION`):** Never accessed in the background by Heaven Browser itself. These permissions are requested **only** when a website you are visiting explicitly asks to use your camera, microphone, or location **and** you approve that site in Heaven Browser's permission prompt.
+- **Foreground Media Playback & Wake Lock (`FOREGROUND_SERVICE`, `FOREGROUND_SERVICE_MEDIA_PLAYBACK`, `WAKE_LOCK`):** Used only while you play background audio/video with the screen locked so Android does not interrupt active playback.
 - **Home Screen Shortcuts (`INSTALL_SHORTCUT`):** Used only when you tap **Create shortcut** to pin a website icon to your Android launcher.
 - **VPN Tunnel Service (`VpnService`):** Used only when you explicitly turn on the built-in VPN inside Heaven Browser to route traffic through your selected tunnel. Heaven Browser posts no tracking logs of VPN traffic.
 
 ---
 
-## 5. Native Brave-Style Shields & Multi-Country VPN
+## 5. Heaven Web Store, Instant Translate & Multi-Country VPN
 
-- **On-Device Native Shields:** Heaven runs its ad, tracker, CNAME-uncloaking, cosmetic filtering, SugarCoat surrogate replacement, and anti-fingerprinting ("Farbling") engine **100% locally on your Android device**. Filter rules from public EasyList and EasyPrivacy lists are cached locally on your device without sending any browsing URLs externally.
+- **Heaven Web Store (Curated Top 10 Extensions):** Heaven runs its curated Top 10 Chrome Desktop extensions locally inside the browser runtime with zero telemetry. Optional community lookups (such as SponsorBlock segments, Return YouTube Dislike counts, or Quick Dictionary definitions) are requested only when those specific extensions are enabled and triggered.
+- **Instant Page Translate & Clean Reader Mode:**Clean Reader extracts article text locally on your device. When you tap **Translate Page**, visible text segments are sent directly to Google's public translation endpoint solely to render your requested translation.
 - **Optional Built-In VPN:** When you explicitly connect a country in **Heaven VPN**, traffic is encrypted via OpenVPN or WireGuard using either Browser-Only Split Tunneling (so only Heaven uses the VPN) or Full-Device mode. Heaven never logs, inspects, or stores your VPN traffic.
 
 ---
@@ -69,7 +70,7 @@ The optional Discover news feed on the Start Page fetches public RSS news headli
 You have immediate, complete control over all local data inside Heaven Browser:
 
 - **One-Tap Burn:** Open **Settings -> Burn All Tabs, Cookies & Storage** (or enable **Auto-Burn When App Backgrounded**) to permanently erase open tabs, cookies, DOM storage, cache, and browsing history.
-- **Per-Site Cleanup:** Open **Site Controls / Permissions** on any webpage to revoke permissions or clear cookies and storage for that specific domain.
+- **Per-Site Cleanup:** Open **Translate & Reader** on any webpage to clear cookies and storage for that specific domain in one tap.
 - **Uninstalling the App:** Uninstalling Heaven Browser from your Android device immediately deletes all data stored inside the app's private storage directory.
 
 ---

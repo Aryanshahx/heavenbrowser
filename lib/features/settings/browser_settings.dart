@@ -7,6 +7,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../../core/l10n/app_strings.dart';
 import '../../core/utils/omnibox_parser.dart';
 import '../shield/native_shield_bridge.dart';
+import '../store/heaven_web_store_models.dart';
 
 enum SitePermissionType {
   location('Location', 'Access your GPS or coarse location'),
@@ -187,9 +188,11 @@ class BrowserSettingsController extends ChangeNotifier {
   static const String _keyDownloadNotifs = 'hb.downloadNotifs.v8';
   static const String _keyBgPlayNotifs = 'hb.bgPlayNotifs.v13';
   static const String _keyWebNotifs = 'hb.webNotifs.v8';
-  static const String _keyBraveShields = 'hb.braveShields.v17';
-  static const String _keyFarbling = 'hb.farbling.v17';
-  static const String _keyDisabledShieldHosts = 'hb.disabledShieldHosts.v17';
+  static const String _keyInstalledExtensions = 'hb.storeInstalledExts.v18';
+  static const String _keyEnabledExtensions = 'hb.storeEnabledExts.v18';
+  static const String _keyTranslateTargetLang = 'hb.translateLang.v18';
+  static const String _keyReaderFontSize = 'hb.readerFontSize.v18';
+  static const String _keyReaderTheme = 'hb.readerTheme.v18';
   static const String _keySiteUsage = 'hb.siteUsage.v3';
   static const String _keyHiddenDomains = 'hb.hiddenQuickDomains.v3';
   static const String _keyBookmarks = 'hb.bookmarks.v3';
@@ -211,13 +214,15 @@ class BrowserSettingsController extends ChangeNotifier {
   bool _downloadNotificationsEnabled = true;
   bool _backgroundPlayNotificationEnabled = true;
   bool _webNotificationsEnabled = false;
-  bool _braveShieldsEnabled = true;
-  bool _farblingEnabled = true;
   int _textScalePercent = 100;
+  String _translateTargetLang = 'en';
+  double _readerFontSize = 18.0;
+  String _readerTheme = 'midnight';
 
   final Set<String> _jsDisabledHosts = <String>{};
   final Set<String> _popupAllowedHosts = <String>{};
-  final Set<String> _disabledShieldHosts = <String>{};
+  final Set<String> _installedExtensionIds = <String>{};
+  final Set<String> _enabledExtensionIds = <String>{};
   final Map<String, Map<SitePermissionType, SitePermissionDecision>>
   _sitePermissions =
       <String, Map<SitePermissionType, SitePermissionDecision>>{};
@@ -247,10 +252,14 @@ class BrowserSettingsController extends ChangeNotifier {
   bool get backgroundPlayNotificationEnabled =>
       _backgroundPlayNotificationEnabled;
   bool get webNotificationsEnabled => _webNotificationsEnabled;
-  bool get braveShieldsEnabled => _braveShieldsEnabled;
-  bool get farblingEnabled => _farblingEnabled;
-  Set<String> get disabledShieldHosts =>
-      Set<String>.unmodifiable(_disabledShieldHosts);
+  Set<String> get installedExtensionIds =>
+      Set<String>.unmodifiable(_installedExtensionIds);
+  Set<String> get enabledExtensionIds =>
+      Set<String>.unmodifiable(_enabledExtensionIds);
+  int get activeExtensionCount => _enabledExtensionIds.length;
+  String get translateTargetLang => _translateTargetLang;
+  double get readerFontSize => _readerFontSize;
+  String get readerTheme => _readerTheme;
   int get textScalePercent => _textScalePercent;
   List<String> get recentSearches => List<String>.unmodifiable(_recentSearches);
   List<BookmarkItem> get bookmarks =>
@@ -320,16 +329,38 @@ class BrowserSettingsController extends ChangeNotifier {
     _backgroundPlayNotificationEnabled =
         _prefs.getBool(_keyBgPlayNotifs) ?? true;
     _webNotificationsEnabled = _prefs.getBool(_keyWebNotifs) ?? false;
-    _braveShieldsEnabled = _prefs.getBool(_keyBraveShields) ?? true;
-    _farblingEnabled = _prefs.getBool(_keyFarbling) ?? true;
+    _translateTargetLang =
+        _prefs.getString(_keyTranslateTargetLang) ?? 'en';
+    _readerFontSize =
+        (_prefs.getDouble(_keyReaderFontSize) ?? 18.0).clamp(14.0, 26.0);
+    _readerTheme = _prefs.getString(_keyReaderTheme) ?? 'midnight';
 
-    final List<String>? savedDisabledShield = _prefs.getStringList(
-      _keyDisabledShieldHosts,
+    final List<String>? savedInstalledExts = _prefs.getStringList(
+      _keyInstalledExtensions,
     );
-    if (savedDisabledShield != null) {
-      _disabledShieldHosts
+    final List<String>? savedEnabledExts = _prefs.getStringList(
+      _keyEnabledExtensions,
+    );
+    if (savedInstalledExts == null) {
+      _installedExtensionIds
         ..clear()
-        ..addAll(savedDisabledShield);
+        ..addAll(HeavenWebStoreCatalog.defaultInstalledIds);
+      _enabledExtensionIds
+        ..clear()
+        ..addAll(HeavenWebStoreCatalog.defaultInstalledIds);
+    } else {
+      _installedExtensionIds
+        ..clear()
+        ..addAll(
+          savedInstalledExts.where(HeavenWebStoreCatalog.validIds.contains),
+        );
+      _enabledExtensionIds
+        ..clear()
+        ..addAll(
+          (savedEnabledExts ?? savedInstalledExts).where(
+            _installedExtensionIds.contains,
+          ),
+        );
     }
 
     final List<String>? savedJsDisabled = _prefs.getStringList(
@@ -453,51 +484,78 @@ class BrowserSettingsController extends ChangeNotifier {
       backgroundMediaEnabled: _backgroundMediaEnabled,
       webNotificationsEnabled: _webNotificationsEnabled,
       backgroundPlayNotificationEnabled: _backgroundPlayNotificationEnabled,
-      braveShieldsEnabled: _braveShieldsEnabled,
-      farblingEnabled: _farblingEnabled,
-      disabledShieldHosts: _disabledShieldHosts.toList(growable: false),
+      enabledExtensions: _enabledExtensionIds.toList(growable: false),
     );
   }
 
-  bool isBraveShieldEnabledForHost(String? host) {
-    if (!_braveShieldsEnabled) {
-      return false;
-    }
-    final String clean = OmniboxParser.cleanDomain(host);
-    if (clean.isEmpty) {
-      return true;
-    }
-    return !_disabledShieldHosts.contains(clean);
-  }
+  bool isExtensionInstalled(String id) => _installedExtensionIds.contains(id);
 
-  Future<void> setBraveShieldsEnabled(bool value) async {
-    if (_braveShieldsEnabled == value) return;
-    _braveShieldsEnabled = value;
-    await _prefs.setBool(_keyBraveShields, value);
+  bool isExtensionEnabled(String id) =>
+      _installedExtensionIds.contains(id) && _enabledExtensionIds.contains(id);
+
+  Future<void> installStoreExtension(String id) async {
+    if (!HeavenWebStoreCatalog.validIds.contains(id)) return;
+    _installedExtensionIds.add(id);
+    _enabledExtensionIds.add(id);
+    await _persistStoreExtensions();
+    _webViewConfigRevision += 1;
     _pushNativeBrowserConfig();
     notifyListeners();
   }
 
-  Future<void> setFarblingEnabled(bool value) async {
-    if (_farblingEnabled == value) return;
-    _farblingEnabled = value;
-    await _prefs.setBool(_keyFarbling, value);
+  Future<void> removeStoreExtension(String id) async {
+    final bool removedA = _installedExtensionIds.remove(id);
+    final bool removedB = _enabledExtensionIds.remove(id);
+    if (!removedA && !removedB) return;
+    await _persistStoreExtensions();
+    _webViewConfigRevision += 1;
     _pushNativeBrowserConfig();
     notifyListeners();
   }
 
-  Future<void> setBraveShieldForHost(String host, bool enabled) async {
-    final String clean = OmniboxParser.cleanDomain(host);
-    if (clean.isEmpty) return;
+  Future<void> setStoreExtensionEnabled(String id, bool enabled) async {
+    if (!_installedExtensionIds.contains(id)) return;
     final bool changed = enabled
-        ? _disabledShieldHosts.remove(clean)
-        : _disabledShieldHosts.add(clean);
+        ? _enabledExtensionIds.add(id)
+        : _enabledExtensionIds.remove(id);
     if (!changed) return;
-    await _prefs.setStringList(
-      _keyDisabledShieldHosts,
-      _disabledShieldHosts.toList(growable: false),
-    );
+    await _persistStoreExtensions();
+    _webViewConfigRevision += 1;
     _pushNativeBrowserConfig();
+    notifyListeners();
+  }
+
+  Future<void> _persistStoreExtensions() async {
+    await _prefs.setStringList(
+      _keyInstalledExtensions,
+      _installedExtensionIds.toList(growable: false),
+    );
+    await _prefs.setStringList(
+      _keyEnabledExtensions,
+      _enabledExtensionIds.toList(growable: false),
+    );
+  }
+
+  Future<void> setTranslateTargetLang(String langCode) async {
+    final String clean = langCode.trim();
+    if (clean.isEmpty || _translateTargetLang == clean) return;
+    _translateTargetLang = clean;
+    await _prefs.setString(_keyTranslateTargetLang, clean);
+    notifyListeners();
+  }
+
+  Future<void> setReaderFontSize(double size) async {
+    final double clamped = size.clamp(14.0, 26.0);
+    if ((_readerFontSize - clamped).abs() < 0.05) return;
+    _readerFontSize = clamped;
+    await _prefs.setDouble(_keyReaderFontSize, clamped);
+    notifyListeners();
+  }
+
+  Future<void> setReaderTheme(String theme) async {
+    if (_readerTheme == theme) return;
+    _readerTheme = theme;
+    await _prefs.setString(_keyReaderTheme, theme);
     notifyListeners();
   }
 
