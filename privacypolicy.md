@@ -53,7 +53,7 @@ Heaven Browser requests only the Android permissions required for features you a
 
 ## 5. Heaven Shield, Instant Translate & Multi-Country VPN
 
-- **Heaven Shield (Customizable Privacy & Ad Protection):** Heaven Shield runs 100% locally on your device with customizable Standard/Strict modes, Ad & Tracker blocking, Cookie Banner suppression, Tracking URL parameter cleaning, Anti-Fingerprinting protection, Popup/Redirect guard, and per-site exceptions — with zero cloud telemetry.
+- **Heaven Shield & Privacy (Local Zero-Telemetry Protection):** Heaven Shield runs 100% locally on your device with customizable global defaults and per-site settings — including Ad & Tracker blocking (`Standard` / `Aggressive`), Auto-redirect AMP pages, Auto-redirect tracking URLs, HTTPS upgrades, Script & Cookie controls, Anti-Fingerprinting & Language-Entropy protection, Content Filtering & Custom CSS/Domain rules, Auto Shred, Interactive Element Blocking, Social Media embed blocking (Facebook, X/Twitter, LinkedIn), Safe Browsing, WebRTC IP leak policy, Private-tab screenshot & lock protection, Web3 domain gateway resolution, Secure DNS, and `'Switch to App'` notice suppression — with zero cloud telemetry.
 - **Instant Page Translate & Clean Reader Mode:**Clean Reader extracts article text locally on your device. When you tap **Translate Page**, visible text segments are sent directly to Google's public translation endpoint solely to render your requested translation.
 - **Optional Built-In VPN:** When you explicitly connect a country in **Heaven VPN**, traffic is encrypted via OpenVPN or WireGuard using either Browser-Only Split Tunneling (so only Heaven uses the VPN) or Full-Device mode. Heaven never logs, inspects, or stores your VPN traffic.
 

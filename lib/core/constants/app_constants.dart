@@ -5,6 +5,7 @@ class AppConstants {
   static const String searchEngineName = 'Google Search';
   static const String appVersion = '0.0.1';
   static const String packageName = 'com.hypertechlabs.heavenbrowser';
+  static const String supportEmail = 'techlabs.hyper@gmail.com';
   static const String githubRepoUrl =
       'https://github.com/Aryanshahx/heavenbrowser';
   static const String privacyPolicyUrl =

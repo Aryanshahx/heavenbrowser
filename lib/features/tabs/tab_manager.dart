@@ -11,6 +11,7 @@ import '../../core/constants/app_constants.dart';
 import '../../core/utils/omnibox_parser.dart';
 import '../browser/engine/browser_engine.dart';
 import '../settings/browser_settings.dart';
+import '../shield/native_shield_bridge.dart';
 
 class TabGroup {
   TabGroup({
@@ -145,7 +146,7 @@ class TabManagerController extends ChangeNotifier {
   }
 
   void _restoreOrInitializeSession() {
-    if (settings.clearOnExit) {
+    if (settings.clearOnExit || settings.closeTabsOnExit) {
       unawaited(settings.prefs.remove(_keySavedTabs));
       unawaited(settings.prefs.remove(_keySavedGroups));
       unawaited(settings.prefs.remove(_keySavedActiveTab));
@@ -268,7 +269,9 @@ class TabManagerController extends ChangeNotifier {
   }
 
   void _persistSessionSnapshot({bool force = false}) {
-    if (settings.clearOnExit) {
+    if (settings.clearOnExit || settings.closeTabsOnExit) {
+      unawaited(settings.prefs.remove(_keySavedTabs));
+      unawaited(settings.prefs.remove(_keySavedActiveTab));
       return;
     }
     final int now = DateTime.now().millisecondsSinceEpoch;
@@ -478,6 +481,7 @@ class TabManagerController extends ChangeNotifier {
     _tabs.add(tab);
     if (switchTo) {
       _activeTabId = id;
+      _syncPrivateScreenshotSecurity();
     }
     _bumpViewport();
     return tab;
@@ -554,9 +558,20 @@ class TabManagerController extends ChangeNotifier {
     _activeTabId = tabId;
     target.lastActiveAt = DateTime.now();
     unawaited(target.engine.focusNativeWebView());
+    _syncPrivateScreenshotSecurity();
     _bumpViewport();
     _persistSessionSnapshot(force: true);
     notifyListeners();
+  }
+
+  void _syncPrivateScreenshotSecurity() {
+    if (!enablePlatformWebView) return;
+    unawaited(
+      NativeShieldBridge.instance.updatePrivateWindowSecurity(
+        blockScreenshots:
+            isActiveIncognito && !settings.allowPrivateScreenshots,
+      ),
+    );
   }
 
   Future<void> closeTab(String tabId) async {
@@ -565,9 +580,24 @@ class TabManagerController extends ChangeNotifier {
       return;
     }
     final BrowserTab removed = _tabs.removeAt(idx);
+    final String closedHost = OmniboxParser.cleanDomain(
+      removed.engine.currentUrl,
+    );
     _lastEngineSummaryByTab.remove(removed.id);
     removed.engine.removeListener(_onTabEngineChanged);
     _removePersistedTabPreview(removed.id);
+
+    if (!removed.isIncognito &&
+        closedHost.isNotEmpty &&
+        settings.autoShredMode == HeavenAutoShredMode.siteTabClosed) {
+      final bool stillOpenElsewhere = _tabs.any(
+        (BrowserTab t) =>
+            OmniboxParser.cleanDomain(t.engine.currentUrl) == closedHost,
+      );
+      if (!stillOpenElsewhere && enablePlatformWebView) {
+        unawaited(NativeShieldBridge.instance.clearSiteData(domain: closedHost));
+      }
+    }
 
     if (removed.isIncognito) {
       final bool moreIncognito = _tabs.any((BrowserTab t) => t.isIncognito);
@@ -590,6 +620,7 @@ class TabManagerController extends ChangeNotifier {
         _activeTabId = _tabs[nextIdx].id;
       }
     }
+    _syncPrivateScreenshotSecurity();
     _bumpViewport();
     _persistSessionSnapshot(force: true);
     notifyListeners();

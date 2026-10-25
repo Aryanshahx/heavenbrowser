@@ -194,11 +194,11 @@ class SettingsScreen extends StatelessWidget {
                             ? AppTheme.shieldEmerald
                             : colors.onSurfaceVariant,
                       ),
-                      title: const Text('Heaven Shield'),
+                      title: const Text('Heaven Shield & privacy'),
                       subtitle: Text(
                         settings.shieldEnabled
-                            ? '${settings.shieldMode.label} • ${settings.activeShieldProtectionCount} protections active'
-                            : 'Paused — tap to customize protections',
+                            ? '${settings.trackersAdsLevel.label} • De-AMP, WebRTC, Cookies & Shred'
+                            : 'Paused — tap to customize Shield & privacy',
                         style: const TextStyle(fontSize: 11.5),
                       ),
                       trailing: Icon(
@@ -211,6 +211,7 @@ class SettingsScreen extends StatelessWidget {
                           MaterialPageRoute<void>(
                             builder: (_) => HeavenShieldScreen(
                               settings: settings,
+                              tabManager: tabManager,
                               currentHost: tabManager.activeEngine.currentHost,
                               activeWebViewId:
                                   tabManager.activeEngine.androidWebViewId,

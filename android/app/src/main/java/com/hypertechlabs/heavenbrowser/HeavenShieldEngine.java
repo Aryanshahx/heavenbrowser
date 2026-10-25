@@ -20,6 +20,7 @@ import android.webkit.WebView;
 import android.webkit.WebViewClient;
 import java.io.ByteArrayInputStream;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
@@ -33,8 +34,8 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
- * Native Heaven Shield Engine — zero-jank O(1) subresource ad/tracker filter and customizable
- * {@code DOCUMENT_START} privacy runtime.
+ * Native Heaven Shield Engine — zero-jank O(1) subresource ad/tracker/social/malware filter and
+ * customizable {@code DOCUMENT_START} privacy runtime.
  *
  * <p>Engineered for 120Hz scrolling smoothness: performs zero IPC/MethodChannel calls on
  * subresource interception, maintaining lock-free atomic counters queried passively by Flutter.
@@ -107,7 +108,6 @@ public final class HeavenShieldEngine {
                   "googletagmanager.com",
                   "googletagservices.com",
                   "analytics.google.com",
-                  "connect.facebook.net",
                   "pixel.facebook.com",
                   "analytics.tiktok.com",
                   "ads-twitter.com",
@@ -151,26 +151,98 @@ public final class HeavenShieldEngine {
                   "optimizely.com",
                   "crazyegg.com",
                   "luckyorange.com",
-                  "cleverpush.com",
-                  "onesignal.com")));
+                  "cleverpush.com")));
 
-  private static final byte[] EMPTY_JS = "/**/".getBytes(StandardCharsets.UTF_8);
-  private static final byte[] EMPTY_CSS = "".getBytes(StandardCharsets.UTF_8);
-  private static final byte[] EMPTY_TEXT = "".getBytes(StandardCharsets.UTF_8);
-  // 1x1 transparent GIF (43 bytes)
+  private static final Set<String> FACEBOOK_EMBED_DOMAINS =
+      Collections.unmodifiableSet(
+          new HashSet<>(
+              Arrays.asList(
+                  "connect.facebook.net",
+                  "graph.facebook.com",
+                  "an.facebook.com",
+                  "pixel.facebook.com")));
+
+  private static final Set<String> TWITTER_EMBED_DOMAINS =
+      Collections.unmodifiableSet(
+          new HashSet<>(
+              Arrays.asList(
+                  "platform.twitter.com",
+                  "syndication.twitter.com",
+                  "publish.twitter.com",
+                  "platform.x.com",
+                  "syndication.x.com")));
+
+  private static final Set<String> LINKEDIN_EMBED_DOMAINS =
+      Collections.unmodifiableSet(
+          new HashSet<>(
+              Arrays.asList(
+                  "platform.linkedin.com", "snap.licdn.com", "px.ads.linkedin.com")));
+
+  private static final Set<String> REGIONAL_INDIA_DOMAINS =
+      Collections.unmodifiableSet(
+          new HashSet<>(
+              Arrays.asList(
+                  "colombiaonline.com",
+                  "clmbtech.com",
+                  "izooto.com",
+                  "vcommission.com",
+                  "vizury.com",
+                  "moengage.com",
+                  "clevertap-prod.com",
+                  "wzrkt.com",
+                  "webengage.com")));
+
+  private static final Set<String> MOBILE_NOTIF_ANNOYANCE_DOMAINS =
+      Collections.unmodifiableSet(
+          new HashSet<>(
+              Arrays.asList(
+                  "onesignal.com",
+                  "pushengage.com",
+                  "pushwoosh.com",
+                  "gravitec.net",
+                  "sendpulse.com",
+                  "subscribers.com",
+                  "webpushr.com",
+                  "pushnami.com")));
+
+  private static final Set<String> ENHANCED_THREAT_DOMAINS =
+      Collections.unmodifiableSet(
+          new HashSet<>(
+              Arrays.asList(
+                  "coinhive.com",
+                  "crypto-loot.com",
+                  "jsecoin.com",
+                  "webminepool.com",
+                  "authedmine.com",
+                  "minero.cc")));
+
+  private static final byte[] EMPTY_JS = "/*hb*/".getBytes(StandardCharsets.UTF_8);
+  private static final byte[] EMPTY_CSS = "/*hb*/".getBytes(StandardCharsets.UTF_8);
+  private static final byte[] EMPTY_TEXT = new byte[0];
   private static final byte[] TRANSPARENT_GIF =
       new byte[] {
-        0x47, 0x49, 0x46, 0x38, 0x39, 0x61, 0x01, 0x00, 0x01, 0x00, (byte) 0x80, 0x00, 0x00,
-        0x00, 0x00, 0x00, (byte) 0xff, (byte) 0xff, (byte) 0xff, 0x21, (byte) 0xf9, 0x04, 0x01,
-        0x00, 0x00, 0x00, 0x00, 0x2c, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00,
-        0x02, 0x02, 0x44, 0x01, 0x00, 0x3b
+        0x47, 0x49, 0x46, 0x38, 0x39, 0x61, 0x01, 0x00, 0x01, 0x00, (byte) 0x80, 0x00, 0x00, 0x00,
+        0x00, 0x00, (byte) 0xFF, (byte) 0xFF, (byte) 0xFF, 0x21, (byte) 0xF9, 0x04, 0x01, 0x00,
+        0x00, 0x00, 0x00, 0x2C, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x02, 0x02,
+        0x44, 0x01, 0x00, 0x3B
       };
+
+  public static final class HostCssRule {
+    public final String host; // empty string = global rule
+    public final String selector;
+
+    HostCssRule(String host, String selector) {
+      this.host = host;
+      this.selector = selector;
+    }
+  }
 
   private final SharedPreferences prefs;
   private final AtomicLong totalBlockedCount = new AtomicLong(0L);
+  private final AtomicLong unpersistedDelta = new AtomicLong(0L);
   private final ConcurrentHashMap<Long, AtomicInteger> pageBlockedByWv = new ConcurrentHashMap<>();
   private final ConcurrentHashMap<Long, String> activeHostByWv = new ConcurrentHashMap<>();
-  private final Set<String> disabledHosts = ConcurrentHashMap.newKeySet();
+  private final Set<Long> wrappedWebViewIds = ConcurrentHashMap.newKeySet();
 
   private volatile boolean shieldEnabled = true;
   private volatile boolean strictMode = false;
@@ -178,102 +250,172 @@ public final class HeavenShieldEngine {
   private volatile boolean blockCookieBanners = true;
   private volatile boolean cleanTrackingUrls = true;
   private volatile boolean antiFingerprinting = true;
-  private volatile boolean blockPopupsAndRedirects = true;
+  private volatile boolean blockPopups = true;
+
+  // Step 20: Extended Heaven Shield & Privacy protections
+  private volatile boolean autoRedirectAmp = true;
+  private volatile boolean preventLanguageFingerprinting = true;
+  private volatile boolean allowFacebookEmbeds = true;
+  private volatile boolean allowTwitterEmbeds = true;
+  private volatile boolean allowLinkedinEmbeds = false;
+  private volatile String safeBrowsingMode = "standard"; // enhanced | standard | off
+  private volatile String webrtcPolicy = "default"; // default | public_only | public_and_private | disable_non_proxied_udp
+  private volatile boolean allowPaymentMethodQuery = true;
+  private volatile boolean strictJsSecurity = false;
+  private volatile boolean blockSwitchToAppNotices = true;
+  private volatile boolean sendDoNotTrack = false;
+  private volatile boolean filterFanboyAnnoyances = true;
+  private volatile boolean filterMobileNotifications = true;
+  private volatile boolean filterAntiAdblockKiller = true;
+  private volatile boolean filterRegionalIndia = false;
+  private volatile boolean filterRegionalGlobal = false;
+
+  private volatile Set<String> disabledHosts = Collections.emptySet();
+  private volatile Set<String> customBlockedDomains = Collections.emptySet();
+  private volatile List<HostCssRule> customCssRules = Collections.emptyList();
   private volatile String cachedDocumentStartBundle = null;
 
-  public HeavenShieldEngine(Context appContext) {
-    this.prefs = appContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
+  public HeavenShieldEngine(Context context) {
+    this.prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
     this.totalBlockedCount.set(Math.max(0L, this.prefs.getLong(KEY_TOTAL_BLOCKED, 0L)));
   }
 
   public void updateConfiguration(
-      Boolean shieldEnabledArg,
-      Boolean strictModeArg,
-      Boolean blockAdsArg,
-      Boolean blockCookieBannersArg,
-      Boolean cleanUrlsArg,
-      Boolean antiFingerprintArg,
-      Boolean blockPopupsArg,
-      List<String> disabledHostsArg) {
-    boolean changed = false;
-    if (shieldEnabledArg != null && this.shieldEnabled != shieldEnabledArg) {
-      this.shieldEnabled = shieldEnabledArg;
-      changed = true;
+      Boolean enabled,
+      Boolean strict,
+      Boolean blockAds,
+      Boolean cookieBanners,
+      Boolean cleanUrls,
+      Boolean antiFp,
+      Boolean popups,
+      List<String> allowlistedHosts) {
+    if (enabled != null) {
+      this.shieldEnabled = enabled;
     }
-    if (strictModeArg != null && this.strictMode != strictModeArg) {
-      this.strictMode = strictModeArg;
-      changed = true;
+    if (strict != null) {
+      this.strictMode = strict;
     }
-    if (blockAdsArg != null && this.blockAdsAndTrackers != blockAdsArg) {
-      this.blockAdsAndTrackers = blockAdsArg;
-      changed = true;
+    if (blockAds != null) {
+      this.blockAdsAndTrackers = blockAds;
     }
-    if (blockCookieBannersArg != null && this.blockCookieBanners != blockCookieBannersArg) {
-      this.blockCookieBanners = blockCookieBannersArg;
-      changed = true;
+    if (cookieBanners != null) {
+      this.blockCookieBanners = cookieBanners;
     }
-    if (cleanUrlsArg != null && this.cleanTrackingUrls != cleanUrlsArg) {
-      this.cleanTrackingUrls = cleanUrlsArg;
-      changed = true;
+    if (cleanUrls != null) {
+      this.cleanTrackingUrls = cleanUrls;
     }
-    if (antiFingerprintArg != null && this.antiFingerprinting != antiFingerprintArg) {
-      this.antiFingerprinting = antiFingerprintArg;
-      changed = true;
+    if (antiFp != null) {
+      this.antiFingerprinting = antiFp;
     }
-    if (blockPopupsArg != null && this.blockPopupsAndRedirects != blockPopupsArg) {
-      this.blockPopupsAndRedirects = blockPopupsArg;
-      changed = true;
+    if (popups != null) {
+      this.blockPopups = popups;
     }
-    if (disabledHostsArg != null) {
-      Set<String> normalized = new HashSet<>();
-      for (String raw : disabledHostsArg) {
+    if (allowlistedHosts != null) {
+      Set<String> next = new HashSet<>();
+      for (String raw : allowlistedHosts) {
         String h = normalizeHost(raw);
         if (!h.isEmpty()) {
-          normalized.add(h);
+          next.add(h);
         }
       }
-      if (!normalized.equals(this.disabledHosts)) {
-        this.disabledHosts.clear();
-        this.disabledHosts.addAll(normalized);
-        changed = true;
-      }
+      this.disabledHosts = Collections.unmodifiableSet(next);
     }
-    if (changed) {
-      this.cachedDocumentStartBundle = null;
+    this.cachedDocumentStartBundle = null;
+  }
+
+  public void updateExtendedPrivacyConfiguration(
+      Boolean autoAmp,
+      Boolean langFp,
+      Boolean fbEmbeds,
+      Boolean twEmbeds,
+      Boolean liEmbeds,
+      String safeBrowsing,
+      String webrtc,
+      Boolean paymentQuery,
+      Boolean strictJs,
+      Boolean switchToApp,
+      Boolean dnt,
+      Boolean fanboyAnnoyances,
+      Boolean mobileNotifs,
+      Boolean antiAdblock,
+      Boolean regionalIndia,
+      Boolean regionalGlobal,
+      List<String> rawCustomRules) {
+    if (autoAmp != null) this.autoRedirectAmp = autoAmp;
+    if (langFp != null) this.preventLanguageFingerprinting = langFp;
+    if (fbEmbeds != null) this.allowFacebookEmbeds = fbEmbeds;
+    if (twEmbeds != null) this.allowTwitterEmbeds = twEmbeds;
+    if (liEmbeds != null) this.allowLinkedinEmbeds = liEmbeds;
+    if (safeBrowsing != null && !safeBrowsing.trim().isEmpty()) {
+      this.safeBrowsingMode = safeBrowsing.trim().toLowerCase(Locale.US);
+    }
+    if (webrtc != null && !webrtc.trim().isEmpty()) {
+      this.webrtcPolicy = webrtc.trim().toLowerCase(Locale.US);
+    }
+    if (paymentQuery != null) this.allowPaymentMethodQuery = paymentQuery;
+    if (strictJs != null) this.strictJsSecurity = strictJs;
+    if (switchToApp != null) this.blockSwitchToAppNotices = switchToApp;
+    if (dnt != null) this.sendDoNotTrack = dnt;
+    if (fanboyAnnoyances != null) this.filterFanboyAnnoyances = fanboyAnnoyances;
+    if (mobileNotifs != null) this.filterMobileNotifications = mobileNotifs;
+    if (antiAdblock != null) this.filterAntiAdblockKiller = antiAdblock;
+    if (regionalIndia != null) this.filterRegionalIndia = regionalIndia;
+    if (regionalGlobal != null) this.filterRegionalGlobal = regionalGlobal;
+
+    if (rawCustomRules != null) {
+      Set<String> doms = new HashSet<>();
+      List<HostCssRule> css = new ArrayList<>();
+      for (String rawLine : rawCustomRules) {
+        if (rawLine == null) continue;
+        String line = rawLine.trim();
+        if (line.isEmpty() || line.startsWith("!") || line.startsWith("[")) {
+          continue;
+        }
+        int cssIdx = line.indexOf("##");
+        if (cssIdx >= 0) {
+          String hostPart = normalizeHost(line.substring(0, cssIdx));
+          String selPart = line.substring(cssIdx + 2).trim();
+          if (!selPart.isEmpty() && selPart.length() <= 240 && !selPart.contains("{")) {
+            css.add(new HostCssRule(hostPart, selPart));
+          }
+          continue;
+        }
+        String ruleDom = line;
+        if (ruleDom.startsWith("||")) {
+          ruleDom = ruleDom.substring(2);
+        }
+        int caret = ruleDom.indexOf('^');
+        if (caret >= 0) {
+          ruleDom = ruleDom.substring(0, caret);
+        }
+        String normDom = normalizeHost(ruleDom);
+        if (!normDom.isEmpty() && normDom.contains(".")) {
+          doms.add(normDom);
+        }
+      }
+      this.customBlockedDomains = Collections.unmodifiableSet(doms);
+      this.customCssRules = Collections.unmodifiableList(css);
+    }
+    this.cachedDocumentStartBundle = null;
+  }
+
+  public void updateWebViewHost(long webViewId, String rawHostOrUrl) {
+    String clean = normalizeHost(rawHostOrUrl);
+    if (!clean.isEmpty()) {
+      String prev = activeHostByWv.put(webViewId, clean);
+      if (!clean.equals(prev)) {
+        pageBlockedByWv.put(webViewId, new AtomicInteger(0));
+      }
     }
   }
 
-  public void updateWebViewHost(long webViewId, String rawHost) {
-    String clean = normalizeHost(rawHost);
-    String prev = activeHostByWv.put(webViewId, clean);
-    if (prev == null || !prev.equals(clean)) {
-      pageBlockedByWv.put(webViewId, new AtomicInteger(0));
-    }
-  }
-
-  public void attachClient(final WebView webView, final long webViewId, final String initialHost) {
-    if (webView == null) {
-      return;
-    }
-    if (initialHost != null && !initialHost.isEmpty()) {
-      updateWebViewHost(webViewId, initialHost);
-    } else {
-      pageBlockedByWv.putIfAbsent(webViewId, new AtomicInteger(0));
-    }
-    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-      try {
-        WebViewClient existing = webView.getWebViewClient();
-        if (existing != null && !(existing instanceof ShieldWebViewClient)) {
-          webView.setWebViewClient(new ShieldWebViewClient(existing, webViewId));
-        }
-      } catch (Throwable ignored) {
-      }
-    }
+  public void resetPageBlocked(long webViewId) {
+    pageBlockedByWv.put(webViewId, new AtomicInteger(0));
   }
 
   public Map<String, Object> getStats(long webViewId) {
     Map<String, Object> out = new HashMap<>(4);
-    AtomicInteger pageCounter = pageBlockedByWv.get(webViewId);
+    AtomicInteger pageCounter = webViewId >= 0 ? pageBlockedByWv.get(webViewId) : null;
     out.put("pageBlocked", pageCounter != null ? pageCounter.get() : 0);
     out.put("totalBlocked", totalBlockedCount.get());
     out.put("shieldEnabled", shieldEnabled);
@@ -326,22 +468,97 @@ public final class HeavenShieldEngine {
     }
     if (s.startsWith("www.") && s.length() > 4) {
       s = s.substring(4);
+    } else if (s.startsWith("m.") && s.length() > 2) {
+      s = s.substring(2);
     }
     return s;
   }
 
-  private boolean shouldBlockDomain(String requestHost, String pageHost) {
-    if (requestHost == null || requestHost.isEmpty()) {
+  public void attachClient(WebView webView, long webViewId, String initialHost) {
+    if (initialHost != null && !initialHost.trim().isEmpty()) {
+      updateWebViewHost(webViewId, initialHost);
+    }
+    attachClientWrapperIfNeeded(webView, webViewId);
+  }
+
+  public void attachClientWrapperIfNeeded(WebView webView, long webViewId) {
+    if (webView == null || Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
+      return;
+    }
+    if (!wrappedWebViewIds.add(webViewId)) {
+      return;
+    }
+    try {
+      WebViewClient existing = webView.getWebViewClient();
+      if (existing != null && !(existing instanceof ShieldWebViewClient)) {
+        webView.setWebViewClient(new ShieldWebViewClient(existing, webViewId));
+      }
+    } catch (Throwable ignored) {
+      wrappedWebViewIds.remove(webViewId);
+    }
+  }
+
+  boolean shouldBlockDomain(String reqHost, String pageHost) {
+    String cur = normalizeHost(reqHost);
+    if (cur.isEmpty()) {
       return false;
     }
-    String cur = requestHost.toLowerCase(Locale.US);
-    // Never block same-site first-party resources so site logins/assets stay 100% intact.
-    if (pageHost != null && !pageHost.isEmpty()) {
-      if (cur.equals(pageHost) || cur.endsWith("." + pageHost)) {
-        return false;
+    String normPage = normalizeHost(pageHost);
+
+    // Enhanced Safe Browsing cryptominer/threat block applies regardless of 1P/3P
+    if (!"off".equals(this.safeBrowsingMode)) {
+      String threatCheck = cur;
+      while (true) {
+        if (ENHANCED_THREAT_DOMAINS.contains(threatCheck)) {
+          return true;
+        }
+        int dot = threatCheck.indexOf('.');
+        if (dot < 0 || dot + 1 >= threatCheck.length()) break;
+        threatCheck = threatCheck.substring(dot + 1);
       }
     }
-    final boolean checkStrict = this.strictMode;
+
+    // Never block same-domain first-party subresources
+    if (!normPage.isEmpty() && (cur.equals(normPage) || cur.endsWith("." + normPage))) {
+      return false;
+    }
+
+    // Social Media Blocking (only on third-party pages!)
+    if (!this.allowFacebookEmbeds
+        && !normPage.endsWith("facebook.com")
+        && !normPage.endsWith("fb.com")
+        && !normPage.endsWith("instagram.com")
+        && matchesDomainSet(cur, FACEBOOK_EMBED_DOMAINS)) {
+      return true;
+    }
+    if (!this.allowTwitterEmbeds
+        && !normPage.endsWith("twitter.com")
+        && !normPage.endsWith("x.com")
+        && matchesDomainSet(cur, TWITTER_EMBED_DOMAINS)) {
+      return true;
+    }
+    if (!this.allowLinkedinEmbeds
+        && !normPage.endsWith("linkedin.com")
+        && matchesDomainSet(cur, LINKEDIN_EMBED_DOMAINS)) {
+      return true;
+    }
+
+    // Custom filter list domains & Content Filtering lists
+    if (!this.customBlockedDomains.isEmpty() && matchesDomainSet(cur, this.customBlockedDomains)) {
+      return true;
+    }
+    if (this.filterMobileNotifications && matchesDomainSet(cur, MOBILE_NOTIF_ANNOYANCE_DOMAINS)) {
+      return true;
+    }
+    if (this.filterRegionalIndia && matchesDomainSet(cur, REGIONAL_INDIA_DOMAINS)) {
+      return true;
+    }
+
+    if (!this.blockAdsAndTrackers) {
+      return false;
+    }
+
+    final boolean checkStrict = this.strictMode || this.filterRegionalGlobal;
     while (true) {
       if (STANDARD_AD_TRACKER_DOMAINS.contains(cur)
           || (checkStrict && STRICT_EXTRA_TRACKER_DOMAINS.contains(cur))) {
@@ -356,11 +573,23 @@ public final class HeavenShieldEngine {
     return false;
   }
 
+  private static boolean matchesDomainSet(String host, Set<String> set) {
+    String cur = host;
+    while (true) {
+      if (set.contains(cur)) {
+        return true;
+      }
+      int dot = cur.indexOf('.');
+      if (dot < 0 || dot + 1 >= cur.length()) {
+        break;
+      }
+      cur = cur.substring(dot + 1);
+    }
+    return false;
+  }
+
   private WebResourceResponse interceptSubresource(long webViewId, WebResourceRequest request) {
-    if (!this.shieldEnabled
-        || !this.blockAdsAndTrackers
-        || request == null
-        || request.isForMainFrame()) {
+    if (!this.shieldEnabled || request == null || request.isForMainFrame()) {
       return null;
     }
     String pageHost = activeHostByWv.get(webViewId);
@@ -372,37 +601,49 @@ public final class HeavenShieldEngine {
       return null;
     }
     String reqHost = uri.getHost();
-    if (!shouldBlockDomain(reqHost, pageHost)) {
-      String path = uri.getPath();
-      if (!this.strictMode || path == null) {
-        return null;
-      }
+    String path = uri.getPath();
+
+    // Third-party Facebook / Twitter embed iframe paths
+    boolean blocked = shouldBlockDomain(reqHost, pageHost);
+    if (!blocked && reqHost != null && path != null) {
+      String lowerHost = reqHost.toLowerCase(Locale.US);
       String lowerPath = path.toLowerCase(Locale.US);
-      if (!lowerPath.contains("/pagead/")
-          && !lowerPath.contains("/adserver/")
-          && !lowerPath.endsWith("/ads.js")
-          && !lowerPath.endsWith("/prebid.js")) {
-        return null;
+      if (!this.allowFacebookEmbeds
+          && (lowerHost.endsWith("facebook.com"))
+          && (lowerPath.startsWith("/plugins/") || lowerPath.contains("/plugins/post.php"))) {
+        blocked = true;
+      } else if (this.blockAdsAndTrackers && this.strictMode) {
+        if (lowerPath.contains("/pagead/")
+            || lowerPath.contains("/adserver/")
+            || lowerPath.endsWith("/ads.js")
+            || lowerPath.endsWith("/prebid.js")) {
+          blocked = true;
+        }
       }
+    }
+
+    if (!blocked) {
+      return null;
     }
 
     AtomicInteger pageCount = pageBlockedByWv.computeIfAbsent(webViewId, k -> new AtomicInteger(0));
     pageCount.incrementAndGet();
     long nextTotal = totalBlockedCount.incrementAndGet();
-    if ((nextTotal & 7L) == 0L) {
+    if (unpersistedDelta.incrementAndGet() >= 15L) {
+      unpersistedDelta.set(0L);
       prefs.edit().putLong(KEY_TOTAL_BLOCKED, nextTotal).apply();
     }
 
-    String path = uri.getPath() != null ? uri.getPath().toLowerCase(Locale.US) : "";
-    String accept = "";
+    String safePath = path != null ? path.toLowerCase(Locale.US) : "";
     Map<String, String> reqHeaders = request.getRequestHeaders();
+    String accept = "";
     if (reqHeaders != null) {
-      String a = reqHeaders.get("Accept");
-      if (a == null) {
-        a = reqHeaders.get("accept");
+      String rawAccept = reqHeaders.get("Accept");
+      if (rawAccept == null) {
+        rawAccept = reqHeaders.get("accept");
       }
-      if (a != null) {
-        accept = a.toLowerCase(Locale.US);
+      if (rawAccept != null) {
+        accept = rawAccept.toLowerCase(Locale.US);
       }
     }
 
@@ -410,11 +651,11 @@ public final class HeavenShieldEngine {
     respHeaders.put("Access-Control-Allow-Origin", "*");
     respHeaders.put("Cache-Control", "no-store");
 
-    if (path.endsWith(".png")
-        || path.endsWith(".gif")
-        || path.endsWith(".jpg")
-        || path.endsWith(".jpeg")
-        || path.endsWith(".webp")
+    if (safePath.endsWith(".png")
+        || safePath.endsWith(".gif")
+        || safePath.endsWith(".jpg")
+        || safePath.endsWith(".jpeg")
+        || safePath.endsWith(".webp")
         || accept.startsWith("image/")) {
       return new WebResourceResponse(
           "image/gif",
@@ -424,16 +665,13 @@ public final class HeavenShieldEngine {
           respHeaders,
           new ByteArrayInputStream(TRANSPARENT_GIF));
     }
-    if (path.endsWith(".css") || accept.startsWith("text/css")) {
+    if (safePath.endsWith(".css") || accept.startsWith("text/css")) {
       return new WebResourceResponse(
-          "text/css",
-          "utf-8",
-          200,
-          "OK",
-          respHeaders,
-          new ByteArrayInputStream(EMPTY_CSS));
+          "text/css", "utf-8", 200, "OK", respHeaders, new ByteArrayInputStream(EMPTY_CSS));
     }
-    if (path.endsWith(".js") || accept.contains("javascript") || accept.contains("ecmascript")) {
+    if (safePath.endsWith(".js")
+        || accept.contains("javascript")
+        || accept.contains("ecmascript")) {
       return new WebResourceResponse(
           "application/javascript",
           "utf-8",
@@ -443,18 +681,13 @@ public final class HeavenShieldEngine {
           new ByteArrayInputStream(EMPTY_JS));
     }
     return new WebResourceResponse(
-        "text/plain",
-        "utf-8",
-        200,
-        "OK",
-        respHeaders,
-        new ByteArrayInputStream(EMPTY_TEXT));
+        "text/plain", "utf-8", 200, "OK", respHeaders, new ByteArrayInputStream(EMPTY_TEXT));
   }
 
   /**
    * Builds and caches a single zero-jank {@code DOCUMENT_START} bundle containing:
    * 1) Top safe-area inset for the floating zero-pull search bar, and
-   * 2) Customizable Heaven Shield protections (respecting per-site allowlist).
+   * 2) All customizable Heaven Shield & Privacy protections (respecting per-site allowlist).
    */
   public String getCompiledDocumentStartBundle() {
     String existing = cachedDocumentStartBundle;
@@ -462,9 +695,9 @@ public final class HeavenShieldEngine {
       return existing;
     }
 
-    StringBuilder sb = new StringBuilder(10240);
+    StringBuilder sb = new StringBuilder(16384);
     sb.append("(function(){try{");
-    sb.append("if(window.__hbShieldRuntimeV19)return;window.__hbShieldRuntimeV19=true;");
+    sb.append("if(window.__hbShieldRuntimeV20)return;window.__hbShieldRuntimeV20=true;");
 
     // 1. Static top breathing space for the floating zero-pull top bar (never mutates on scroll!)
     sb.append(
@@ -478,6 +711,102 @@ public final class HeavenShieldEngine {
             + "if(document.head||document.documentElement){applyTopSafeSpace();}"
             + "else{document.addEventListener('DOMContentLoaded',applyTopSafeSpace,{once:true});}");
 
+    // 2. Interactive Element Blocker helper (invoked on-demand from Heaven Shield Quick Sheet)
+    sb.append(
+        "window.__hbStartElementPicker=function(){"
+            + "if(window.__hbPickerActive)return;"
+            + "window.__hbPickerActive=true;"
+            + "window.__hbPickedSelector='';"
+            + "var badge=document.createElement('div');"
+            + "badge.id='__hb_picker_hud';"
+            + "badge.style.cssText='position:fixed;bottom:20px;left:50%;transform:translateX(-50%);background:#0B162C;color:#fff;padding:10px 16px;border-radius:999px;font:600 13px system-ui,sans-serif;z-index:2147483647;box-shadow:0 6px 24px rgba(0,0,0,.45);border:1.5px solid #10B981;';"
+            + "badge.textContent='Tap any annoying element to block it (or tap here to cancel)';"
+            + "(document.body||document.documentElement).appendChild(badge);"
+            + "var cleanup=function(){window.__hbPickerActive=false;if(badge.parentNode)badge.parentNode.removeChild(badge);document.removeEventListener('click',onTap,true);};"
+            + "var buildSel=function(el){"
+            + "if(!el||el===document.body||el===document.documentElement)return '';"
+            + "if(el.id&&/^[a-zA-Z][\\w-]*$/.test(el.id))return '#'+el.id;"
+            + "var tag=el.tagName.toLowerCase();"
+            + "var cls=(typeof el.className==='string')?el.className.trim().split(/\\s+/).filter(function(c){return /^[a-zA-Z][\\w-]{2,40}$/.test(c);}).slice(0,2):[];"
+            + "if(cls.length)return tag+'.'+cls.join('.');"
+            + "return tag;"
+            + "};"
+            + "var onTap=function(ev){"
+            + "ev.preventDefault();ev.stopPropagation();"
+            + "if(ev.target===badge){window.__hbPickedSelector='__CANCEL__';cleanup();return;}"
+            + "var sel=buildSel(ev.target);"
+            + "if(sel){try{ev.target.style.setProperty('display','none','important');}catch(_){}}"
+            + "window.__hbPickedSelector=sel||'__CANCEL__';"
+            + "cleanup();"
+            + "};"
+            + "document.addEventListener('click',onTap,true);"
+            + "};");
+
+    // Global WebRTC IP Handling Policy (applies even if site ad-shield is paused)
+    if ("disable_non_proxied_udp".equals(this.webrtcPolicy)
+        || "public_only".equals(this.webrtcPolicy)) {
+      final boolean forceRelay = "disable_non_proxied_udp".equals(this.webrtcPolicy);
+      sb.append(
+          "(function(){"
+              + "var OrigPC=window.RTCPeerConnection||window.webkitRTCPeerConnection;"
+              + "if(!OrigPC)return;"
+              + "var WrappedPC=function(cfg,constraints){"
+              + "var c=cfg?Object.assign({},cfg):{};"
+              + (forceRelay ? "c.iceTransportPolicy='relay';" : "")
+              + "var pc=new OrigPC(c,constraints);"
+              + (!forceRelay
+                  ? "var origAdd=pc.addIceCandidate;"
+                      + "if(origAdd){pc.addIceCandidate=function(cand){"
+                      + "if(cand&&cand.candidate&&/(192\\.168\\.|10\\.|172\\.(1[6-9]|2\\d|3[01])\\.|\\.local)/i.test(cand.candidate)){return Promise.resolve();}"
+                      + "return origAdd.apply(this,arguments);};}"
+                  : "")
+              + "return pc;"
+              + "};"
+              + "WrappedPC.prototype=OrigPC.prototype;"
+              + "try{window.RTCPeerConnection=WrappedPC;window.webkitRTCPeerConnection=WrappedPC;}catch(_){}"
+              + "})();");
+    }
+
+    // Payment method query protection
+    if (!this.allowPaymentMethodQuery) {
+      sb.append(
+          "if(window.PaymentRequest&&PaymentRequest.prototype){"
+              + "PaymentRequest.prototype.canMakePayment=function(){return Promise.resolve(false);};"
+              + "PaymentRequest.prototype.hasEnrolledInstrument=function(){return Promise.resolve(false);};"
+              + "}");
+    }
+
+    // Do Not Track & Global Privacy Control DOM flags
+    if (this.sendDoNotTrack) {
+      sb.append(
+          "try{Object.defineProperty(navigator,'doNotTrack',{get:function(){return '1';},configurable:true});"
+              + "Object.defineProperty(navigator,'globalPrivacyControl',{get:function(){return true;},configurable:true});}catch(_){}");
+    }
+
+    // Strict JavaScript security (disable WebAssembly & SharedArrayBuffer JIT attack surfaces on HTTP/untrusted)
+    if (this.strictJsSecurity) {
+      sb.append(
+          "try{if(location.protocol==='http:'||window.top===window){"
+              + "Object.defineProperty(window,'SharedArrayBuffer',{get:function(){return undefined;},configurable:true});"
+              + "Object.defineProperty(window,'WebAssembly',{get:function(){return undefined;},configurable:true});"
+              + "}}catch(_){}");
+    }
+
+    // Block 'Switch to App' notices
+    if (this.blockSwitchToAppNotices) {
+      sb.append(
+          "function hideSwitchAppPrompts(){"
+              + "if(document.getElementById('__hb_no_app_nag'))return;"
+              + "var s=document.createElement('style');s.id='__hb_no_app_nag';"
+              + "s.textContent='.smartbanner,#smartbanner,[id*=\"branch-banner\"],.branch-journeys-top,[class*=\"SmartBanner\"],[data-testid=\"xpromo-app-selector\"],shreddit-experience-tree,[class*=\"OpenInAppBanner\"]{display:none!important;}';"
+              + "(document.head||document.documentElement).appendChild(s);"
+              + "var metas=document.querySelectorAll('meta[name=\"apple-itunes-app\"],meta[name=\"google-play-app\"]');"
+              + "for(var i=0;i<metas.length;i++){if(metas[i].parentNode)metas[i].parentNode.removeChild(metas[i]);}"
+              + "}"
+              + "if(document.head||document.documentElement){hideSwitchAppPrompts();}"
+              + "else{document.addEventListener('DOMContentLoaded',hideSwitchAppPrompts,{once:true});}");
+    }
+
     if (!this.shieldEnabled) {
       sb.append("}catch(_){}})();");
       String built = sb.toString();
@@ -485,97 +814,159 @@ public final class HeavenShieldEngine {
       return built;
     }
 
-    // Serialize per-site allowlist for fast O(1) client-side check as well.
-    sb.append("var allowSet={");
-    boolean first = true;
-    for (String h : this.disabledHosts) {
-      if (!first) {
-        sb.append(',');
+    // Per-site allowlist check inside JS
+    sb.append("var host=(location.hostname||'').toLowerCase().replace(/^(www\\.|m\\.)/,'');");
+    if (!this.disabledHosts.isEmpty()) {
+      sb.append("var allow=[");
+      boolean first = true;
+      for (String h : this.disabledHosts) {
+        if (!first) sb.append(',');
+        first = false;
+        sb.append('\'').append(escapeJsSingleQuote(h)).append('\'');
       }
-      first = false;
-      sb.append('\'').append(escapeJsSingleQuote(h)).append("':1");
-    }
-    sb.append("};");
-    sb.append(
-        "var curHost=(location.hostname||'').toLowerCase().replace(/^www\\./,'');"
-            + "function isSiteAllowed(h){"
-            + "while(h){if(allowSet[h])return true;var d=h.indexOf('.');if(d<0)break;h=h.slice(d+1);}"
-            + "return false;"
-            + "}"
-            + "if(isSiteAllowed(curHost))return;");
-
-    // 2. Cosmetic Ad-Slot Collapsing CSS (when Ad & Tracker Blocking is enabled)
-    if (this.blockAdsAndTrackers) {
+      sb.append("];");
       sb.append(
-          "function injectAdCosmetics(){"
-              + "if(document.getElementById('__hb_shield_ads_css'))return;"
-              + "var s=document.createElement('style');s.id='__hb_shield_ads_css';"
-              + "s.textContent='"
-              + "ins.adsbygoogle,[id^=\"div-gpt-ad\"],[data-google-query-id],"
-              + "iframe[src*=\"doubleclick.net\"],iframe[src*=\"googlesyndication.com\"],"
-              + ".taboola-widget,.OUTBRAIN,[id^=\"taboola-\"],.ad-slot-banner"
-              + "{display:none!important;height:0!important;min-height:0!important;pointer-events:none!important;}';"
-              + "(document.head||document.documentElement).appendChild(s);"
-              + "}"
-              + "if(document.head||document.documentElement){injectAdCosmetics();}"
-              + "else{document.addEventListener('DOMContentLoaded',injectAdCosmetics,{once:true});}");
+          "for(var i=0;i<allow.length;i++){"
+              + "var ah=allow[i];"
+              + "if(host===ah||host.endsWith('.'+ah))return;"
+              + "}");
     }
 
-    // 3. Cookie & Annoyance Banner Blocker
-    if (this.blockCookieBanners) {
+    // Auto-redirect AMP pages (<html amp> canonical link redirect)
+    if (this.autoRedirectAmp) {
       sb.append(
-          "function injectCookieShield(){"
-              + "if(document.getElementById('__hb_shield_cookie_css'))return;"
-              + "var s=document.createElement('style');s.id='__hb_shield_cookie_css';"
-              + "s.textContent='"
-              + "#onetrust-consent-sdk,#CybotCookiebotDialog,#qc-cmp2-container,"
-              + ".cc-window,.cc-banner,#cookie-law-info-bar,.fc-consent-root,"
-              + "#sp_message_container,[id*=\"cookie-consent\"][role=\"dialog\"]"
-              + "{display:none!important;visibility:hidden!important;pointer-events:none!important;}';"
-              + "(document.head||document.documentElement).appendChild(s);"
+          "document.addEventListener('DOMContentLoaded',function(){try{"
+              + "var root=document.documentElement;"
+              + "if(!root)return;"
+              + "var isAmp=root.hasAttribute('amp')||root.hasAttribute('\\u26a1')||/\\/amp(\\/|$)/i.test(location.pathname);"
+              + "if(!isAmp)return;"
+              + "var canon=document.querySelector('link[rel=\"canonical\"][href]');"
+              + "if(canon&&canon.href&&canon.href!==location.href&&!/(\\/amp(\\/|$)|cdn\\.ampproject\\.org)/i.test(canon.href)){"
+              + "location.replace(canon.href);"
               + "}"
-              + "if(document.head||document.documentElement){injectCookieShield();}"
-              + "else{document.addEventListener('DOMContentLoaded',injectCookieShield,{once:true});}");
+              + "}catch(_){}},{once:true});");
     }
 
-    // 4. Tracking URL Parameter Cleaner (utm_*, fbclid, gclid, msclkid, igshid, mc_eid, yclid)
+    // Anti-Adblock Killer defuser
+    if (this.filterAntiAdblockKiller && this.blockAdsAndTrackers) {
+      sb.append(
+          "try{window.canRunAds=true;window.isAdBlockActive=false;window.google_ad_status=1;}catch(_){}");
+    }
+
+    // Cosmetic Ad, Cookie Banner, Fanboy Annoyances & Custom CSS Element Hiding
+    if (this.blockAdsAndTrackers || this.blockCookieBanners || !this.customCssRules.isEmpty()) {
+      StringBuilder css = new StringBuilder(2048);
+      if (this.blockAdsAndTrackers) {
+        css.append(
+            "ins.adsbygoogle,[id^='div-gpt-ad'],[data-ad-slot],[data-google-query-id],"
+                + "iframe[src*='doubleclick.net'],iframe[src*='googlesyndication.com'],"
+                + ".taboola-widget,.OUTBRAIN,[id*='taboola-']{display:none!important;}");
+      }
+      if (this.blockCookieBanners) {
+        css.append(
+            "#onetrust-consent-sdk,#onetrust-banner-sdk,.onetrust-pc-dark-filter,"
+                + "#CybotCookiebotDialog,#CybotCookiebotDialogBodyUnderlay,"
+                + ".qc-cmp2-container,#sp_message_container,.fc-consent-root,"
+                + "#didomi-host,.cc-window,.cc-banner,[id*='cookie-banner'],"
+                + "[class*='cookie-consent-banner']{display:none!important;}"
+                + "html,body{overflow:auto!important;}");
+      }
+      if (this.filterFanboyAnnoyances) {
+        css.append(
+            ".newsletter-popup,.subscribe-modal,[class*='newsletter-overlay'],"
+                + "[id*='onesignal-slidedown']{display:none!important;}");
+      }
+      for (HostCssRule r : this.customCssRules) {
+        if (r.host.isEmpty()) {
+          css.append(r.selector).append("{display:none!important;}");
+        }
+      }
+      if (css.length() > 0) {
+        sb.append(
+            "function applyShieldCss(){"
+                + "if(document.getElementById('__hb_shield_css'))return;"
+                + "var s=document.createElement('style');s.id='__hb_shield_css';"
+                + "s.textContent='")
+            .append(escapeJsSingleQuote(css.toString()))
+            .append(
+                "';(document.head||document.documentElement).appendChild(s);"
+                    + "}"
+                    + "if(document.head||document.documentElement){applyShieldCss();}"
+                    + "else{document.addEventListener('DOMContentLoaded',applyShieldCss,{once:true});}");
+      }
+      // Host-specific custom CSS rules (including per-site blocked elements)
+      boolean hasHostSpecific = false;
+      for (HostCssRule r : this.customCssRules) {
+        if (!r.host.isEmpty()) {
+          hasHostSpecific = true;
+          break;
+        }
+      }
+      if (hasHostSpecific) {
+        sb.append("(function(){var hCss='';");
+        for (HostCssRule r : this.customCssRules) {
+          if (!r.host.isEmpty()) {
+            sb.append("if(host==='")
+                .append(escapeJsSingleQuote(r.host))
+                .append("'||host.endsWith('.")
+                .append(escapeJsSingleQuote(r.host))
+                .append("')){hCss+='")
+                .append(escapeJsSingleQuote(r.selector))
+                .append("{display:none!important;}';}");
+          }
+        }
+        sb.append(
+            "if(hCss){var injectHost=function(){var hs=document.createElement('style');hs.textContent=hCss;(document.head||document.documentElement).appendChild(hs);};"
+                + "if(document.head||document.documentElement)injectHost();else document.addEventListener('DOMContentLoaded',injectHost,{once:true});}"
+                + "})();");
+      }
+    }
+
+    // URL Tracking Parameter Cleaner inside History API (SPA navigations)
     if (this.cleanTrackingUrls) {
       sb.append(
           "(function(){"
-              + "var dropRx=/^(utm_[a-z0-9_]+|fbclid|gclid|dclid|msclkid|yclid|mc_eid|igshid|_hsenc|_hsmi|vero_id|mkt_tok)$/i;"
-              + "function cleanHref(raw){"
-              + "try{var u=new URL(raw,location.href);if(u.protocol!=='http:'&&u.protocol!=='https:')return null;"
-              + "var dirty=false;var keys=[];u.searchParams.forEach(function(_,k){if(dropRx.test(k))keys.push(k);});"
-              + "for(var i=0;i<keys.length;i++){u.searchParams.delete(keys[i]);dirty=true;}"
-              + "return dirty?u.toString():null;}catch(_){return null;}"
-              + "}"
-              + "var cleanedSelf=cleanHref(location.href);"
-              + "if(cleanedSelf&&window.history&&history.replaceState){try{history.replaceState(history.state,'',cleanedSelf);}catch(_){}}"
-              + "document.addEventListener('click',function(ev){"
-              + "var a=ev.target&&ev.target.closest?ev.target.closest('a[href]'):null;"
-              + "if(!a)return;var c=cleanHref(a.href);if(c)a.href=c;"
-              + "},{capture:true,passive:true});"
+              + "var rx=/^(utm_[a-z0-9_]+|fbclid|gclid|dclid|msclkid|twclid|mc_cid|mc_eid|igshid|_hsenc|_hsmi|yclid|vero_id|mkt_tok|si)$/i;"
+              + "function cleanHref(u){try{"
+              + "var p=new URL(u,location.href);var ch=false;"
+              + "Array.from(p.searchParams.keys()).forEach(function(k){if(rx.test(k)){p.searchParams.delete(k);ch=true;}});"
+              + "return ch?p.toString():u;}catch(_){return u;}}"
+              + "var cleaned=cleanHref(location.href);"
+              + "if(cleaned!==location.href&&history.replaceState){history.replaceState(history.state,'',cleaned);}"
               + "})();");
     }
 
-    // 5. Anti-Fingerprinting Protection
+    // Anti-Fingerprinting Guard
     if (this.antiFingerprinting) {
       sb.append(
           "(function(){"
-              + "try{Object.defineProperty(navigator,'globalPrivacyControl',{get:function(){return true;},configurable:true});}catch(_){}"
-              + "try{Object.defineProperty(navigator,'doNotTrack',{get:function(){return '1';},configurable:true});}catch(_){}"
-              + "if(navigator.getBattery){try{navigator.getBattery=undefined;}catch(_){}}"
-              + "try{if(navigator.connection){Object.defineProperty(navigator,'connection',{get:function(){return undefined;},configurable:true});}}catch(_){}");
-      if (this.strictMode) {
-        sb.append(
-            "try{Object.defineProperty(navigator,'hardwareConcurrency',{get:function(){return 4;},configurable:true});}catch(_){}"
-                + "try{Object.defineProperty(navigator,'deviceMemory',{get:function(){return 8;},configurable:true});}catch(_){}");
-      }
-      sb.append("})();");
+              + "try{Object.defineProperty(navigator,'deviceMemory',{get:function(){return 8;},configurable:true});}catch(_){}"
+              + "try{Object.defineProperty(navigator,'hardwareConcurrency',{get:function(){return 8;},configurable:true});}catch(_){}"
+              + "if(navigator.getBattery){navigator.getBattery=function(){return Promise.reject(new Error('Blocked by Heaven Shield'));};}"
+              + "var origToDataURL=HTMLCanvasElement.prototype.toDataURL;"
+              + "HTMLCanvasElement.prototype.toDataURL=function(){"
+              + "try{var ctx=this.getContext('2d');"
+              + "if(ctx&&this.width>0&&this.height>0&&this.width<=512&&this.height<=512){"
+              + "var img=ctx.getImageData(0,0,1,1);img.data[0]=img.data[0]^1;ctx.putImageData(img,0,0);"
+              + "}}catch(_){}"
+              + "return origToDataURL.apply(this,arguments);"
+              + "};"
+              + "})();");
     }
 
-    // 6. Popup & Unrequested Redirect Guard
-    if (this.blockPopupsAndRedirects) {
+    // Prevent Fingerprinting via Language Settings
+    if (this.preventLanguageFingerprinting) {
+      sb.append(
+          "(function(){try{"
+              + "var baseLang=(navigator.language||'en-US').split('-')[0];"
+              + "var norm=baseLang==='en'?'en-US':baseLang;"
+              + "Object.defineProperty(navigator,'language',{get:function(){return norm;},configurable:true});"
+              + "Object.defineProperty(navigator,'languages',{get:function(){return Object.freeze([norm]);},configurable:true});"
+              + "}catch(_){}})();");
+    }
+
+    // Unrequested Popup & Tab-Under Guard
+    if (this.blockPopups) {
       sb.append(
           "(function(){"
               + "var lastTap=0;"
@@ -603,8 +994,11 @@ public final class HeavenShieldEngine {
       char c = raw.charAt(i);
       if (c == '\\' || c == '\'') {
         out.append('\\');
+      } else if (c == '\n' || c == '\r') {
+        out.append(' ');
+      } else {
+        out.append(c);
       }
-      out.append(c);
     }
     return out.toString();
   }

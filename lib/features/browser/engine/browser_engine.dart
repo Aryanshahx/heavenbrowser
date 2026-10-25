@@ -180,20 +180,27 @@ class BrowserEngine extends ChangeNotifier {
   }
 
   Map<String, String> _headersForTarget({String? host, String? fullUrl}) {
-    if (settings.desktopMode) {
-      return <String, String>{
-        'Sec-CH-UA':
-            '"Chromium";v="134", "Not:A-Brand";v="24", "Google Chrome";v="134"',
-        'Sec-CH-UA-Mobile': '?0',
-        'Sec-CH-UA-Platform': '"Windows"',
-        'Accept-Language': settings.language.acceptLanguageHeader,
-      };
+    final String acceptLang = settings.shieldPreventLangFp
+        ? 'en-US,en;q=0.9'
+        : settings.language.acceptLanguageHeader;
+    final Map<String, String> out = settings.desktopMode
+        ? <String, String>{
+            'Sec-CH-UA':
+                '"Chromium";v="134", "Not:A-Brand";v="24", "Google Chrome";v="134"',
+            'Sec-CH-UA-Mobile': '?0',
+            'Sec-CH-UA-Platform': '"Windows"',
+            'Accept-Language': acceptLang,
+          }
+        : <String, String>{
+            'Sec-CH-UA-Mobile': '?1',
+            'Sec-CH-UA-Platform': '"Android"',
+            'Accept-Language': acceptLang,
+          };
+    if (settings.sendDntAndGpc) {
+      out['DNT'] = '1';
+      out['Sec-GPC'] = '1';
     }
-    return <String, String>{
-      'Sec-CH-UA-Mobile': '?1',
-      'Sec-CH-UA-Platform': '"Android"',
-      'Accept-Language': settings.language.acceptLanguageHeader,
-    };
+    return out;
   }
 
   void _resetCachedControllerFlags() {
@@ -658,27 +665,50 @@ class BrowserEngine extends ChangeNotifier {
     }
 
     if (uri.scheme != 'http' && uri.scheme != 'https') {
-      if (await canLaunchUrl(uri)) {
+      if (settings.allowExternalAppLinks && await canLaunchUrl(uri)) {
         await launchUrl(uri, mode: LaunchMode.externalApplication);
       }
       return NavigationDecision.prevent;
     }
 
-    // Bypass Google's /url?q=... redirect wrapper directly to the destination
+    // Bypass top-level redirect tracking wrappers & AMP pages directly to canonical destination
     if (request.isMainFrame) {
-      final Uri? unwrappedGoogle = OmniboxParser.unwrapGoogleRedirectUri(uri);
-      if (unwrappedGoogle != null && unwrappedGoogle != uri) {
-        final Uri cleanedUnwrapped =
-            settings.isShieldActiveForHost(unwrappedGoogle.host) &&
-                settings.shieldCleanUrls
-            ? BrowserSettingsController.stripTrackingParameters(unwrappedGoogle)
-            : unwrappedGoogle;
-        await _applyControllerSettings(forHost: cleanedUnwrapped.host);
+      final Uri? unwrappedBounce = settings.shieldCleanUrls
+          ? OmniboxParser.unwrapTrackingRedirectUri(uri)
+          : OmniboxParser.unwrapGoogleRedirectUri(uri);
+      if (unwrappedBounce != null && unwrappedBounce != uri) {
+        Uri nextTarget = unwrappedBounce;
+        if (settings.isShieldActiveForHost(nextTarget.host) &&
+            settings.shieldAutoRedirectAmp) {
+          nextTarget = OmniboxParser.unwrapAmpUri(nextTarget) ?? nextTarget;
+        }
+        if (settings.isShieldActiveForHost(nextTarget.host) &&
+            settings.shieldCleanUrls) {
+          nextTarget = BrowserSettingsController.stripTrackingParameters(
+            nextTarget,
+          );
+        }
+        await _applyControllerSettings(forHost: nextTarget.host);
         await _controller?.loadRequest(
-          cleanedUnwrapped,
+          nextTarget,
           headers: _headersForTarget(),
         );
         return NavigationDecision.prevent;
+      }
+
+      if (settings.isShieldActiveForHost(uri.host) &&
+          settings.shieldAutoRedirectAmp) {
+        final Uri? nonAmp = OmniboxParser.unwrapAmpUri(uri);
+        if (nonAmp != null && nonAmp != uri) {
+          final Uri cleanedNonAmp = settings.shieldCleanUrls
+              ? BrowserSettingsController.stripTrackingParameters(nonAmp)
+              : nonAmp;
+          await _controller?.loadRequest(
+            cleanedNonAmp,
+            headers: _headersForTarget(),
+          );
+          return NavigationDecision.prevent;
+        }
       }
 
       if (settings.isShieldActiveForHost(uri.host) && settings.shieldCleanUrls) {
@@ -936,6 +966,9 @@ class BrowserEngine extends ChangeNotifier {
       trimmed,
       searchEngine: settings.searchEngine,
       httpsUpgrade: settings.httpsUpgrade,
+      resolveEns: settings.resolveEnsDomains,
+      resolveSns: settings.resolveSnsDomains,
+      resolveUnstoppable: settings.resolveUnstoppableDomains,
     );
     await loadUri(target);
   }
@@ -960,7 +993,14 @@ class BrowserEngine extends ChangeNotifier {
     }
 
     Uri finalUri =
-        OmniboxParser.unwrapGoogleRedirectUri(migratedUri) ?? migratedUri;
+        (settings.shieldCleanUrls
+            ? OmniboxParser.unwrapTrackingRedirectUri(migratedUri)
+            : OmniboxParser.unwrapGoogleRedirectUri(migratedUri)) ??
+        migratedUri;
+    if (settings.isShieldActiveForHost(finalUri.host) &&
+        settings.shieldAutoRedirectAmp) {
+      finalUri = OmniboxParser.unwrapAmpUri(finalUri) ?? finalUri;
+    }
     if (settings.desktopMode) {
       finalUri = rewriteMobileToDesktopUri(finalUri);
     }
@@ -1100,6 +1140,37 @@ class BrowserEngine extends ChangeNotifier {
       return;
     }
     await _controller?.reload();
+  }
+
+  Future<String?> startInteractiveElementBlocker() async {
+    final WebViewController? ctrl = _controller;
+    if (ctrl == null || !isShowingWebPage) {
+      return null;
+    }
+    try {
+      await ctrl.runJavaScript(
+        'if(window.__hbStartElementPicker){window.__hbStartElementPicker();}',
+      );
+      for (int i = 0; i < 60; i++) {
+        await Future<void>.delayed(const Duration(milliseconds: 300));
+        final Object raw = await ctrl.runJavaScriptReturningResult(
+          'window.__hbPickedSelector || ""',
+        );
+        String val = raw.toString().trim();
+        if (val.startsWith('"') && val.endsWith('"') && val.length >= 2) {
+          val = val.substring(1, val.length - 1);
+        }
+        if (val == '__CANCEL__') {
+          return null;
+        }
+        if (val.isNotEmpty) {
+          final String host = OmniboxParser.cleanDomain(_currentUrl);
+          await settings.addCustomElementBlockRule(host, val);
+          return val;
+        }
+      }
+    } catch (_) {}
+    return null;
   }
 
   Future<void> reloadOrStop() async {

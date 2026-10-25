@@ -1506,7 +1506,7 @@ class _BrowserScreenState extends State<BrowserScreen>
           flex: 0,
           child: ConstrainedBox(
             constraints: BoxConstraints(
-              maxWidth: engine.isShowingWebPage ? 72 : 84,
+              maxWidth: engine.isShowingWebPage ? 76 : 88,
             ),
             child: FittedBox(
               fit: BoxFit.scaleDown,
@@ -1531,14 +1531,14 @@ class _BrowserScreenState extends State<BrowserScreen>
                 onTap: () => _openHeavenShieldQuickSheet(context, engine),
                 child: Padding(
                   padding: const EdgeInsets.symmetric(
-                    horizontal: 4,
+                    horizontal: 5,
                     vertical: 6,
                   ),
                   child: Icon(
                     shieldOn
                         ? Icons.verified_user_rounded
                         : Icons.shield_outlined,
-                    size: 15.5,
+                    size: 16,
                     color: shieldOn
                         ? AppTheme.shieldEmerald
                         : colors.onSurfaceVariant,
@@ -1547,49 +1547,7 @@ class _BrowserScreenState extends State<BrowserScreen>
               );
             },
           ),
-        ListenableBuilder(
-          listenable: widget.vpn,
-          builder: (BuildContext context, _) {
-            final bool vpnUp = widget.vpn.isConnected;
-            final bool translated = engine.isPageTranslated;
-            return InkWell(
-              key: const Key('translate_reader_button'),
-              borderRadius: BorderRadius.circular(18),
-              onTap: () => _openTranslateReaderSheet(context, engine),
-              child: Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 6),
-                child: Icon(
-                  translated
-                      ? Icons.translate_rounded
-                      : (vpnUp
-                            ? Icons.vpn_lock_rounded
-                            : (incognito
-                                  ? Icons.shield_moon_rounded
-                                  : (engine.isShowingDownloadsPage
-                                        ? Icons.download_done_rounded
-                                        : (engine.isShowingStartPage
-                                              ? Icons.translate_rounded
-                                              : (engine.isSecure
-                                                    ? Icons.translate_rounded
-                                                    : Icons.warning_amber_rounded))))),
-                  size: 16,
-                  color: translated
-                      ? AppTheme.heavenAccent
-                      : (vpnUp
-                            ? AppTheme.shieldEmerald
-                            : (incognito
-                                  ? AppTheme.incognitoCyan
-                                  : (engine.isShowingStartPage ||
-                                            engine.isShowingDownloadsPage
-                                        ? colors.primary
-                                        : (engine.isSecure
-                                              ? AppTheme.shieldEmerald
-                                              : AppTheme.warningAmber)))),
-                ),
-              ),
-            );
-          },
-        ),
+        const SizedBox(width: 4),
         Expanded(
           child: GestureDetector(
             key: const Key('omnibox_display_pill'),
@@ -1720,6 +1678,7 @@ class _BrowserScreenState extends State<BrowserScreen>
       MaterialPageRoute<void>(
         builder: (_) => HeavenShieldScreen(
           settings: widget.settings,
+          tabManager: widget.tabManager,
           currentHost: engine.currentHost,
           activeWebViewId: engine.androidWebViewId,
           onShieldChangedForActivePage: () {
@@ -1745,10 +1704,24 @@ class _BrowserScreenState extends State<BrowserScreen>
           settings: widget.settings,
           currentHost: engine.currentHost,
           activeWebViewId: engine.androidWebViewId,
+          isIncognito: widget.tabManager.isActiveIncognito,
           onReloadActivePage: () {
             if (engine.isShowingWebPage) {
               unawaited(engine.reloadFullPage());
             }
+          },
+          onStartBlockElement: () async {
+            final String? sel = await engine.startInteractiveElementBlocker();
+            if (!mounted || sel == null) return;
+            ScaffoldMessenger.of(this.context)
+              ..clearSnackBars()
+              ..showSnackBar(
+                SnackBar(
+                  content: Text('Blocked element ($sel)'),
+                  behavior: SnackBarBehavior.floating,
+                  duration: const Duration(milliseconds: 1600),
+                ),
+              );
           },
           onOpenFullShieldSettings: _openHeavenShieldScreen,
         );
@@ -2023,19 +1996,18 @@ class _BrowserScreenState extends State<BrowserScreen>
                           },
                         ),
                         5 => _DeckActionTile(
-                          tileKey: const Key('browser_menu_shield_tile'),
-                          icon: widget.settings.shieldEnabled
-                              ? Icons.verified_user_rounded
-                              : Icons.shield_outlined,
-                          label: widget.settings.shieldEnabled
-                              ? 'Shield: ON'
-                              : 'Shield',
-                          accent: widget.settings.shieldEnabled
-                              ? AppTheme.shieldEmerald
+                          tileKey: const Key('browser_menu_language_tile'),
+                          icon: Icons.translate_rounded,
+                          label: engine.isPageTranslated &&
+                                  engine.translatedLangCode != null
+                              ? 'Lang: ${engine.translatedLangCode!.toUpperCase()}'
+                              : 'Language',
+                          accent: engine.isPageTranslated
+                              ? AppTheme.heavenAccent
                               : colors.primary,
                           onTap: () {
                             Navigator.pop(sheetContext);
-                            _openHeavenShieldScreen();
+                            _openTranslateReaderSheet(context, engine);
                           },
                         ),
                         6 => _DeckActionTile(
@@ -2121,50 +2093,6 @@ class _BrowserScreenState extends State<BrowserScreen>
                         setState(() => _showFindBar = true);
                       },
                     ),
-                  ListTile(
-                    key: const Key('browser_menu_translate_reader_tile'),
-                    dense: true,
-                    contentPadding: const EdgeInsets.symmetric(horizontal: 8),
-                    leading: Icon(
-                      Icons.translate_rounded,
-                      size: 20,
-                      color: colors.primary,
-                    ),
-                    title: const Text('Translate & Reader'),
-                    subtitle: const Text(
-                      'Instant 20-language page translate & Clean Reader',
-                      style: TextStyle(fontSize: 11),
-                    ),
-                    onTap: () {
-                      Navigator.pop(sheetContext);
-                      _openTranslateReaderSheet(context, engine);
-                    },
-                  ),
-                  ListTile(
-                    key: const Key('browser_menu_shield_settings_tile'),
-                    dense: true,
-                    contentPadding: const EdgeInsets.symmetric(horizontal: 8),
-                    leading: Icon(
-                      widget.settings.shieldEnabled
-                          ? Icons.verified_user_rounded
-                          : Icons.shield_outlined,
-                      size: 20,
-                      color: widget.settings.shieldEnabled
-                          ? AppTheme.shieldEmerald
-                          : colors.onSurfaceVariant,
-                    ),
-                    title: const Text('Heaven Shield'),
-                    subtitle: Text(
-                      widget.settings.shieldEnabled
-                          ? '${widget.settings.shieldMode.label} • ${widget.settings.activeShieldProtectionCount} customizable protections'
-                          : 'Paused — tap to customize ad & tracker blocking',
-                      style: const TextStyle(fontSize: 11),
-                    ),
-                    onTap: () {
-                      Navigator.pop(sheetContext);
-                      _openHeavenShieldScreen();
-                    },
-                  ),
                   ListTile(
                     dense: true,
                     contentPadding: const EdgeInsets.symmetric(horizontal: 8),

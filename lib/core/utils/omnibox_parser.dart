@@ -183,6 +183,99 @@ class OmniboxParser {
     return null;
   }
 
+  /// Unwraps top-level redirect tracking bounce URLs (Google, Facebook, Instagram,
+  /// Reddit, YouTube, Tumblr, VK, Steam, Outlook SafeLinks).
+  static Uri? unwrapTrackingRedirectUri(Uri uri) {
+    final Uri? google = unwrapGoogleRedirectUri(uri);
+    if (google != null) return google;
+
+    final String host = uri.host.toLowerCase();
+    final String path = uri.path.toLowerCase();
+    String? candidate;
+
+    if ((host == 'l.facebook.com' ||
+            host == 'lm.facebook.com' ||
+            host == 'm.facebook.com') &&
+        (path == '/l.php' || path.startsWith('/flx/warn'))) {
+      candidate = uri.queryParameters['u'];
+    } else if (host == 'l.instagram.com') {
+      candidate = uri.queryParameters['u'];
+    } else if (host == 'out.reddit.com') {
+      candidate = uri.queryParameters['url'];
+    } else if ((host == 'www.youtube.com' ||
+            host == 'm.youtube.com' ||
+            host == 'youtube.com') &&
+        path == '/redirect') {
+      candidate = uri.queryParameters['q'];
+    } else if (host == 't.umblr.com' && path == '/redirect') {
+      candidate = uri.queryParameters['z'];
+    } else if (host == 'away.vk.com' && path == '/away.php') {
+      candidate = uri.queryParameters['to'];
+    } else if (host == 'steamcommunity.com' && path.startsWith('/linkfilter')) {
+      candidate = uri.queryParameters['url'] ?? uri.queryParameters['u'];
+    } else if (host.endsWith('.safelinks.protection.outlook.com')) {
+      candidate = uri.queryParameters['url'];
+    }
+
+    if (candidate != null) {
+      final String trimmed = candidate.trim();
+      if (trimmed.startsWith('https://') || trimmed.startsWith('http://')) {
+        return Uri.tryParse(trimmed);
+      }
+    }
+    return null;
+  }
+
+  /// Rewrites Google AMP viewer & AMP CDN URLs directly to the canonical non-AMP page URL.
+  static Uri? unwrapAmpUri(Uri uri) {
+    final String host = uri.host.toLowerCase();
+    final String path = uri.path;
+
+    // 1. google.*/amp/s/<host>/<path> or google.*/amp/<host>/<path>
+    if ((host.startsWith('www.google.') || host.startsWith('google.')) &&
+        path.startsWith('/amp/')) {
+      String rest = path.substring(5);
+      String scheme = 'http';
+      if (rest.startsWith('s/')) {
+        scheme = 'https';
+        rest = rest.substring(2);
+      }
+      if (rest.isNotEmpty) {
+        return Uri.tryParse('$scheme://$rest');
+      }
+    }
+
+    // 2. *.cdn.ampproject.org/[c|v]/s/<host>/<path>
+    if (host.endsWith('.cdn.ampproject.org')) {
+      final RegExp ampCdnRx = RegExp(r'^/[cv]/(s/)?(.+)$');
+      final RegExpMatch? m = ampCdnRx.firstMatch(path);
+      if (m != null) {
+        final String scheme = m.group(1) != null ? 'https' : 'http';
+        final String target = m.group(2) ?? '';
+        if (target.isNotEmpty) {
+          return Uri.tryParse('$scheme://$target');
+        }
+      }
+    }
+
+    // 3. Explicit ?amp=1 or ?outputType=amp query parameters
+    if (uri.queryParameters.containsKey('amp') ||
+        uri.queryParameters['outputType']?.toLowerCase() == 'amp') {
+      final Map<String, String> nextParams = Map<String, String>.from(
+        uri.queryParameters,
+      )
+        ..remove('amp')
+        ..remove('amp_js_v')
+        ..remove('amp_gsa')
+        ..remove('outputType');
+      return nextParams.isEmpty
+          ? uri.replace(queryParameters: const <String, String>{}).replace(query: '')
+          : uri.replace(queryParameters: nextParams);
+    }
+
+    return null;
+  }
+
   static bool looksLikeSearchQuery(
     String rawInput, {
     required SearchEngine searchEngine,
@@ -203,10 +296,25 @@ class OmniboxParser {
     return true;
   }
 
+  static const Set<String> _unstoppableTlds = <String>{
+    'crypto',
+    'nft',
+    'wallet',
+    'blockchain',
+    'bitcoin',
+    'dao',
+    '888',
+    'zil',
+    'unstoppable',
+  };
+
   static Uri resolveInput(
     String rawInput, {
     required SearchEngine searchEngine,
     required bool httpsUpgrade,
+    bool resolveEns = false,
+    bool resolveSns = false,
+    bool resolveUnstoppable = false,
   }) {
     final String input = rawInput.trim();
     if (input.isEmpty) {
@@ -251,6 +359,28 @@ class OmniboxParser {
     }
 
     if (_domainLikePattern.hasMatch(input)) {
+      final int slashIdx = input.indexOf('/');
+      final String hostPart =
+          (slashIdx >= 0 ? input.substring(0, slashIdx) : input).toLowerCase();
+      final String pathPart = slashIdx >= 0 ? input.substring(slashIdx) : '';
+      final String tld = hostPart.split('.').last;
+
+      if (tld == 'eth') {
+        return resolveEns
+            ? Uri.parse('https://$hostPart.limo$pathPart')
+            : Uri.parse(searchEngine.buildSearchUrl(input));
+      }
+      if (tld == 'sol') {
+        return resolveSns
+            ? Uri.parse('https://$hostPart.build$pathPart')
+            : Uri.parse(searchEngine.buildSearchUrl(input));
+      }
+      if (_unstoppableTlds.contains(tld)) {
+        return resolveUnstoppable
+            ? Uri.parse('https://ud.me/$hostPart')
+            : Uri.parse(searchEngine.buildSearchUrl(input));
+      }
+
       return Uri.parse('https://$input');
     }
 

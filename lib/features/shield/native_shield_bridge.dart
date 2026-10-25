@@ -117,6 +117,24 @@ class NativeShieldBridge {
     bool shieldAntiFingerprinting = true,
     bool shieldBlockPopups = true,
     List<String> shieldDisabledHosts = const <String>[],
+    String shieldCookiePolicy = 'block_third_party',
+    String shieldSafeBrowsing = 'standard',
+    bool shieldAutoRedirectAmp = true,
+    bool shieldPreventLangFp = true,
+    bool shieldAllowFacebookEmbeds = true,
+    bool shieldAllowTwitterEmbeds = true,
+    bool shieldAllowLinkedinEmbeds = false,
+    String shieldWebrtcPolicy = 'default',
+    bool shieldAllowPaymentQuery = true,
+    bool shieldStrictJsSecurity = false,
+    bool shieldBlockSwitchToApp = true,
+    bool shieldSendDoNotTrack = false,
+    bool shieldFilterFanboyAnnoyances = true,
+    bool shieldFilterMobileNotifs = true,
+    bool shieldFilterAntiAdblock = true,
+    bool shieldFilterRegionalIndia = false,
+    bool shieldFilterRegionalGlobal = false,
+    List<String> shieldCustomRules = const <String>[],
   }) async {
     try {
       await _channel.invokeMethod<bool>('updateConfig', <String, Object>{
@@ -132,7 +150,40 @@ class NativeShieldBridge {
         'shieldAntiFingerprinting': shieldAntiFingerprinting,
         'shieldBlockPopups': shieldBlockPopups,
         'shieldDisabledHosts': shieldDisabledHosts,
+        'shieldCookiePolicy': shieldCookiePolicy,
+        'shieldSafeBrowsing': shieldSafeBrowsing,
+        'shieldAutoRedirectAmp': shieldAutoRedirectAmp,
+        'shieldPreventLangFp': shieldPreventLangFp,
+        'shieldAllowFacebookEmbeds': shieldAllowFacebookEmbeds,
+        'shieldAllowTwitterEmbeds': shieldAllowTwitterEmbeds,
+        'shieldAllowLinkedinEmbeds': shieldAllowLinkedinEmbeds,
+        'shieldWebrtcPolicy': shieldWebrtcPolicy,
+        'shieldAllowPaymentQuery': shieldAllowPaymentQuery,
+        'shieldStrictJsSecurity': shieldStrictJsSecurity,
+        'shieldBlockSwitchToApp': shieldBlockSwitchToApp,
+        'shieldSendDoNotTrack': shieldSendDoNotTrack,
+        'shieldFilterFanboyAnnoyances': shieldFilterFanboyAnnoyances,
+        'shieldFilterMobileNotifs': shieldFilterMobileNotifs,
+        'shieldFilterAntiAdblock': shieldFilterAntiAdblock,
+        'shieldFilterRegionalIndia': shieldFilterRegionalIndia,
+        'shieldFilterRegionalGlobal': shieldFilterRegionalGlobal,
+        'shieldCustomRules': shieldCustomRules,
       });
+    } on MissingPluginException {
+      // Expected in unit/widget tests.
+    } on PlatformException {
+      // Ignore transient platform channel errors.
+    }
+  }
+
+  Future<void> updatePrivateWindowSecurity({
+    required bool blockScreenshots,
+  }) async {
+    try {
+      await _channel.invokeMethod<bool>(
+        'updatePrivateWindowSecurity',
+        <String, Object>{'blockScreenshots': blockScreenshots},
+      );
     } on MissingPluginException {
       // Expected in unit/widget tests.
     } on PlatformException {

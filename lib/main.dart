@@ -93,6 +93,7 @@ class _HeavenBrowserAppState extends State<HeavenBrowserApp>
       settings: widget.settings,
       enablePlatformWebView: widget.enablePlatformWebView,
     );
+    widget.settings.addListener(_onPrivacyWindowSettingsChanged);
     _searchService = widget.searchService ?? HeavenSearchService();
 
     if (widget.downloads == null) {
@@ -135,15 +136,38 @@ class _HeavenBrowserAppState extends State<HeavenBrowserApp>
       unawaited(_tabManager.activeEngine.loadUserEntry(initialRoute));
     }
 
-    // Request Android POST_NOTIFICATIONS permission on app startup (and unlock app if locked)
+    // Request Android POST_NOTIFICATIONS permission on app startup, apply exit-shred if enabled, and sync FLAG_SECURE
     if (widget.enablePlatformWebView) {
       WidgetsBinding.instance.addPostFrameCallback((_) async {
+        if (widget.settings.clearOnExit) {
+          await widget.settings.clearHistoryOnly();
+          await NativeShieldBridge.instance.clearSiteData(domain: '');
+        } else if (widget.settings.autoShredMode ==
+            HeavenAutoShredMode.appExit) {
+          await NativeShieldBridge.instance.clearSiteData(domain: '');
+        }
+        await NativeShieldBridge.instance.updatePrivateWindowSecurity(
+          blockScreenshots:
+              _tabManager.activeTab.isIncognito &&
+              !widget.settings.allowPrivateScreenshots,
+        );
         await NativeShieldBridge.instance.requestNotificationPermission();
         if (mounted && widget.settings.biometricLockApp && !_appUnlocked) {
           await _unlockEntireApp();
         }
       });
     }
+  }
+
+  void _onPrivacyWindowSettingsChanged() {
+    if (!widget.enablePlatformWebView) return;
+    unawaited(
+      NativeShieldBridge.instance.updatePrivateWindowSecurity(
+        blockScreenshots:
+            _tabManager.activeTab.isIncognito &&
+            !widget.settings.allowPrivateScreenshots,
+      ),
+    );
   }
 
   @override
@@ -160,6 +184,16 @@ class _HeavenBrowserAppState extends State<HeavenBrowserApp>
       }
       if (widget.settings.biometricLockApp && _appUnlocked) {
         setState(() => _appUnlocked = false);
+      }
+    } else if (state == AppLifecycleState.detached) {
+      if (widget.settings.clearOnExit) {
+        unawaited(widget.settings.clearHistoryOnly());
+        if (widget.enablePlatformWebView) {
+          unawaited(NativeShieldBridge.instance.clearSiteData(domain: ''));
+        }
+      } else if (widget.settings.autoShredMode == HeavenAutoShredMode.appExit &&
+          widget.enablePlatformWebView) {
+        unawaited(NativeShieldBridge.instance.clearSiteData(domain: ''));
       }
     } else if (state == AppLifecycleState.resumed) {
       if (widget.enablePlatformWebView &&
@@ -191,6 +225,9 @@ class _HeavenBrowserAppState extends State<HeavenBrowserApp>
   ) async {
     final String incoming = routeInformation.uri.toString();
     if (incoming.startsWith('http://') || incoming.startsWith('https://')) {
+      if (!widget.settings.openExternalLinksInHeaven) {
+        return false;
+      }
       await _tabManager.openNewTab(incognito: false, initialInput: incoming);
       return true;
     }
@@ -199,6 +236,7 @@ class _HeavenBrowserAppState extends State<HeavenBrowserApp>
 
   @override
   void dispose() {
+    widget.settings.removeListener(_onPrivacyWindowSettingsChanged);
     WidgetsBinding.instance.removeObserver(this);
     _tabManager.dispose();
     _ownedDownloads?.dispose();

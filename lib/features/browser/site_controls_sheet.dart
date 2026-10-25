@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../../core/theme/app_theme.dart';
 import '../../core/utils/omnibox_parser.dart';
 import '../settings/browser_settings.dart';
+import '../settings/languages_screen.dart';
 import 'engine/browser_engine.dart';
 import 'page_translate_reader_service.dart';
 
@@ -442,6 +443,44 @@ class _TranslateReaderSheetState extends State<TranslateReaderSheet> {
                         ),
                       ),
                     ],
+                  ),
+                ),
+
+                const SizedBox(height: 10),
+                Material(
+                  color: colors.surfaceContainerHigh,
+                  borderRadius: BorderRadius.circular(14),
+                  clipBehavior: Clip.antiAlias,
+                  child: ListTile(
+                    key: const Key('language_sheet_app_language_tile'),
+                    dense: true,
+                    leading: Icon(
+                      Icons.language_rounded,
+                      size: 20,
+                      color: colors.primary,
+                    ),
+                    title: const Text(
+                      'Browser App Language',
+                      style: TextStyle(
+                        fontSize: 13.5,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                    subtitle: Text(
+                      widget.settings.language.nativeName,
+                      style: const TextStyle(fontSize: 11.5),
+                    ),
+                    trailing: const Icon(Icons.chevron_right_rounded, size: 18),
+                    onTap: () {
+                      final NavigatorState nav = Navigator.of(context);
+                      nav.pop();
+                      nav.push(
+                        MaterialPageRoute<void>(
+                          builder: (_) =>
+                              LanguagesScreen(settings: widget.settings),
+                        ),
+                      );
+                    },
                   ),
                 ),
 

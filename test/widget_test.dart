@@ -521,7 +521,7 @@ void main() {
         expect(settings.shieldAntiFingerprinting, isTrue);
         expect(settings.shieldBlockPopups, isTrue);
 
-        // Verify URL tracking parameter stripping preserves genuine query params
+        // Verify URL tracking parameter stripping & top-level bounce URL unwrapping
         final Uri dirty = Uri.parse(
           'https://example.com/search?q=flutter&utm_source=twitter&fbclid=xyz123&page=2&gclid=abc',
         );
@@ -529,6 +529,71 @@ void main() {
           dirty,
         );
         expect(cleaned.toString(), 'https://example.com/search?q=flutter&page=2');
+
+        final Uri fbBounce = Uri.parse(
+          'https://l.facebook.com/l.php?u=https%3A%2F%2Fnews.ycombinator.com%2Fitem%3Fid%3D1',
+        );
+        expect(
+          OmniboxParser.unwrapTrackingRedirectUri(fbBounce).toString(),
+          'https://news.ycombinator.com/item?id=1',
+        );
+
+        // Verify De-AMP URL unwrapping
+        final Uri googleAmp = Uri.parse(
+          'https://www.google.com/amp/s/example.com/tech/post',
+        );
+        expect(
+          OmniboxParser.unwrapAmpUri(googleAmp).toString(),
+          'https://example.com/tech/post',
+        );
+        final Uri cdnAmp = Uri.parse(
+          'https://example-com.cdn.ampproject.org/v/s/example.com/story',
+        );
+        expect(
+          OmniboxParser.unwrapAmpUri(cdnAmp).toString(),
+          'https://example.com/story',
+        );
+
+        // Verify Web3 domain resolution (.eth, .sol, .crypto)
+        expect(
+          OmniboxParser.resolveInput(
+            'vitalik.eth',
+            searchEngine: SearchEngine.google,
+            httpsUpgrade: true,
+            resolveEns: true,
+          ).toString(),
+          'https://vitalik.eth.limo',
+        );
+        expect(
+          OmniboxParser.resolveInput(
+            'bonfida.sol',
+            searchEngine: SearchEngine.google,
+            httpsUpgrade: true,
+            resolveSns: true,
+          ).toString(),
+          'https://bonfida.sol.build',
+        );
+        expect(
+          OmniboxParser.resolveInput(
+            'heaven.crypto',
+            searchEngine: SearchEngine.google,
+            httpsUpgrade: true,
+            resolveUnstoppable: true,
+          ).toString(),
+          'https://ud.me/heaven.crypto',
+        );
+
+        // Verify extended Heaven Shield & Privacy defaults match screenshot features
+        expect(settings.shieldAutoRedirectAmp, isTrue);
+        expect(settings.shieldPreventLangFp, isTrue);
+        expect(settings.allowFacebookEmbeds, isTrue);
+        expect(settings.allowTwitterEmbeds, isTrue);
+        expect(settings.allowLinkedinEmbeds, isFalse);
+        expect(settings.safeBrowsingMode, HeavenSafeBrowsingMode.standard);
+        expect(settings.webrtcPolicy, HeavenWebrtcPolicy.defaultPolicy);
+        expect(settings.blockSwitchToAppNotices, isTrue);
+        expect(settings.sendDntAndGpc, isFalse);
+        expect(settings.closeTabsOnExit, isFalse);
 
         // Verify per-site exceptions & subdomain matching
         expect(settings.isShieldActiveForHost('example.org'), isTrue);
@@ -786,10 +851,32 @@ void main() {
       await tester.pumpAndSettle();
       expect(tabManager.activeEngine.currentUrl, contains('google.com'));
 
-      // 4. Address-bar Translate & Reader button opens Instant Page Translate + Clean Reader Sheet (NO Permission Grid / NO Brave Shields!)
-      await tester.tap(find.byKey(const Key('translate_reader_button')));
+      // 4. Verify Languages button is REMOVED from Search Bar, and Shield button in 3-dots Menu is REPLACED by Language button!
+      expect(find.byKey(const Key('translate_reader_button')), findsNothing);
+      await tester.tap(find.byTooltip('Browser Menu'));
+      await tester.pumpAndSettle();
+      expect(find.byKey(const Key('browser_menu_shield_tile')), findsNothing);
+      expect(
+        find.byKey(const Key('browser_menu_shield_settings_tile')),
+        findsNothing,
+      );
+      expect(
+        find.byKey(const Key('browser_menu_web_store_tile')),
+        findsNothing,
+      );
+      expect(
+        find.byKey(const Key('browser_menu_language_tile')),
+        findsOneWidget,
+      );
+
+      // Tap Language button in 3-dots menu -> opens Instant Page Translate & App Language sheet!
+      await tester.tap(find.byKey(const Key('browser_menu_language_tile')));
       await tester.pumpAndSettle();
       expect(find.byType(TranslateReaderSheet), findsOneWidget);
+      expect(
+        find.byKey(const Key('language_sheet_app_language_tile')),
+        findsOneWidget,
+      );
       expect(find.byKey(const Key('site_brave_shields_switch')), findsNothing);
       expect(find.byKey(const Key('revoke_perm_camera')), findsNothing);
 
@@ -813,19 +900,23 @@ void main() {
       await tester.pumpAndSettle();
       expect(tabManager.activeEngine.isPageTranslated, isFalse);
 
-      // Open Clean Reader Mode directly from TranslateReaderSheet!
+      // Open Clean Reader Mode directly from Language & Reader sheet!
       await tester.tap(find.byKey(const Key('open_clean_reader_button')));
       await tester.pumpAndSettle();
       expect(find.byKey(const Key('clean_reader_view_modal')), findsOneWidget);
       await tester.tap(find.byIcon(Icons.close_rounded));
       await tester.pumpAndSettle();
 
-      // 4b. Tap top-bar Heaven Shield icon -> Quick Sheet -> open full Heaven Shield settings & customize!
+      // 4b. Tap top-bar Heaven Shield icon -> Quick Sheet -> open full Heaven Shield & privacy settings!
       expect(find.byKey(const Key('top_bar_shield_button')), findsOneWidget);
       await tester.tap(find.byKey(const Key('top_bar_shield_button')));
       await tester.pumpAndSettle();
       expect(find.byType(HeavenShieldQuickSheet), findsOneWidget);
       expect(find.byKey(const Key('quick_shield_site_switch')), findsOneWidget);
+      expect(
+        find.byKey(const Key('quick_shield_shred_site_button')),
+        findsOneWidget,
+      );
       await tester.tap(find.byKey(const Key('quick_shield_customize_button')));
       await tester.pumpAndSettle();
 
@@ -836,20 +927,95 @@ void main() {
       );
       expect(find.textContaining('Blocked: 14'), findsOneWidget);
 
-      // Switch to Strict mode & toggle Popup Guard off, then add a site exception
+      // Open 'Block trackers & ads' selector -> choose Aggressive (Strict)
+      await tester.tap(find.byKey(const Key('shield_row_trackers_ads')));
+      await tester.pumpAndSettle();
       await tester.tap(find.byKey(const Key('heaven_shield_mode_strict')));
       await tester.pumpAndSettle();
       expect(settings.shieldMode, HeavenShieldMode.strict);
 
+      // Open 'Content filtering' sub-screen and add a custom rule
+      final Finder shieldScrollable = find
+          .descendant(
+            of: find.byType(HeavenShieldScreen),
+            matching: find.byType(Scrollable),
+          )
+          .first;
       await tester.scrollUntilVisible(
-        find.byKey(const Key('heaven_shield_add_exception_button')),
+        find.byKey(const Key('shield_row_content_filtering')),
+        140,
+        scrollable: shieldScrollable,
+      );
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('shield_row_content_filtering')));
+      await tester.pumpAndSettle();
+      expect(find.byType(HeavenContentFilteringScreen), findsOneWidget);
+      await tester.scrollUntilVisible(
+        find.byKey(const Key('custom_filter_rules_textfield')),
         140,
         scrollable: find
             .descendant(
-              of: find.byType(HeavenShieldScreen),
+              of: find.byType(HeavenContentFilteringScreen),
               matching: find.byType(Scrollable),
             )
             .first,
+      );
+      await tester.pumpAndSettle();
+      await tester.enterText(
+        find.byKey(const Key('custom_filter_rules_textfield')),
+        '||ads.example.com^\n##.annoying-banner',
+      );
+      await tester.scrollUntilVisible(
+        find.byKey(const Key('save_custom_filter_rules_button')),
+        120,
+        scrollable: find
+            .descendant(
+              of: find.byType(HeavenContentFilteringScreen),
+              matching: find.byType(Scrollable),
+            )
+            .first,
+      );
+      await tester.pumpAndSettle();
+      await tester.tap(
+        find.byKey(const Key('save_custom_filter_rules_button')),
+      );
+      await tester.pumpAndSettle();
+      expect(settings.customFilterRules.length, 2);
+
+      // Verify Social Media Blocking, WebRTC policy & Site Exceptions exist on HeavenShieldScreen
+      await tester.scrollUntilVisible(
+        find.byKey(const Key('shield_switch_social_facebook')),
+        140,
+        scrollable: shieldScrollable,
+      );
+      await tester.pumpAndSettle();
+      expect(
+        find.byKey(const Key('shield_switch_social_facebook')),
+        findsOneWidget,
+      );
+      await tester.scrollUntilVisible(
+        find.byKey(const Key('shield_switch_social_linkedin')),
+        140,
+        scrollable: shieldScrollable,
+      );
+      await tester.pumpAndSettle();
+      expect(
+        find.byKey(const Key('shield_switch_social_linkedin')),
+        findsOneWidget,
+      );
+
+      await tester.scrollUntilVisible(
+        find.byKey(const Key('shield_row_webrtc_policy')),
+        160,
+        scrollable: shieldScrollable,
+      );
+      await tester.pumpAndSettle();
+      expect(find.byKey(const Key('shield_row_webrtc_policy')), findsOneWidget);
+
+      await tester.scrollUntilVisible(
+        find.byKey(const Key('heaven_shield_add_exception_button')),
+        180,
+        scrollable: shieldScrollable,
       );
       await tester.pumpAndSettle();
       await tester.tap(
@@ -866,16 +1032,11 @@ void main() {
       await tester.pumpAndSettle();
       expect(settings.isShieldActiveForHost('example.org'), isFalse);
 
-      // Restore recommended defaults resets Strict -> Standard and clears exceptions
+      // Restore recommended defaults resets Strict -> Standard, clears custom rules & exceptions
       await tester.scrollUntilVisible(
         find.byKey(const Key('heaven_shield_restore_defaults_button')),
         140,
-        scrollable: find
-            .descendant(
-              of: find.byType(HeavenShieldScreen),
-              matching: find.byType(Scrollable),
-            )
-            .first,
+        scrollable: shieldScrollable,
       );
       await tester.pumpAndSettle();
       await tester.tap(
@@ -883,27 +1044,10 @@ void main() {
       );
       await tester.pumpAndSettle();
       expect(settings.shieldMode, HeavenShieldMode.standard);
+      expect(settings.customFilterRules, isEmpty);
       expect(settings.isShieldActiveForHost('example.org'), isTrue);
 
       await tester.pageBack();
-      await tester.pumpAndSettle();
-
-      // Verify 3-dots Browser Menu has Heaven Shield (and NO Web Store!)
-      await tester.tap(find.byTooltip('Browser Menu'));
-      await tester.pumpAndSettle();
-      expect(
-        find.byKey(const Key('browser_menu_translate_reader_tile')),
-        findsOneWidget,
-      );
-      expect(
-        find.byKey(const Key('browser_menu_shield_tile')),
-        findsOneWidget,
-      );
-      expect(
-        find.byKey(const Key('browser_menu_web_store_tile')),
-        findsNothing,
-      );
-      Navigator.of(tester.element(find.byType(BrowserScreen))).pop();
       await tester.pumpAndSettle();
 
       // 5. Starting a download displays tappable 'Download started' popup banner -> tapping it opens Downloads IN A TAB!

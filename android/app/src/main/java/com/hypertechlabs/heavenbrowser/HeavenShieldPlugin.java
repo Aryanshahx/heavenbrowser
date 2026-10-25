@@ -40,6 +40,7 @@ import android.provider.Settings;
 import android.speech.RecognizerIntent;
 import android.view.MotionEvent;
 import android.view.View;
+import android.view.WindowManager;
 import android.webkit.CookieManager;
 import android.webkit.JavascriptInterface;
 import android.webkit.MimeTypeMap;
@@ -310,6 +311,8 @@ public class HeavenShieldPlugin
   private volatile boolean backgroundMediaEnabled = true;
   private volatile boolean webNotificationsEnabled = false;
   private volatile boolean backgroundPlayNotifEnabled = true;
+  private volatile String cookiePolicy = "block_third_party";
+  private volatile String safeBrowsingMode = "standard";
 
   private volatile boolean appInBackground = false;
   private volatile boolean userPausedFromNotification = false;
@@ -859,6 +862,12 @@ public class HeavenShieldPlugin
         result.success(true);
         break;
 
+      case "updatePrivateWindowSecurity":
+        Boolean blockShots = call.argument("blockScreenshots");
+        applyPrivateWindowSecureFlag(blockShots != null && blockShots);
+        result.success(true);
+        break;
+
       case "focusWebView":
         Object focusObj = call.argument("webViewId");
         if (focusObj instanceof Number && pluginBinding != null) {
@@ -1204,6 +1213,18 @@ public class HeavenShieldPlugin
     if (bgPlayNotifArg != null) {
       this.backgroundPlayNotifEnabled = bgPlayNotifArg;
     }
+    String cookiePolArg = call.argument("shieldCookiePolicy");
+    if (cookiePolArg != null && !cookiePolArg.trim().isEmpty()) {
+      this.cookiePolicy = cookiePolArg.trim().toLowerCase(Locale.US);
+    }
+    String safeBrowseArg = call.argument("shieldSafeBrowsing");
+    if (safeBrowseArg != null && !safeBrowseArg.trim().isEmpty()) {
+      this.safeBrowsingMode = safeBrowseArg.trim().toLowerCase(Locale.US);
+    }
+    try {
+      CookieManager.getInstance().setAcceptCookie(!"block_all".equals(this.cookiePolicy));
+    } catch (Throwable ignored) {
+    }
     if (this.shieldEngine != null) {
       Boolean shieldEnabledArg = call.argument("shieldEnabled");
       Boolean strictModeArg = call.argument("shieldStrictMode");
@@ -1222,8 +1243,78 @@ public class HeavenShieldPlugin
           antiFpArg,
           blockPopupsArg,
           disabledHostsArg);
+
+      Boolean autoAmpArg = call.argument("shieldAutoRedirectAmp");
+      Boolean langFpArg = call.argument("shieldPreventLangFp");
+      Boolean fbEmbedsArg = call.argument("shieldAllowFacebookEmbeds");
+      Boolean twEmbedsArg = call.argument("shieldAllowTwitterEmbeds");
+      Boolean liEmbedsArg = call.argument("shieldAllowLinkedinEmbeds");
+      String webrtcArg = call.argument("shieldWebrtcPolicy");
+      Boolean payQueryArg = call.argument("shieldAllowPaymentQuery");
+      Boolean strictJsArg = call.argument("shieldStrictJsSecurity");
+      Boolean switchAppArg = call.argument("shieldBlockSwitchToApp");
+      Boolean dntArg = call.argument("shieldSendDoNotTrack");
+      Boolean fanboyArg = call.argument("shieldFilterFanboyAnnoyances");
+      Boolean mobNotifArg = call.argument("shieldFilterMobileNotifs");
+      Boolean antiAbArg = call.argument("shieldFilterAntiAdblock");
+      Boolean regInArg = call.argument("shieldFilterRegionalIndia");
+      Boolean regGlArg = call.argument("shieldFilterRegionalGlobal");
+      List<String> customRulesArg = call.argument("shieldCustomRules");
+      this.shieldEngine.updateExtendedPrivacyConfiguration(
+          autoAmpArg,
+          langFpArg,
+          fbEmbedsArg,
+          twEmbedsArg,
+          liEmbedsArg,
+          this.safeBrowsingMode,
+          webrtcArg,
+          payQueryArg,
+          strictJsArg,
+          switchAppArg,
+          dntArg,
+          fanboyArg,
+          mobNotifArg,
+          antiAbArg,
+          regInArg,
+          regGlArg,
+          customRulesArg);
     }
     refreshAllDocumentStartHandlers();
+  }
+
+  private void applyPrivateWindowSecureFlag(boolean secure) {
+    final Activity act = this.activity;
+    if (act == null) {
+      return;
+    }
+    mainHandler.post(
+        () -> {
+          try {
+            if (act.getWindow() == null) return;
+            if (secure) {
+              act.getWindow().addFlags(WindowManager.LayoutParams.FLAG_SECURE);
+            } else {
+              act.getWindow().clearFlags(WindowManager.LayoutParams.FLAG_SECURE);
+            }
+          } catch (Throwable ignored) {
+          }
+        });
+  }
+
+  private void applyCookieAndSafeBrowsingToWebView(WebView webView) {
+    if (webView == null) return;
+    try {
+      CookieManager cm = CookieManager.getInstance();
+      cm.setAcceptCookie(!"block_all".equals(this.cookiePolicy));
+      cm.setAcceptThirdPartyCookies(webView, "allow_all".equals(this.cookiePolicy));
+    } catch (Throwable ignored) {
+    }
+    try {
+      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+        webView.getSettings().setSafeBrowsingEnabled(!"off".equals(this.safeBrowsingMode));
+      }
+    } catch (Throwable ignored) {
+    }
   }
 
   private String buildDocumentStartBundle() {
@@ -1271,6 +1362,7 @@ public class HeavenShieldPlugin
       try {
         WebView wv = WebViewFlutterAndroidExternalApi.getWebView(pluginBinding, id);
         if (wv != null) {
+          applyCookieAndSafeBrowsingToWebView(wv);
           installOrRefreshDocumentStartShield(wv, id);
         } else {
           docStartHandlers.remove(id);
@@ -1470,6 +1562,7 @@ public class HeavenShieldPlugin
       if (this.shieldEngine != null) {
         this.shieldEngine.attachClient(webView, webViewId, initialHost);
       }
+      applyCookieAndSafeBrowsingToWebView(webView);
       applyDesktopSettingsToWebView(webView, webViewId, this.desktopMode, false);
       installOrRefreshDocumentStartShield(webView, webViewId);
       installPullToRefreshListener(webView, webViewId);

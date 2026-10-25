@@ -30,6 +30,139 @@ enum HeavenShieldMode {
   }
 }
 
+enum HeavenTrackersAdsLevel {
+  aggressive('Aggressive', 'Block trackers & ads (Aggressive)'),
+  standard('Standard', 'Block trackers & ads (Standard)'),
+  disabled('Allow all trackers & ads', 'Allow all trackers & ads');
+
+  const HeavenTrackersAdsLevel(this.label, this.subtitle);
+  final String label;
+  final String subtitle;
+}
+
+enum HeavenHttpsUpgradeMode {
+  strict('Strict', 'Require HTTPS for all connections'),
+  standard('Standard (default)', 'Upgrade to HTTPS whenever possible (default)'),
+  disabled('Disabled', 'Do not automatically upgrade HTTP connections');
+
+  const HeavenHttpsUpgradeMode(this.label, this.subtitle);
+  final String label;
+  final String subtitle;
+
+  static HeavenHttpsUpgradeMode fromName(String? raw) {
+    for (final HeavenHttpsUpgradeMode m in HeavenHttpsUpgradeMode.values) {
+      if (m.name == raw) return m;
+    }
+    return HeavenHttpsUpgradeMode.standard;
+  }
+}
+
+enum HeavenCookiePolicy {
+  blockAll('Block all cookies', 'block_all'),
+  blockThirdParty('Block third-party cookies', 'block_third_party'),
+  allowAll('Allow all cookies', 'allow_all');
+
+  const HeavenCookiePolicy(this.label, this.nativeCode);
+  final String label;
+  final String nativeCode;
+
+  static HeavenCookiePolicy fromName(String? raw) {
+    for (final HeavenCookiePolicy p in HeavenCookiePolicy.values) {
+      if (p.name == raw || p.nativeCode == raw) return p;
+    }
+    return HeavenCookiePolicy.blockThirdParty;
+  }
+}
+
+enum HeavenAutoShredMode {
+  never('Never', 'Manual shred only'),
+  siteTabClosed('When site tab closes', 'Auto-shred site data when its tab closes'),
+  appExit('On app exit', 'Auto-shred browsing data when leaving Heaven');
+
+  const HeavenAutoShredMode(this.label, this.subtitle);
+  final String label;
+  final String subtitle;
+
+  static HeavenAutoShredMode fromName(String? raw) {
+    for (final HeavenAutoShredMode m in HeavenAutoShredMode.values) {
+      if (m.name == raw) return m;
+    }
+    return HeavenAutoShredMode.never;
+  }
+}
+
+enum HeavenSafeBrowsingMode {
+  enhanced('Enhanced protection', 'Enhanced protection is on', 'enhanced'),
+  standard('Standard protection', 'Standard protection is on', 'standard'),
+  off('No protection (not recommended)', 'Safe Browsing is off', 'off');
+
+  const HeavenSafeBrowsingMode(this.label, this.subtitle, this.nativeCode);
+  final String label;
+  final String subtitle;
+  final String nativeCode;
+
+  static HeavenSafeBrowsingMode fromName(String? raw) {
+    for (final HeavenSafeBrowsingMode m in HeavenSafeBrowsingMode.values) {
+      if (m.name == raw || m.nativeCode == raw) return m;
+    }
+    return HeavenSafeBrowsingMode.standard;
+  }
+}
+
+enum HeavenWebrtcPolicy {
+  defaultPolicy('Default', 'default'),
+  publicOnly('Default public interface only', 'public_only'),
+  publicAndPrivate('Default public and private interfaces', 'public_and_private'),
+  disableNonProxiedUdp('Disable non-proxied UDP', 'disable_non_proxied_udp');
+
+  const HeavenWebrtcPolicy(this.label, this.nativeCode);
+  final String label;
+  final String nativeCode;
+
+  static HeavenWebrtcPolicy fromName(String? raw) {
+    for (final HeavenWebrtcPolicy p in HeavenWebrtcPolicy.values) {
+      if (p.name == raw || p.nativeCode == raw) return p;
+    }
+    return HeavenWebrtcPolicy.defaultPolicy;
+  }
+}
+
+enum HeavenSecureDnsMode {
+  automatic('Automatic', ''),
+  cloudflare('Cloudflare (1.1.1.1)', 'https://cloudflare-dns.com/dns-query'),
+  quad9('Quad9 (9.9.9.9)', 'https://dns.quad9.net/dns-query'),
+  adguard('AdGuard DNS', 'https://dns.adguard-dns.com/dns-query'),
+  google('Google (8.8.8.8)', 'https://dns.google/dns-query'),
+  off('Off', '');
+
+  const HeavenSecureDnsMode(this.label, this.dohEndpoint);
+  final String label;
+  final String dohEndpoint;
+
+  static HeavenSecureDnsMode fromName(String? raw) {
+    for (final HeavenSecureDnsMode m in HeavenSecureDnsMode.values) {
+      if (m.name == raw) return m;
+    }
+    return HeavenSecureDnsMode.automatic;
+  }
+}
+
+enum HeavenJsOptimisationMode {
+  standard('Standard (V8 JIT)', 'Sites are faster but less secure'),
+  strict('Strict security (Disable JIT/Wasm)', 'Hardened runtime for unfamiliar sites');
+
+  const HeavenJsOptimisationMode(this.label, this.subtitle);
+  final String label;
+  final String subtitle;
+
+  static HeavenJsOptimisationMode fromName(String? raw) {
+    for (final HeavenJsOptimisationMode m in HeavenJsOptimisationMode.values) {
+      if (m.name == raw) return m;
+    }
+    return HeavenJsOptimisationMode.standard;
+  }
+}
+
 enum SitePermissionType {
   location('Location', 'Access your GPS or coarse location'),
   camera('Camera', 'Capture video or photos on this site'),
@@ -217,6 +350,36 @@ class BrowserSettingsController extends ChangeNotifier {
   static const String _keyShieldAntiFp = 'hb.shield.antiFp.v19';
   static const String _keyShieldBlockPopups = 'hb.shield.blockPopups.v19';
   static const String _keyShieldDisabledHosts = 'hb.shield.disabledHosts.v19';
+  static const String _keyShieldHttpsMode = 'hb.shield.httpsMode.v20';
+  static const String _keyShieldCookiePolicy = 'hb.shield.cookiePolicy.v20';
+  static const String _keyShieldAutoAmp = 'hb.shield.autoAmp.v20';
+  static const String _keyShieldLangFp = 'hb.shield.langFp.v20';
+  static const String _keyShieldStoreContact = 'hb.shield.storeContact.v20';
+  static const String _keyShieldContactEmail = 'hb.shield.contactEmail.v20';
+  static const String _keyShieldAutoShred = 'hb.shield.autoShred.v20';
+  static const String _keyShieldPrivElemBlock = 'hb.shield.privElemBlock.v20';
+  static const String _keyShieldFbEmbeds = 'hb.shield.fbEmbeds.v20';
+  static const String _keyShieldTwEmbeds = 'hb.shield.twEmbeds.v20';
+  static const String _keyShieldLiEmbeds = 'hb.shield.liEmbeds.v20';
+  static const String _keyOpenExtInHeaven = 'hb.shield.openExtInHeaven.v20';
+  static const String _keySafeBrowsing = 'hb.shield.safeBrowsing.v20';
+  static const String _keyAllowAppLinks = 'hb.shield.allowAppLinks.v20';
+  static const String _keyWebrtcPolicy = 'hb.shield.webrtcPolicy.v20';
+  static const String _keyPrivScreenshots = 'hb.shield.privScreenshots.v20';
+  static const String _keyPaymentQuery = 'hb.shield.paymentQuery.v20';
+  static const String _keyUnstoppable = 'hb.shield.unstoppable.v20';
+  static const String _keyEns = 'hb.shield.ens.v20';
+  static const String _keySns = 'hb.shield.sns.v20';
+  static const String _keySecureDns = 'hb.shield.secureDns.v20';
+  static const String _keyJsOpt = 'hb.shield.jsOpt.v20';
+  static const String _keyBlockSwitchApp = 'hb.shield.blockSwitchApp.v20';
+  static const String _keyCloseTabsExit = 'hb.shield.closeTabsExit.v20';
+  static const String _keyFilterFanboy = 'hb.shield.filterFanboy.v20';
+  static const String _keyFilterMobNotifs = 'hb.shield.filterMobNotifs.v20';
+  static const String _keyFilterAntiAb = 'hb.shield.filterAntiAb.v20';
+  static const String _keyFilterRegIndia = 'hb.shield.filterRegIndia.v20';
+  static const String _keyFilterRegGlobal = 'hb.shield.filterRegGlobal.v20';
+  static const String _keyCustomFilterRules = 'hb.shield.customRules.v20';
   static const String _keyTranslateTargetLang = 'hb.translateLang.v18';
   static const String _keyReaderFontSize = 'hb.readerFontSize.v18';
   static const String _keyReaderTheme = 'hb.readerTheme.v18';
@@ -231,7 +394,7 @@ class BrowserSettingsController extends ChangeNotifier {
   BrowserLanguage _language = BrowserLanguage.en;
   bool _httpsUpgrade = true;
   bool _blockThirdPartyCookies = true;
-  bool _sendDntAndGpc = true;
+  bool _sendDntAndGpc = false;
   bool _clearOnExit = false;
   bool _javascriptEnabled = true;
   bool _desktopMode = false;
@@ -248,6 +411,37 @@ class BrowserSettingsController extends ChangeNotifier {
   bool _shieldCleanUrls = true;
   bool _shieldAntiFingerprinting = true;
   bool _shieldBlockPopups = true;
+  HeavenHttpsUpgradeMode _httpsUpgradeMode = HeavenHttpsUpgradeMode.standard;
+  HeavenCookiePolicy _cookiePolicy = HeavenCookiePolicy.blockThirdParty;
+  bool _shieldAutoRedirectAmp = true;
+  bool _shieldPreventLangFp = true;
+  bool _storeBrokenSiteContact = true;
+  String _brokenSiteContactEmail = '';
+  HeavenAutoShredMode _autoShredMode = HeavenAutoShredMode.never;
+  bool _allowElementBlockInPrivate = false;
+  bool _allowFacebookEmbeds = true;
+  bool _allowTwitterEmbeds = true;
+  bool _allowLinkedinEmbeds = false;
+  bool _openExternalLinksInHeaven = true;
+  HeavenSafeBrowsingMode _safeBrowsingMode = HeavenSafeBrowsingMode.standard;
+  bool _allowExternalAppLinks = true;
+  HeavenWebrtcPolicy _webrtcPolicy = HeavenWebrtcPolicy.defaultPolicy;
+  bool _allowPrivateScreenshots = false;
+  bool _allowPaymentMethodQuery = true;
+  bool _resolveUnstoppableDomains = true;
+  bool _resolveEnsDomains = true;
+  bool _resolveSnsDomains = true;
+  HeavenSecureDnsMode _secureDnsMode = HeavenSecureDnsMode.automatic;
+  HeavenJsOptimisationMode _jsOptimisationMode =
+      HeavenJsOptimisationMode.standard;
+  bool _blockSwitchToAppNotices = true;
+  bool _closeTabsOnExit = false;
+  bool _filterFanboyAnnoyances = true;
+  bool _filterMobileNotifs = true;
+  bool _filterAntiAdblock = true;
+  bool _filterRegionalIndia = false;
+  bool _filterRegionalGlobal = false;
+  List<String> _customFilterRules = <String>[];
   int _textScalePercent = 100;
   String _translateTargetLang = 'en';
   double _readerFontSize = 18.0;
@@ -292,6 +486,55 @@ class BrowserSettingsController extends ChangeNotifier {
   bool get shieldCleanUrls => _shieldCleanUrls;
   bool get shieldAntiFingerprinting => _shieldAntiFingerprinting;
   bool get shieldBlockPopups => _shieldBlockPopups;
+  HeavenTrackersAdsLevel get trackersAdsLevel {
+    if (!_shieldBlockAds) return HeavenTrackersAdsLevel.disabled;
+    return _shieldMode == HeavenShieldMode.strict
+        ? HeavenTrackersAdsLevel.aggressive
+        : HeavenTrackersAdsLevel.standard;
+  }
+
+  HeavenHttpsUpgradeMode get httpsUpgradeMode => _httpsUpgradeMode;
+  HeavenCookiePolicy get cookiePolicy => _cookiePolicy;
+  bool get shieldAutoRedirectAmp => _shieldAutoRedirectAmp;
+  bool get shieldPreventLangFp => _shieldPreventLangFp;
+  bool get storeBrokenSiteContact => _storeBrokenSiteContact;
+  String get brokenSiteContactEmail => _brokenSiteContactEmail;
+  HeavenAutoShredMode get autoShredMode => _autoShredMode;
+  bool get allowElementBlockInPrivate => _allowElementBlockInPrivate;
+  bool get allowFacebookEmbeds => _allowFacebookEmbeds;
+  bool get allowTwitterEmbeds => _allowTwitterEmbeds;
+  bool get allowLinkedinEmbeds => _allowLinkedinEmbeds;
+  bool get openExternalLinksInHeaven => _openExternalLinksInHeaven;
+  HeavenSafeBrowsingMode get safeBrowsingMode => _safeBrowsingMode;
+  bool get allowExternalAppLinks => _allowExternalAppLinks;
+  HeavenWebrtcPolicy get webrtcPolicy => _webrtcPolicy;
+  bool get allowPrivateScreenshots => _allowPrivateScreenshots;
+  bool get allowPaymentMethodQuery => _allowPaymentMethodQuery;
+  bool get resolveUnstoppableDomains => _resolveUnstoppableDomains;
+  bool get resolveEnsDomains => _resolveEnsDomains;
+  bool get resolveSnsDomains => _resolveSnsDomains;
+  HeavenSecureDnsMode get secureDnsMode => _secureDnsMode;
+  HeavenJsOptimisationMode get jsOptimisationMode => _jsOptimisationMode;
+  bool get blockSwitchToAppNotices => _blockSwitchToAppNotices;
+  bool get closeTabsOnExit => _closeTabsOnExit;
+  bool get filterFanboyAnnoyances => _filterFanboyAnnoyances;
+  bool get filterMobileNotifs => _filterMobileNotifs;
+  bool get filterAntiAdblock => _filterAntiAdblock;
+  bool get filterRegionalIndia => _filterRegionalIndia;
+  bool get filterRegionalGlobal => _filterRegionalGlobal;
+  List<String> get customFilterRules =>
+      List<String>.unmodifiable(_customFilterRules);
+
+  int get activeContentFilterListCount {
+    int c = 0;
+    if (_shieldBlockCookieBanners) c++;
+    if (_filterFanboyAnnoyances) c++;
+    if (_filterMobileNotifs) c++;
+    if (_filterAntiAdblock) c++;
+    if (_filterRegionalIndia) c++;
+    if (_filterRegionalGlobal) c++;
+    return c;
+  }
   List<String> get shieldDisabledHosts {
     final List<String> list = _shieldDisabledHosts.toList()..sort();
     return List<String>.unmodifiable(list);
@@ -360,10 +603,25 @@ class BrowserSettingsController extends ChangeNotifier {
       'system' => ThemeMode.system,
       _ => ThemeMode.dark,
     };
-    _httpsUpgrade = _prefs.getBool(_keyHttpsUpgrade) ?? true;
+    _httpsUpgradeMode = HeavenHttpsUpgradeMode.fromName(
+      _prefs.getString(_keyShieldHttpsMode),
+    );
+    _httpsUpgrade =
+        _prefs.getBool(_keyHttpsUpgrade) ??
+        (_httpsUpgradeMode != HeavenHttpsUpgradeMode.disabled);
+    if (!_httpsUpgrade &&
+        _httpsUpgradeMode != HeavenHttpsUpgradeMode.disabled) {
+      _httpsUpgradeMode = HeavenHttpsUpgradeMode.disabled;
+    }
+
+    _cookiePolicy = HeavenCookiePolicy.fromName(
+      _prefs.getString(_keyShieldCookiePolicy),
+    );
     _blockThirdPartyCookies =
-        _prefs.getBool(_keyBlockThirdPartyCookies) ?? true;
-    _sendDntAndGpc = _prefs.getBool(_keySendDntGpc) ?? true;
+        _prefs.getBool(_keyBlockThirdPartyCookies) ??
+        (_cookiePolicy != HeavenCookiePolicy.allowAll);
+
+    _sendDntAndGpc = _prefs.getBool(_keySendDntGpc) ?? false;
     _clearOnExit = _prefs.getBool(_keyClearOnExit) ?? false;
     _javascriptEnabled = _prefs.getBool(_keyJavascriptEnabled) ?? true;
     _desktopMode = _prefs.getBool(_keyDesktopMode) ?? false;
@@ -387,6 +645,48 @@ class BrowserSettingsController extends ChangeNotifier {
     _shieldBlockCookieBanners =
         _prefs.getBool(_keyShieldCookieBanners) ?? true;
     _shieldCleanUrls = _prefs.getBool(_keyShieldCleanUrls) ?? true;
+    _shieldAutoRedirectAmp = _prefs.getBool(_keyShieldAutoAmp) ?? true;
+    _shieldPreventLangFp = _prefs.getBool(_keyShieldLangFp) ?? true;
+    _storeBrokenSiteContact = _prefs.getBool(_keyShieldStoreContact) ?? true;
+    _brokenSiteContactEmail =
+        (_prefs.getString(_keyShieldContactEmail) ?? '').trim();
+    _autoShredMode = HeavenAutoShredMode.fromName(
+      _prefs.getString(_keyShieldAutoShred),
+    );
+    _allowElementBlockInPrivate =
+        _prefs.getBool(_keyShieldPrivElemBlock) ?? false;
+    _allowFacebookEmbeds = _prefs.getBool(_keyShieldFbEmbeds) ?? true;
+    _allowTwitterEmbeds = _prefs.getBool(_keyShieldTwEmbeds) ?? true;
+    _allowLinkedinEmbeds = _prefs.getBool(_keyShieldLiEmbeds) ?? false;
+    _openExternalLinksInHeaven = _prefs.getBool(_keyOpenExtInHeaven) ?? true;
+    _safeBrowsingMode = HeavenSafeBrowsingMode.fromName(
+      _prefs.getString(_keySafeBrowsing),
+    );
+    _allowExternalAppLinks = _prefs.getBool(_keyAllowAppLinks) ?? true;
+    _webrtcPolicy = HeavenWebrtcPolicy.fromName(
+      _prefs.getString(_keyWebrtcPolicy),
+    );
+    _allowPrivateScreenshots = _prefs.getBool(_keyPrivScreenshots) ?? false;
+    _allowPaymentMethodQuery = _prefs.getBool(_keyPaymentQuery) ?? true;
+    _resolveUnstoppableDomains = _prefs.getBool(_keyUnstoppable) ?? true;
+    _resolveEnsDomains = _prefs.getBool(_keyEns) ?? true;
+    _resolveSnsDomains = _prefs.getBool(_keySns) ?? true;
+    _secureDnsMode = HeavenSecureDnsMode.fromName(
+      _prefs.getString(_keySecureDns),
+    );
+    _jsOptimisationMode = HeavenJsOptimisationMode.fromName(
+      _prefs.getString(_keyJsOpt),
+    );
+    _blockSwitchToAppNotices = _prefs.getBool(_keyBlockSwitchApp) ?? true;
+    _closeTabsOnExit = _prefs.getBool(_keyCloseTabsExit) ?? false;
+    _filterFanboyAnnoyances = _prefs.getBool(_keyFilterFanboy) ?? true;
+    _filterMobileNotifs = _prefs.getBool(_keyFilterMobNotifs) ?? true;
+    _filterAntiAdblock = _prefs.getBool(_keyFilterAntiAb) ?? true;
+    _filterRegionalIndia = _prefs.getBool(_keyFilterRegIndia) ?? false;
+    _filterRegionalGlobal = _prefs.getBool(_keyFilterRegGlobal) ?? false;
+    _customFilterRules = List<String>.from(
+      _prefs.getStringList(_keyCustomFilterRules) ?? const <String>[],
+    );
     _shieldAntiFingerprinting = _prefs.getBool(_keyShieldAntiFp) ?? true;
     _shieldBlockPopups = _prefs.getBool(_keyShieldBlockPopups) ?? true;
     _translateTargetLang =
@@ -537,6 +837,25 @@ class BrowserSettingsController extends ChangeNotifier {
       shieldAntiFingerprinting: _shieldAntiFingerprinting,
       shieldBlockPopups: _shieldBlockPopups,
       shieldDisabledHosts: _shieldDisabledHosts.toList(growable: false),
+      shieldCookiePolicy: _cookiePolicy.nativeCode,
+      shieldSafeBrowsing: _safeBrowsingMode.nativeCode,
+      shieldAutoRedirectAmp: _shieldAutoRedirectAmp,
+      shieldPreventLangFp: _shieldPreventLangFp,
+      shieldAllowFacebookEmbeds: _allowFacebookEmbeds,
+      shieldAllowTwitterEmbeds: _allowTwitterEmbeds,
+      shieldAllowLinkedinEmbeds: _allowLinkedinEmbeds,
+      shieldWebrtcPolicy: _webrtcPolicy.nativeCode,
+      shieldAllowPaymentQuery: _allowPaymentMethodQuery,
+      shieldStrictJsSecurity:
+          _jsOptimisationMode == HeavenJsOptimisationMode.strict,
+      shieldBlockSwitchToApp: _blockSwitchToAppNotices,
+      shieldSendDoNotTrack: _sendDntAndGpc,
+      shieldFilterFanboyAnnoyances: _filterFanboyAnnoyances,
+      shieldFilterMobileNotifs: _filterMobileNotifs,
+      shieldFilterAntiAdblock: _filterAntiAdblock,
+      shieldFilterRegionalIndia: _filterRegionalIndia,
+      shieldFilterRegionalGlobal: _filterRegionalGlobal,
+      shieldCustomRules: _customFilterRules,
     );
   }
 
@@ -714,6 +1033,314 @@ class BrowserSettingsController extends ChangeNotifier {
     }
   }
 
+  Future<void> setTrackersAdsLevel(HeavenTrackersAdsLevel level) async {
+    switch (level) {
+      case HeavenTrackersAdsLevel.aggressive:
+        _shieldEnabled = true;
+        _shieldBlockAds = true;
+        _shieldMode = HeavenShieldMode.strict;
+      case HeavenTrackersAdsLevel.standard:
+        _shieldEnabled = true;
+        _shieldBlockAds = true;
+        _shieldMode = HeavenShieldMode.standard;
+      case HeavenTrackersAdsLevel.disabled:
+        _shieldBlockAds = false;
+    }
+    await _prefs.setBool(_keyShieldEnabled, _shieldEnabled);
+    await _prefs.setBool(_keyShieldBlockAds, _shieldBlockAds);
+    await _prefs.setString(_keyShieldMode, _shieldMode.name);
+    _webViewConfigRevision += 1;
+    _pushNativeBrowserConfig();
+    notifyListeners();
+  }
+
+  Future<void> setHttpsUpgradeMode(HeavenHttpsUpgradeMode mode) async {
+    _httpsUpgradeMode = mode;
+    _httpsUpgrade = mode != HeavenHttpsUpgradeMode.disabled;
+    await _prefs.setString(_keyShieldHttpsMode, mode.name);
+    await _prefs.setBool(_keyHttpsUpgrade, _httpsUpgrade);
+    _webViewConfigRevision += 1;
+    notifyListeners();
+  }
+
+  Future<void> setCookiePolicy(HeavenCookiePolicy policy) async {
+    _cookiePolicy = policy;
+    _blockThirdPartyCookies = policy != HeavenCookiePolicy.allowAll;
+    await _prefs.setString(_keyShieldCookiePolicy, policy.name);
+    await _prefs.setBool(_keyBlockThirdPartyCookies, _blockThirdPartyCookies);
+    _webViewConfigRevision += 1;
+    _pushNativeBrowserConfig();
+    notifyListeners();
+  }
+
+  Future<void> setShieldAutoRedirectAmp(bool v) async {
+    if (_shieldAutoRedirectAmp == v) return;
+    _shieldAutoRedirectAmp = v;
+    await _prefs.setBool(_keyShieldAutoAmp, v);
+    _webViewConfigRevision += 1;
+    _pushNativeBrowserConfig();
+    notifyListeners();
+  }
+
+  Future<void> setShieldPreventLangFp(bool v) async {
+    if (_shieldPreventLangFp == v) return;
+    _shieldPreventLangFp = v;
+    await _prefs.setBool(_keyShieldLangFp, v);
+    _webViewConfigRevision += 1;
+    _pushNativeBrowserConfig();
+    notifyListeners();
+  }
+
+  Future<void> setStoreBrokenSiteContact(bool v) async {
+    _storeBrokenSiteContact = v;
+    await _prefs.setBool(_keyShieldStoreContact, v);
+    if (!v) {
+      _brokenSiteContactEmail = '';
+      await _prefs.remove(_keyShieldContactEmail);
+    }
+    notifyListeners();
+  }
+
+  Future<void> setBrokenSiteContactEmail(String email) async {
+    final String clean = email.trim();
+    _brokenSiteContactEmail = clean;
+    if (_storeBrokenSiteContact && clean.isNotEmpty) {
+      await _prefs.setString(_keyShieldContactEmail, clean);
+    } else {
+      await _prefs.remove(_keyShieldContactEmail);
+    }
+    notifyListeners();
+  }
+
+  Future<void> setAutoShredMode(HeavenAutoShredMode mode) async {
+    if (_autoShredMode == mode) return;
+    _autoShredMode = mode;
+    await _prefs.setString(_keyShieldAutoShred, mode.name);
+    if (mode == HeavenAutoShredMode.appExit) {
+      _clearOnExit = true;
+      await _prefs.setBool(_keyClearOnExit, true);
+    }
+    notifyListeners();
+  }
+
+  Future<void> setAllowElementBlockInPrivate(bool v) async {
+    if (_allowElementBlockInPrivate == v) return;
+    _allowElementBlockInPrivate = v;
+    await _prefs.setBool(_keyShieldPrivElemBlock, v);
+    notifyListeners();
+  }
+
+  Future<void> setAllowFacebookEmbeds(bool v) async {
+    if (_allowFacebookEmbeds == v) return;
+    _allowFacebookEmbeds = v;
+    await _prefs.setBool(_keyShieldFbEmbeds, v);
+    _webViewConfigRevision += 1;
+    _pushNativeBrowserConfig();
+    notifyListeners();
+  }
+
+  Future<void> setAllowTwitterEmbeds(bool v) async {
+    if (_allowTwitterEmbeds == v) return;
+    _allowTwitterEmbeds = v;
+    await _prefs.setBool(_keyShieldTwEmbeds, v);
+    _webViewConfigRevision += 1;
+    _pushNativeBrowserConfig();
+    notifyListeners();
+  }
+
+  Future<void> setAllowLinkedinEmbeds(bool v) async {
+    if (_allowLinkedinEmbeds == v) return;
+    _allowLinkedinEmbeds = v;
+    await _prefs.setBool(_keyShieldLiEmbeds, v);
+    _webViewConfigRevision += 1;
+    _pushNativeBrowserConfig();
+    notifyListeners();
+  }
+
+  Future<void> setOpenExternalLinksInHeaven(bool v) async {
+    if (_openExternalLinksInHeaven == v) return;
+    _openExternalLinksInHeaven = v;
+    await _prefs.setBool(_keyOpenExtInHeaven, v);
+    notifyListeners();
+  }
+
+  Future<void> setSafeBrowsingMode(HeavenSafeBrowsingMode mode) async {
+    if (_safeBrowsingMode == mode) return;
+    _safeBrowsingMode = mode;
+    await _prefs.setString(_keySafeBrowsing, mode.name);
+    _webViewConfigRevision += 1;
+    _pushNativeBrowserConfig();
+    notifyListeners();
+  }
+
+  Future<void> setAllowExternalAppLinks(bool v) async {
+    if (_allowExternalAppLinks == v) return;
+    _allowExternalAppLinks = v;
+    await _prefs.setBool(_keyAllowAppLinks, v);
+    notifyListeners();
+  }
+
+  Future<void> setWebrtcPolicy(HeavenWebrtcPolicy policy) async {
+    if (_webrtcPolicy == policy) return;
+    _webrtcPolicy = policy;
+    await _prefs.setString(_keyWebrtcPolicy, policy.name);
+    _webViewConfigRevision += 1;
+    _pushNativeBrowserConfig();
+    notifyListeners();
+  }
+
+  Future<void> setAllowPrivateScreenshots(bool v) async {
+    if (_allowPrivateScreenshots == v) return;
+    _allowPrivateScreenshots = v;
+    await _prefs.setBool(_keyPrivScreenshots, v);
+    notifyListeners();
+  }
+
+  Future<void> setAllowPaymentMethodQuery(bool v) async {
+    if (_allowPaymentMethodQuery == v) return;
+    _allowPaymentMethodQuery = v;
+    await _prefs.setBool(_keyPaymentQuery, v);
+    _webViewConfigRevision += 1;
+    _pushNativeBrowserConfig();
+    notifyListeners();
+  }
+
+  Future<void> setResolveUnstoppableDomains(bool v) async {
+    if (_resolveUnstoppableDomains == v) return;
+    _resolveUnstoppableDomains = v;
+    await _prefs.setBool(_keyUnstoppable, v);
+    notifyListeners();
+  }
+
+  Future<void> setResolveEnsDomains(bool v) async {
+    if (_resolveEnsDomains == v) return;
+    _resolveEnsDomains = v;
+    await _prefs.setBool(_keyEns, v);
+    notifyListeners();
+  }
+
+  Future<void> setResolveSnsDomains(bool v) async {
+    if (_resolveSnsDomains == v) return;
+    _resolveSnsDomains = v;
+    await _prefs.setBool(_keySns, v);
+    notifyListeners();
+  }
+
+  Future<void> setSecureDnsMode(HeavenSecureDnsMode mode) async {
+    if (_secureDnsMode == mode) return;
+    _secureDnsMode = mode;
+    await _prefs.setString(_keySecureDns, mode.name);
+    notifyListeners();
+  }
+
+  Future<void> setJsOptimisationMode(HeavenJsOptimisationMode mode) async {
+    if (_jsOptimisationMode == mode) return;
+    _jsOptimisationMode = mode;
+    await _prefs.setString(_keyJsOpt, mode.name);
+    _webViewConfigRevision += 1;
+    _pushNativeBrowserConfig();
+    notifyListeners();
+  }
+
+  Future<void> setBlockSwitchToAppNotices(bool v) async {
+    if (_blockSwitchToAppNotices == v) return;
+    _blockSwitchToAppNotices = v;
+    await _prefs.setBool(_keyBlockSwitchApp, v);
+    _webViewConfigRevision += 1;
+    _pushNativeBrowserConfig();
+    notifyListeners();
+  }
+
+  Future<void> setCloseTabsOnExit(bool v) async {
+    if (_closeTabsOnExit == v) return;
+    _closeTabsOnExit = v;
+    await _prefs.setBool(_keyCloseTabsExit, v);
+    notifyListeners();
+  }
+
+  Future<void> setFilterFanboyAnnoyances(bool v) async {
+    if (_filterFanboyAnnoyances == v) return;
+    _filterFanboyAnnoyances = v;
+    await _prefs.setBool(_keyFilterFanboy, v);
+    _webViewConfigRevision += 1;
+    _pushNativeBrowserConfig();
+    notifyListeners();
+  }
+
+  Future<void> setFilterMobileNotifs(bool v) async {
+    if (_filterMobileNotifs == v) return;
+    _filterMobileNotifs = v;
+    await _prefs.setBool(_keyFilterMobNotifs, v);
+    _webViewConfigRevision += 1;
+    _pushNativeBrowserConfig();
+    notifyListeners();
+  }
+
+  Future<void> setFilterAntiAdblock(bool v) async {
+    if (_filterAntiAdblock == v) return;
+    _filterAntiAdblock = v;
+    await _prefs.setBool(_keyFilterAntiAb, v);
+    _webViewConfigRevision += 1;
+    _pushNativeBrowserConfig();
+    notifyListeners();
+  }
+
+  Future<void> setFilterRegionalIndia(bool v) async {
+    if (_filterRegionalIndia == v) return;
+    _filterRegionalIndia = v;
+    await _prefs.setBool(_keyFilterRegIndia, v);
+    _webViewConfigRevision += 1;
+    _pushNativeBrowserConfig();
+    notifyListeners();
+  }
+
+  Future<void> setFilterRegionalGlobal(bool v) async {
+    if (_filterRegionalGlobal == v) return;
+    _filterRegionalGlobal = v;
+    await _prefs.setBool(_keyFilterRegGlobal, v);
+    _webViewConfigRevision += 1;
+    _pushNativeBrowserConfig();
+    notifyListeners();
+  }
+
+  Future<void> setCustomFilterRulesFromText(String rawText) async {
+    final List<String> lines = rawText
+        .split('\n')
+        .map((String l) => l.trim())
+        .where((String l) => l.isNotEmpty)
+        .toSet()
+        .toList();
+    _customFilterRules = lines;
+    await _prefs.setStringList(_keyCustomFilterRules, _customFilterRules);
+    _webViewConfigRevision += 1;
+    _pushNativeBrowserConfig();
+    notifyListeners();
+  }
+
+  Future<void> addCustomElementBlockRule(String host, String selector) async {
+    final String cleanHost = OmniboxParser.cleanDomain(host);
+    final String cleanSel = selector.trim();
+    if (cleanSel.isEmpty) return;
+    final String rule = cleanHost.isEmpty
+        ? '##$cleanSel'
+        : '$cleanHost##$cleanSel';
+    if (!_customFilterRules.contains(rule)) {
+      _customFilterRules = <String>[..._customFilterRules, rule];
+      await _prefs.setStringList(_keyCustomFilterRules, _customFilterRules);
+      _webViewConfigRevision += 1;
+      _pushNativeBrowserConfig();
+      notifyListeners();
+    }
+  }
+
+  Future<void> clearHistoryOnly() async {
+    _history = <HistoryItem>[];
+    _siteUsageByDomain.clear();
+    await _prefs.remove(_keyHistory);
+    await _prefs.remove(_keySiteUsage);
+    notifyListeners();
+  }
+
   Future<void> resetHeavenShieldDefaults() async {
     _shieldEnabled = true;
     _shieldMode = HeavenShieldMode.standard;
@@ -722,9 +1349,39 @@ class BrowserSettingsController extends ChangeNotifier {
     _shieldCleanUrls = true;
     _shieldAntiFingerprinting = true;
     _shieldBlockPopups = true;
+    _httpsUpgradeMode = HeavenHttpsUpgradeMode.standard;
     _httpsUpgrade = true;
+    _cookiePolicy = HeavenCookiePolicy.blockThirdParty;
     _blockThirdPartyCookies = true;
-    _sendDntAndGpc = true;
+    _sendDntAndGpc = false;
+    _javascriptEnabled = true;
+    _shieldAutoRedirectAmp = true;
+    _shieldPreventLangFp = true;
+    _storeBrokenSiteContact = true;
+    _autoShredMode = HeavenAutoShredMode.never;
+    _allowElementBlockInPrivate = false;
+    _allowFacebookEmbeds = true;
+    _allowTwitterEmbeds = true;
+    _allowLinkedinEmbeds = false;
+    _openExternalLinksInHeaven = true;
+    _safeBrowsingMode = HeavenSafeBrowsingMode.standard;
+    _allowExternalAppLinks = true;
+    _webrtcPolicy = HeavenWebrtcPolicy.defaultPolicy;
+    _allowPrivateScreenshots = false;
+    _allowPaymentMethodQuery = true;
+    _resolveUnstoppableDomains = true;
+    _resolveEnsDomains = true;
+    _resolveSnsDomains = true;
+    _secureDnsMode = HeavenSecureDnsMode.automatic;
+    _jsOptimisationMode = HeavenJsOptimisationMode.standard;
+    _blockSwitchToAppNotices = true;
+    _closeTabsOnExit = false;
+    _filterFanboyAnnoyances = true;
+    _filterMobileNotifs = true;
+    _filterAntiAdblock = true;
+    _filterRegionalIndia = false;
+    _filterRegionalGlobal = false;
+    _customFilterRules = <String>[];
     _shieldDisabledHosts.clear();
 
     await _prefs.setBool(_keyShieldEnabled, true);
@@ -734,9 +1391,57 @@ class BrowserSettingsController extends ChangeNotifier {
     await _prefs.setBool(_keyShieldCleanUrls, true);
     await _prefs.setBool(_keyShieldAntiFp, true);
     await _prefs.setBool(_keyShieldBlockPopups, true);
+    await _prefs.setString(
+      _keyShieldHttpsMode,
+      HeavenHttpsUpgradeMode.standard.name,
+    );
     await _prefs.setBool(_keyHttpsUpgrade, true);
+    await _prefs.setString(
+      _keyShieldCookiePolicy,
+      HeavenCookiePolicy.blockThirdParty.name,
+    );
     await _prefs.setBool(_keyBlockThirdPartyCookies, true);
-    await _prefs.setBool(_keySendDntGpc, true);
+    await _prefs.setBool(_keySendDntGpc, false);
+    await _prefs.setBool(_keyJavascriptEnabled, true);
+    await _prefs.setBool(_keyShieldAutoAmp, true);
+    await _prefs.setBool(_keyShieldLangFp, true);
+    await _prefs.setBool(_keyShieldStoreContact, true);
+    await _prefs.setString(_keyShieldAutoShred, HeavenAutoShredMode.never.name);
+    await _prefs.setBool(_keyShieldPrivElemBlock, false);
+    await _prefs.setBool(_keyShieldFbEmbeds, true);
+    await _prefs.setBool(_keyShieldTwEmbeds, true);
+    await _prefs.setBool(_keyShieldLiEmbeds, false);
+    await _prefs.setBool(_keyOpenExtInHeaven, true);
+    await _prefs.setString(
+      _keySafeBrowsing,
+      HeavenSafeBrowsingMode.standard.name,
+    );
+    await _prefs.setBool(_keyAllowAppLinks, true);
+    await _prefs.setString(
+      _keyWebrtcPolicy,
+      HeavenWebrtcPolicy.defaultPolicy.name,
+    );
+    await _prefs.setBool(_keyPrivScreenshots, false);
+    await _prefs.setBool(_keyPaymentQuery, true);
+    await _prefs.setBool(_keyUnstoppable, true);
+    await _prefs.setBool(_keyEns, true);
+    await _prefs.setBool(_keySns, true);
+    await _prefs.setString(
+      _keySecureDns,
+      HeavenSecureDnsMode.automatic.name,
+    );
+    await _prefs.setString(
+      _keyJsOpt,
+      HeavenJsOptimisationMode.standard.name,
+    );
+    await _prefs.setBool(_keyBlockSwitchApp, true);
+    await _prefs.setBool(_keyCloseTabsExit, false);
+    await _prefs.setBool(_keyFilterFanboy, true);
+    await _prefs.setBool(_keyFilterMobNotifs, true);
+    await _prefs.setBool(_keyFilterAntiAb, true);
+    await _prefs.setBool(_keyFilterRegIndia, false);
+    await _prefs.setBool(_keyFilterRegGlobal, false);
+    await _prefs.setStringList(_keyCustomFilterRules, const <String>[]);
     await _prefs.setStringList(_keyShieldDisabledHosts, const <String>[]);
 
     _webViewConfigRevision += 1;
@@ -1156,6 +1861,7 @@ class BrowserSettingsController extends ChangeNotifier {
   Future<void> setSendDntAndGpc(bool value) async {
     _sendDntAndGpc = value;
     await _prefs.setBool(_keySendDntGpc, value);
+    _pushNativeBrowserConfig();
     notifyListeners();
   }
 
