@@ -23,8 +23,8 @@ import '../../settings/help_screen.dart';
 import '../../settings/languages_screen.dart';
 import '../../settings/notifications_screen.dart';
 import '../../settings/settings_screen.dart';
+import '../../shield/heaven_shield_screen.dart';
 import '../../shield/native_shield_bridge.dart';
-import '../../store/heaven_web_store_screen.dart';
 import '../../tabs/tab_manager.dart';
 import '../../tabs/tabs_screen.dart';
 import '../../vpn/vpn_controller.dart';
@@ -181,9 +181,6 @@ class _BrowserScreenState extends State<BrowserScreen>
     if (OmniboxParser.isDownloadsUrl(url)) {
       return AppConstants.downloadsTabUrl;
     }
-    if (OmniboxParser.isWebStoreUrl(url)) {
-      return AppConstants.webStoreTabUrl;
-    }
     final String searchQ = OmniboxParser.extractAnySearchQuery(url);
     if (searchQ.isNotEmpty) {
       return searchQ;
@@ -272,8 +269,7 @@ class _BrowserScreenState extends State<BrowserScreen>
       return;
     }
     if (!widget.tabManager.isActiveIncognito &&
-        !OmniboxParser.isDownloadsUrl(raw) &&
-        !OmniboxParser.isWebStoreUrl(raw)) {
+        !OmniboxParser.isDownloadsUrl(raw)) {
       unawaited(widget.interests.recordActivity(text: raw, weight: 2.2));
     }
     await _activeEngine.loadUserEntry(raw);
@@ -876,25 +872,6 @@ class _BrowserScreenState extends State<BrowserScreen>
             downloads: widget.downloads,
             embeddedInTab: true,
             topOverlayInset: 54,
-          );
-        } else if (engine.isShowingWebStorePage) {
-          overlayChild = NotificationListener<ScrollUpdateNotification>(
-            onNotification: (ScrollUpdateNotification notif) {
-              if (notif.metrics.axis == Axis.vertical &&
-                  !_isEditingOmnibox &&
-                  !_showLinkActionsCard) {
-                engine.handleWebScrollDelta(
-                  notif.metrics.pixels,
-                  notif.scrollDelta ?? 0.0,
-                );
-              }
-              return false;
-            },
-            child: HeavenWebStoreScreen(
-              settings: widget.settings,
-              embeddedInTab: true,
-              topOverlayInset: 54,
-            ),
           );
         } else if (engine.isShowingStartPage) {
           overlayChild = NotificationListener<ScrollUpdateNotification>(
@@ -1528,7 +1505,9 @@ class _BrowserScreenState extends State<BrowserScreen>
         Flexible(
           flex: 0,
           child: ConstrainedBox(
-            constraints: const BoxConstraints(maxWidth: 88),
+            constraints: BoxConstraints(
+              maxWidth: engine.isShowingWebPage ? 72 : 84,
+            ),
             child: FittedBox(
               fit: BoxFit.scaleDown,
               child: SearchEngineChipButton(
@@ -1539,6 +1518,35 @@ class _BrowserScreenState extends State<BrowserScreen>
             ),
           ),
         ),
+        if (engine.isShowingWebPage)
+          ListenableBuilder(
+            listenable: widget.settings,
+            builder: (BuildContext context, _) {
+              final bool shieldOn = widget.settings.isShieldActiveForHost(
+                engine.currentHost,
+              );
+              return InkWell(
+                key: const Key('top_bar_shield_button'),
+                borderRadius: BorderRadius.circular(18),
+                onTap: () => _openHeavenShieldQuickSheet(context, engine),
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 4,
+                    vertical: 6,
+                  ),
+                  child: Icon(
+                    shieldOn
+                        ? Icons.verified_user_rounded
+                        : Icons.shield_outlined,
+                    size: 15.5,
+                    color: shieldOn
+                        ? AppTheme.shieldEmerald
+                        : colors.onSurfaceVariant,
+                  ),
+                ),
+              );
+            },
+          ),
         ListenableBuilder(
           listenable: widget.vpn,
           builder: (BuildContext context, _) {
@@ -1549,7 +1557,7 @@ class _BrowserScreenState extends State<BrowserScreen>
               borderRadius: BorderRadius.circular(18),
               onTap: () => _openTranslateReaderSheet(context, engine),
               child: Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 6),
+                padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 6),
                 child: Icon(
                   translated
                       ? Icons.translate_rounded
@@ -1559,13 +1567,11 @@ class _BrowserScreenState extends State<BrowserScreen>
                                   ? Icons.shield_moon_rounded
                                   : (engine.isShowingDownloadsPage
                                         ? Icons.download_done_rounded
-                                        : (engine.isShowingWebStorePage
-                                              ? Icons.extension_rounded
-                                              : (engine.isShowingStartPage
+                                        : (engine.isShowingStartPage
+                                              ? Icons.translate_rounded
+                                              : (engine.isSecure
                                                     ? Icons.translate_rounded
-                                                    : (engine.isSecure
-                                                          ? Icons.translate_rounded
-                                                          : Icons.warning_amber_rounded)))))),
+                                                    : Icons.warning_amber_rounded))))),
                   size: 16,
                   color: translated
                       ? AppTheme.heavenAccent
@@ -1574,8 +1580,7 @@ class _BrowserScreenState extends State<BrowserScreen>
                             : (incognito
                                   ? AppTheme.incognitoCyan
                                   : (engine.isShowingStartPage ||
-                                            engine.isShowingDownloadsPage ||
-                                            engine.isShowingWebStorePage
+                                            engine.isShowingDownloadsPage
                                         ? colors.primary
                                         : (engine.isSecure
                                               ? AppTheme.shieldEmerald
@@ -1709,8 +1714,46 @@ class _BrowserScreenState extends State<BrowserScreen>
     );
   }
 
-  Future<void> _openWebStoreTab() async {
-    await widget.tabManager.openWebStoreTab();
+  void _openHeavenShieldScreen() {
+    final BrowserEngine engine = _activeEngine;
+    Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) => HeavenShieldScreen(
+          settings: widget.settings,
+          currentHost: engine.currentHost,
+          activeWebViewId: engine.androidWebViewId,
+          onShieldChangedForActivePage: () {
+            if (engine.isShowingWebPage) {
+              unawaited(engine.reloadFullPage());
+            }
+          },
+        ),
+      ),
+    );
+  }
+
+  Future<void> _openHeavenShieldQuickSheet(
+    BuildContext context,
+    BrowserEngine engine,
+  ) async {
+    await showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      showDragHandle: true,
+      builder: (BuildContext _) {
+        return HeavenShieldQuickSheet(
+          settings: widget.settings,
+          currentHost: engine.currentHost,
+          activeWebViewId: engine.androidWebViewId,
+          onReloadActivePage: () {
+            if (engine.isShowingWebPage) {
+              unawaited(engine.reloadFullPage());
+            }
+          },
+          onOpenFullShieldSettings: _openHeavenShieldScreen,
+        );
+      },
+    );
   }
 
   Future<void> _openTranslateReaderSheet(
@@ -1980,13 +2023,19 @@ class _BrowserScreenState extends State<BrowserScreen>
                           },
                         ),
                         5 => _DeckActionTile(
-                          tileKey: const Key('browser_menu_web_store_tile'),
-                          icon: Icons.extension_rounded,
-                          label: 'Web Store',
-                          accent: AppTheme.heavenAccent,
+                          tileKey: const Key('browser_menu_shield_tile'),
+                          icon: widget.settings.shieldEnabled
+                              ? Icons.verified_user_rounded
+                              : Icons.shield_outlined,
+                          label: widget.settings.shieldEnabled
+                              ? 'Shield: ON'
+                              : 'Shield',
+                          accent: widget.settings.shieldEnabled
+                              ? AppTheme.shieldEmerald
+                              : colors.primary,
                           onTap: () {
                             Navigator.pop(sheetContext);
-                            _openWebStoreTab();
+                            _openHeavenShieldScreen();
                           },
                         ),
                         6 => _DeckActionTile(
@@ -2092,22 +2141,28 @@ class _BrowserScreenState extends State<BrowserScreen>
                     },
                   ),
                   ListTile(
-                    key: const Key('browser_menu_extensions_list_tile'),
+                    key: const Key('browser_menu_shield_settings_tile'),
                     dense: true,
                     contentPadding: const EdgeInsets.symmetric(horizontal: 8),
-                    leading: const Icon(
-                      Icons.extension_rounded,
+                    leading: Icon(
+                      widget.settings.shieldEnabled
+                          ? Icons.verified_user_rounded
+                          : Icons.shield_outlined,
                       size: 20,
-                      color: AppTheme.heavenAccent,
+                      color: widget.settings.shieldEnabled
+                          ? AppTheme.shieldEmerald
+                          : colors.onSurfaceVariant,
                     ),
-                    title: const Text('Heaven Web Store'),
+                    title: const Text('Heaven Shield'),
                     subtitle: Text(
-                      '${widget.settings.activeExtensionCount} of 10 curated Chrome extensions active',
+                      widget.settings.shieldEnabled
+                          ? '${widget.settings.shieldMode.label} • ${widget.settings.activeShieldProtectionCount} customizable protections'
+                          : 'Paused — tap to customize ad & tracker blocking',
                       style: const TextStyle(fontSize: 11),
                     ),
                     onTap: () {
                       Navigator.pop(sheetContext);
-                      _openWebStoreTab();
+                      _openHeavenShieldScreen();
                     },
                   ),
                   ListTile(
@@ -2670,4 +2725,3 @@ class _SmoothAutoHideTopBarState extends State<_SmoothAutoHideTopBar>
     );
   }
 }
-

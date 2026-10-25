@@ -7,7 +7,28 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../../core/l10n/app_strings.dart';
 import '../../core/utils/omnibox_parser.dart';
 import '../shield/native_shield_bridge.dart';
-import '../store/heaven_web_store_models.dart';
+
+enum HeavenShieldMode {
+  standard(
+    'Standard',
+    'Blocks ad networks & trackers while keeping logins and video players smooth',
+  ),
+  strict(
+    'Strict',
+    'Aggressive ad, analytics, CNAME tracker & hardware-entropy blocking',
+  );
+
+  const HeavenShieldMode(this.label, this.description);
+  final String label;
+  final String description;
+
+  static HeavenShieldMode fromName(String? raw) {
+    for (final HeavenShieldMode m in HeavenShieldMode.values) {
+      if (m.name == raw) return m;
+    }
+    return HeavenShieldMode.standard;
+  }
+}
 
 enum SitePermissionType {
   location('Location', 'Access your GPS or coarse location'),
@@ -188,8 +209,14 @@ class BrowserSettingsController extends ChangeNotifier {
   static const String _keyDownloadNotifs = 'hb.downloadNotifs.v8';
   static const String _keyBgPlayNotifs = 'hb.bgPlayNotifs.v13';
   static const String _keyWebNotifs = 'hb.webNotifs.v8';
-  static const String _keyInstalledExtensions = 'hb.storeInstalledExts.v18';
-  static const String _keyEnabledExtensions = 'hb.storeEnabledExts.v18';
+  static const String _keyShieldEnabled = 'hb.shield.enabled.v19';
+  static const String _keyShieldMode = 'hb.shield.mode.v19';
+  static const String _keyShieldBlockAds = 'hb.shield.blockAds.v19';
+  static const String _keyShieldCookieBanners = 'hb.shield.cookieBanners.v19';
+  static const String _keyShieldCleanUrls = 'hb.shield.cleanUrls.v19';
+  static const String _keyShieldAntiFp = 'hb.shield.antiFp.v19';
+  static const String _keyShieldBlockPopups = 'hb.shield.blockPopups.v19';
+  static const String _keyShieldDisabledHosts = 'hb.shield.disabledHosts.v19';
   static const String _keyTranslateTargetLang = 'hb.translateLang.v18';
   static const String _keyReaderFontSize = 'hb.readerFontSize.v18';
   static const String _keyReaderTheme = 'hb.readerTheme.v18';
@@ -214,6 +241,13 @@ class BrowserSettingsController extends ChangeNotifier {
   bool _downloadNotificationsEnabled = true;
   bool _backgroundPlayNotificationEnabled = true;
   bool _webNotificationsEnabled = false;
+  bool _shieldEnabled = true;
+  HeavenShieldMode _shieldMode = HeavenShieldMode.standard;
+  bool _shieldBlockAds = true;
+  bool _shieldBlockCookieBanners = true;
+  bool _shieldCleanUrls = true;
+  bool _shieldAntiFingerprinting = true;
+  bool _shieldBlockPopups = true;
   int _textScalePercent = 100;
   String _translateTargetLang = 'en';
   double _readerFontSize = 18.0;
@@ -221,8 +255,7 @@ class BrowserSettingsController extends ChangeNotifier {
 
   final Set<String> _jsDisabledHosts = <String>{};
   final Set<String> _popupAllowedHosts = <String>{};
-  final Set<String> _installedExtensionIds = <String>{};
-  final Set<String> _enabledExtensionIds = <String>{};
+  final Set<String> _shieldDisabledHosts = <String>{};
   final Map<String, Map<SitePermissionType, SitePermissionDecision>>
   _sitePermissions =
       <String, Map<SitePermissionType, SitePermissionDecision>>{};
@@ -252,11 +285,30 @@ class BrowserSettingsController extends ChangeNotifier {
   bool get backgroundPlayNotificationEnabled =>
       _backgroundPlayNotificationEnabled;
   bool get webNotificationsEnabled => _webNotificationsEnabled;
-  Set<String> get installedExtensionIds =>
-      Set<String>.unmodifiable(_installedExtensionIds);
-  Set<String> get enabledExtensionIds =>
-      Set<String>.unmodifiable(_enabledExtensionIds);
-  int get activeExtensionCount => _enabledExtensionIds.length;
+  bool get shieldEnabled => _shieldEnabled;
+  HeavenShieldMode get shieldMode => _shieldMode;
+  bool get shieldBlockAds => _shieldBlockAds;
+  bool get shieldBlockCookieBanners => _shieldBlockCookieBanners;
+  bool get shieldCleanUrls => _shieldCleanUrls;
+  bool get shieldAntiFingerprinting => _shieldAntiFingerprinting;
+  bool get shieldBlockPopups => _shieldBlockPopups;
+  List<String> get shieldDisabledHosts {
+    final List<String> list = _shieldDisabledHosts.toList()..sort();
+    return List<String>.unmodifiable(list);
+  }
+
+  int get activeShieldProtectionCount {
+    if (!_shieldEnabled) return 0;
+    int count = 0;
+    if (_shieldBlockAds) count++;
+    if (_shieldBlockCookieBanners) count++;
+    if (_shieldCleanUrls) count++;
+    if (_shieldAntiFingerprinting) count++;
+    if (_shieldBlockPopups) count++;
+    if (_httpsUpgrade) count++;
+    if (_blockThirdPartyCookies) count++;
+    return count;
+  }
   String get translateTargetLang => _translateTargetLang;
   double get readerFontSize => _readerFontSize;
   String get readerTheme => _readerTheme;
@@ -329,37 +381,30 @@ class BrowserSettingsController extends ChangeNotifier {
     _backgroundPlayNotificationEnabled =
         _prefs.getBool(_keyBgPlayNotifs) ?? true;
     _webNotificationsEnabled = _prefs.getBool(_keyWebNotifs) ?? false;
+    _shieldEnabled = _prefs.getBool(_keyShieldEnabled) ?? true;
+    _shieldMode = HeavenShieldMode.fromName(_prefs.getString(_keyShieldMode));
+    _shieldBlockAds = _prefs.getBool(_keyShieldBlockAds) ?? true;
+    _shieldBlockCookieBanners =
+        _prefs.getBool(_keyShieldCookieBanners) ?? true;
+    _shieldCleanUrls = _prefs.getBool(_keyShieldCleanUrls) ?? true;
+    _shieldAntiFingerprinting = _prefs.getBool(_keyShieldAntiFp) ?? true;
+    _shieldBlockPopups = _prefs.getBool(_keyShieldBlockPopups) ?? true;
     _translateTargetLang =
         _prefs.getString(_keyTranslateTargetLang) ?? 'en';
     _readerFontSize =
         (_prefs.getDouble(_keyReaderFontSize) ?? 18.0).clamp(14.0, 26.0);
     _readerTheme = _prefs.getString(_keyReaderTheme) ?? 'midnight';
 
-    final List<String>? savedInstalledExts = _prefs.getStringList(
-      _keyInstalledExtensions,
+    final List<String>? savedShieldAllow = _prefs.getStringList(
+      _keyShieldDisabledHosts,
     );
-    final List<String>? savedEnabledExts = _prefs.getStringList(
-      _keyEnabledExtensions,
-    );
-    if (savedInstalledExts == null) {
-      _installedExtensionIds
-        ..clear()
-        ..addAll(HeavenWebStoreCatalog.defaultInstalledIds);
-      _enabledExtensionIds
-        ..clear()
-        ..addAll(HeavenWebStoreCatalog.defaultInstalledIds);
-    } else {
-      _installedExtensionIds
+    if (savedShieldAllow != null) {
+      _shieldDisabledHosts
         ..clear()
         ..addAll(
-          savedInstalledExts.where(HeavenWebStoreCatalog.validIds.contains),
-        );
-      _enabledExtensionIds
-        ..clear()
-        ..addAll(
-          (savedEnabledExts ?? savedInstalledExts).where(
-            _installedExtensionIds.contains,
-          ),
+          savedShieldAllow
+              .map(OmniboxParser.cleanDomain)
+              .where((String h) => h.isNotEmpty),
         );
     }
 
@@ -484,57 +529,226 @@ class BrowserSettingsController extends ChangeNotifier {
       backgroundMediaEnabled: _backgroundMediaEnabled,
       webNotificationsEnabled: _webNotificationsEnabled,
       backgroundPlayNotificationEnabled: _backgroundPlayNotificationEnabled,
-      enabledExtensions: _enabledExtensionIds.toList(growable: false),
+      shieldEnabled: _shieldEnabled,
+      shieldStrictMode: _shieldMode == HeavenShieldMode.strict,
+      shieldBlockAds: _shieldBlockAds,
+      shieldBlockCookieBanners: _shieldBlockCookieBanners,
+      shieldCleanUrls: _shieldCleanUrls,
+      shieldAntiFingerprinting: _shieldAntiFingerprinting,
+      shieldBlockPopups: _shieldBlockPopups,
+      shieldDisabledHosts: _shieldDisabledHosts.toList(growable: false),
     );
   }
 
-  bool isExtensionInstalled(String id) => _installedExtensionIds.contains(id);
+  static final RegExp _trackingParamRegex = RegExp(
+    r'^(utm_[a-z0-9_]+|fbclid|gclid|dclid|msclkid|yclid|mc_eid|igshid|_hsenc|_hsmi|vero_id|mkt_tok)$',
+    caseSensitive: false,
+  );
 
-  bool isExtensionEnabled(String id) =>
-      _installedExtensionIds.contains(id) && _enabledExtensionIds.contains(id);
+  static Uri stripTrackingParameters(Uri uri) {
+    if (!uri.hasQuery || uri.queryParametersAll.isEmpty) {
+      return uri;
+    }
+    bool modified = false;
+    final Map<String, List<String>> kept = <String, List<String>>{};
+    uri.queryParametersAll.forEach((String key, List<String> values) {
+      if (_trackingParamRegex.hasMatch(key)) {
+        modified = true;
+      } else {
+        kept[key] = values;
+      }
+    });
+    if (!modified) {
+      return uri;
+    }
+    if (kept.isEmpty) {
+      return uri.replace(queryParameters: const <String, dynamic>{}).removeFragment().replace(
+        fragment: uri.hasFragment ? uri.fragment : null,
+      );
+    }
+    return uri.replace(queryParameters: kept);
+  }
 
-  Future<void> installStoreExtension(String id) async {
-    if (!HeavenWebStoreCatalog.validIds.contains(id)) return;
-    _installedExtensionIds.add(id);
-    _enabledExtensionIds.add(id);
-    await _persistStoreExtensions();
+  bool isHostShieldAllowlisted(String? rawHost) {
+    String cur = OmniboxParser.cleanDomain(rawHost);
+    if (cur.isEmpty || _shieldDisabledHosts.isEmpty) {
+      return false;
+    }
+    while (true) {
+      if (_shieldDisabledHosts.contains(cur)) {
+        return true;
+      }
+      final int dot = cur.indexOf('.');
+      if (dot < 0 || dot + 1 >= cur.length) {
+        break;
+      }
+      cur = cur.substring(dot + 1);
+    }
+    return false;
+  }
+
+  bool isShieldActiveForHost(String? rawHost) {
+    return _shieldEnabled && !isHostShieldAllowlisted(rawHost);
+  }
+
+  Future<void> setShieldEnabled(bool enabled) async {
+    if (_shieldEnabled == enabled) return;
+    _shieldEnabled = enabled;
+    await _prefs.setBool(_keyShieldEnabled, enabled);
     _webViewConfigRevision += 1;
     _pushNativeBrowserConfig();
     notifyListeners();
   }
 
-  Future<void> removeStoreExtension(String id) async {
-    final bool removedA = _installedExtensionIds.remove(id);
-    final bool removedB = _enabledExtensionIds.remove(id);
-    if (!removedA && !removedB) return;
-    await _persistStoreExtensions();
+  Future<void> setShieldMode(HeavenShieldMode mode) async {
+    if (_shieldMode == mode) return;
+    _shieldMode = mode;
+    await _prefs.setString(_keyShieldMode, mode.name);
     _webViewConfigRevision += 1;
     _pushNativeBrowserConfig();
     notifyListeners();
   }
 
-  Future<void> setStoreExtensionEnabled(String id, bool enabled) async {
-    if (!_installedExtensionIds.contains(id)) return;
-    final bool changed = enabled
-        ? _enabledExtensionIds.add(id)
-        : _enabledExtensionIds.remove(id);
-    if (!changed) return;
-    await _persistStoreExtensions();
+  Future<void> setShieldBlockAds(bool enabled) async {
+    if (_shieldBlockAds == enabled) return;
+    _shieldBlockAds = enabled;
+    await _prefs.setBool(_keyShieldBlockAds, enabled);
     _webViewConfigRevision += 1;
     _pushNativeBrowserConfig();
     notifyListeners();
   }
 
-  Future<void> _persistStoreExtensions() async {
+  Future<void> setShieldBlockCookieBanners(bool enabled) async {
+    if (_shieldBlockCookieBanners == enabled) return;
+    _shieldBlockCookieBanners = enabled;
+    await _prefs.setBool(_keyShieldCookieBanners, enabled);
+    _webViewConfigRevision += 1;
+    _pushNativeBrowserConfig();
+    notifyListeners();
+  }
+
+  Future<void> setShieldCleanUrls(bool enabled) async {
+    if (_shieldCleanUrls == enabled) return;
+    _shieldCleanUrls = enabled;
+    await _prefs.setBool(_keyShieldCleanUrls, enabled);
+    _webViewConfigRevision += 1;
+    _pushNativeBrowserConfig();
+    notifyListeners();
+  }
+
+  Future<void> setShieldAntiFingerprinting(bool enabled) async {
+    if (_shieldAntiFingerprinting == enabled) return;
+    _shieldAntiFingerprinting = enabled;
+    await _prefs.setBool(_keyShieldAntiFp, enabled);
+    _webViewConfigRevision += 1;
+    _pushNativeBrowserConfig();
+    notifyListeners();
+  }
+
+  Future<void> setShieldBlockPopups(bool enabled) async {
+    if (_shieldBlockPopups == enabled) return;
+    _shieldBlockPopups = enabled;
+    await _prefs.setBool(_keyShieldBlockPopups, enabled);
+    _webViewConfigRevision += 1;
+    _pushNativeBrowserConfig();
+    notifyListeners();
+  }
+
+  Future<bool> addShieldExceptionHost(String rawHost) async {
+    final String clean = OmniboxParser.cleanDomain(rawHost);
+    if (clean.isEmpty || !clean.contains('.')) {
+      return false;
+    }
+    if (!_shieldDisabledHosts.add(clean)) {
+      return true;
+    }
     await _prefs.setStringList(
-      _keyInstalledExtensions,
-      _installedExtensionIds.toList(growable: false),
+      _keyShieldDisabledHosts,
+      _shieldDisabledHosts.toList(growable: false),
     );
-    await _prefs.setStringList(
-      _keyEnabledExtensions,
-      _enabledExtensionIds.toList(growable: false),
-    );
+    _webViewConfigRevision += 1;
+    _pushNativeBrowserConfig();
+    notifyListeners();
+    return true;
   }
+
+  Future<void> removeShieldExceptionHost(String rawHost) async {
+    final String clean = OmniboxParser.cleanDomain(rawHost);
+    if (!_shieldDisabledHosts.remove(clean)) {
+      return;
+    }
+    await _prefs.setStringList(
+      _keyShieldDisabledHosts,
+      _shieldDisabledHosts.toList(growable: false),
+    );
+    _webViewConfigRevision += 1;
+    _pushNativeBrowserConfig();
+    notifyListeners();
+  }
+
+  Future<void> setShieldProtectionForHost(String rawHost, bool protectSite) async {
+    if (protectSite) {
+      // Remove exact host or any parent domain matching rawHost
+      String cur = OmniboxParser.cleanDomain(rawHost);
+      bool changed = false;
+      while (cur.isNotEmpty) {
+        if (_shieldDisabledHosts.remove(cur)) {
+          changed = true;
+        }
+        final int dot = cur.indexOf('.');
+        if (dot < 0 || dot + 1 >= cur.length) {
+          break;
+        }
+        cur = cur.substring(dot + 1);
+      }
+      if (!changed) return;
+      await _prefs.setStringList(
+        _keyShieldDisabledHosts,
+        _shieldDisabledHosts.toList(growable: false),
+      );
+      _webViewConfigRevision += 1;
+      _pushNativeBrowserConfig();
+      notifyListeners();
+    } else {
+      await addShieldExceptionHost(rawHost);
+    }
+  }
+
+  Future<void> resetHeavenShieldDefaults() async {
+    _shieldEnabled = true;
+    _shieldMode = HeavenShieldMode.standard;
+    _shieldBlockAds = true;
+    _shieldBlockCookieBanners = true;
+    _shieldCleanUrls = true;
+    _shieldAntiFingerprinting = true;
+    _shieldBlockPopups = true;
+    _httpsUpgrade = true;
+    _blockThirdPartyCookies = true;
+    _sendDntAndGpc = true;
+    _shieldDisabledHosts.clear();
+
+    await _prefs.setBool(_keyShieldEnabled, true);
+    await _prefs.setString(_keyShieldMode, HeavenShieldMode.standard.name);
+    await _prefs.setBool(_keyShieldBlockAds, true);
+    await _prefs.setBool(_keyShieldCookieBanners, true);
+    await _prefs.setBool(_keyShieldCleanUrls, true);
+    await _prefs.setBool(_keyShieldAntiFp, true);
+    await _prefs.setBool(_keyShieldBlockPopups, true);
+    await _prefs.setBool(_keyHttpsUpgrade, true);
+    await _prefs.setBool(_keyBlockThirdPartyCookies, true);
+    await _prefs.setBool(_keySendDntGpc, true);
+    await _prefs.setStringList(_keyShieldDisabledHosts, const <String>[]);
+
+    _webViewConfigRevision += 1;
+    _pushNativeBrowserConfig();
+    notifyListeners();
+  }
+
+  Future<void> addShieldDisabledHost(String rawHost) =>
+      addShieldExceptionHost(rawHost);
+
+  Future<void> removeShieldDisabledHost(String rawHost) =>
+      removeShieldExceptionHost(rawHost);
 
   Future<void> setTranslateTargetLang(String langCode) async {
     final String clean = langCode.trim();

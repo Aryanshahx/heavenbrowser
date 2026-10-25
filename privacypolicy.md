@@ -24,7 +24,7 @@ To deliver a responsive browsing experience, Heaven Browser stores the following
 
 1. **Persistent Open Tabs, Tab Previews & Tab Groups:** Your open normal tabs, tab preview thumbnails, tab groups, and active tab position are saved locally so your workspace is restored when you reopen the app. You can close tabs individually or wipe all sessions at any time using **Burn All Tabs & Site Data**.
 2. **Bookmarks, History & Quick-Launch Sites:** Pages you visit or bookmark outside Incognito Mode are saved locally on your device. Incognito Mode never records browsing history, search queries, or site usage, and scrubs session cookies and WebView storage when Incognito tabs are closed.
-3. **Heaven Web Store Extensions & Reader Preferences:** Your enabled extensions from the built-in **Heaven Web Store** (curated Top 10 Chrome Desktop extensions), preferred translation language, and Clean Reader font/theme settings are saved locally on your device.
+3. **Heaven Shield & Reader Preferences:** Your customized **Heaven Shield** protection toggles, per-site allowlist exceptions, preferred translation language, and Clean Reader font/theme settings are saved locally on your device.
 4. **Downloaded Files & Media Streams:** Files, videos, and audio streams you choose to download are saved directly to your chosen local Downloads folder on your device and managed inside the built-in **Downloads** tab.
 
 ---
@@ -51,9 +51,9 @@ Heaven Browser requests only the Android permissions required for features you a
 
 ---
 
-## 5. Heaven Web Store, Instant Translate & Multi-Country VPN
+## 5. Heaven Shield, Instant Translate & Multi-Country VPN
 
-- **Heaven Web Store (Curated Top 10 Extensions):** Heaven runs its curated Top 10 Chrome Desktop extensions locally inside the browser runtime with zero telemetry. Optional community lookups (such as SponsorBlock segments, Return YouTube Dislike counts, or Quick Dictionary definitions) are requested only when those specific extensions are enabled and triggered.
+- **Heaven Shield (Customizable Privacy & Ad Protection):** Heaven Shield runs 100% locally on your device with customizable Standard/Strict modes, Ad & Tracker blocking, Cookie Banner suppression, Tracking URL parameter cleaning, Anti-Fingerprinting protection, Popup/Redirect guard, and per-site exceptions — with zero cloud telemetry.
 - **Instant Page Translate & Clean Reader Mode:**Clean Reader extracts article text locally on your device. When you tap **Translate Page**, visible text segments are sent directly to Google's public translation endpoint solely to render your requested translation.
 - **Optional Built-In VPN:** When you explicitly connect a country in **Heaven VPN**, traffic is encrypted via OpenVPN or WireGuard using either Browser-Only Split Tunneling (so only Heaven uses the VPN) or Full-Device mode. Heaven never logs, inspects, or stores your VPN traffic.
 

@@ -20,9 +20,8 @@ import 'package:heavenbrowser/features/settings/browser_settings.dart';
 import 'package:heavenbrowser/features/settings/help_screen.dart';
 import 'package:heavenbrowser/features/settings/notifications_screen.dart';
 import 'package:heavenbrowser/features/settings/settings_screen.dart';
+import 'package:heavenbrowser/features/shield/heaven_shield_screen.dart';
 import 'package:heavenbrowser/features/shield/native_shield_bridge.dart';
-import 'package:heavenbrowser/features/store/heaven_web_store_models.dart';
-import 'package:heavenbrowser/features/store/heaven_web_store_screen.dart';
 import 'package:heavenbrowser/features/tabs/tab_manager.dart';
 import 'package:heavenbrowser/features/tabs/tabs_screen.dart';
 import 'package:heavenbrowser/features/vpn/vpn_controller.dart';
@@ -95,10 +94,10 @@ void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
   group(
-    'Step 16 Core: All Shields Removed, Zero-Jitter Viewport Isolation, Downloads Tab, 42+ VPN Countries & .bin-Free Downloads',
+    'Step 19 Core: Customizable Heaven Shield, Reliable Multi-Country VPN, Extensions Removed & .bin-Free Downloads',
     () {
       test(
-        'uses Electric Sapphire & Midnight Navy palette, Heaven app name, version 0.0.1, and completely removes Heaven Shield & Extensions files',
+        'uses Electric Sapphire & Midnight Navy palette, Heaven app name, version 0.0.1, Heaven Shield active, and Extensions completely removed',
         () {
           expect(AppConstants.appName, 'Heaven');
           expect(AppConstants.appVersion, '0.0.1');
@@ -496,28 +495,74 @@ void main() {
     );
 
     test(
-      'Heaven Web Store Top 10 Extensions & Instant Page Translate Service work cleanly',
+      'Customizable Heaven Shield, VPN Endpoint Healing, Extension Removal & Instant Page Translate work cleanly',
       () async {
-        expect(HeavenWebStoreCatalog.top10Extensions.length, 10);
-        expect(OmniboxParser.isWebStoreUrl('heaven://store'), isTrue);
-        expect(OmniboxParser.formatDisplayUrl('heaven://store'), 'Heaven Web Store');
+        expect(
+          File('lib/features/store/heaven_web_store_screen.dart').existsSync(),
+          isFalse,
+        );
+        expect(OmniboxParser.isLegacyHeavenUrl('heaven://store'), isTrue);
 
-        SharedPreferences.setMockInitialValues(<String, Object>{});
+        SharedPreferences.setMockInitialValues(<String, Object>{
+          'hb.vpn.warpConfig.v6':
+              '[Interface]\nPrivateKey = AAAA\nAddress = 172.16.0.2/32\nDNS = 1.1.1.1\n\n[Peer]\nPublicKey = BBBB\nAllowedIPs = 0.0.0.0/0\nEndpoint = 162.159.192.1:0\n',
+        });
         final SharedPreferences prefs = await SharedPreferences.getInstance();
         final BrowserSettingsController settings = BrowserSettingsController(
           prefs,
         );
-        expect(settings.isExtensionInstalled('ublock_lite'), isTrue);
-        expect(settings.isExtensionInstalled('clear_urls'), isTrue);
-        expect(settings.isExtensionInstalled('dark_reader'), isFalse);
 
-        await settings.installStoreExtension('dark_reader');
-        expect(settings.isExtensionEnabled('dark_reader'), isTrue);
-        await settings.setStoreExtensionEnabled('dark_reader', false);
-        expect(settings.isExtensionInstalled('dark_reader'), isTrue);
-        expect(settings.isExtensionEnabled('dark_reader'), isFalse);
-        await settings.removeStoreExtension('dark_reader');
-        expect(settings.isExtensionInstalled('dark_reader'), isFalse);
+        // Verify Heaven Shield default customizable state
+        expect(settings.shieldEnabled, isTrue);
+        expect(settings.shieldMode, HeavenShieldMode.standard);
+        expect(settings.shieldBlockAds, isTrue);
+        expect(settings.shieldBlockCookieBanners, isTrue);
+        expect(settings.shieldCleanUrls, isTrue);
+        expect(settings.shieldAntiFingerprinting, isTrue);
+        expect(settings.shieldBlockPopups, isTrue);
+
+        // Verify URL tracking parameter stripping preserves genuine query params
+        final Uri dirty = Uri.parse(
+          'https://example.com/search?q=flutter&utm_source=twitter&fbclid=xyz123&page=2&gclid=abc',
+        );
+        final Uri cleaned = BrowserSettingsController.stripTrackingParameters(
+          dirty,
+        );
+        expect(cleaned.toString(), 'https://example.com/search?q=flutter&page=2');
+
+        // Verify per-site exceptions & subdomain matching
+        expect(settings.isShieldActiveForHost('example.org'), isTrue);
+        await settings.addShieldDisabledHost('https://www.example.org/news');
+        expect(settings.shieldDisabledHosts, contains('example.org'));
+        expect(settings.isShieldActiveForHost('example.org'), isFalse);
+        expect(settings.isShieldActiveForHost('sub.example.org'), isFalse);
+        await settings.removeShieldDisabledHost('example.org');
+        expect(settings.isShieldActiveForHost('example.org'), isTrue);
+
+        // Verify Strict mode + Restore Defaults
+        await settings.setShieldMode(HeavenShieldMode.strict);
+        await settings.setShieldBlockAds(false);
+        expect(settings.shieldMode, HeavenShieldMode.strict);
+        expect(settings.shieldBlockAds, isFalse);
+        await settings.resetHeavenShieldDefaults();
+        expect(settings.shieldMode, HeavenShieldMode.standard);
+        expect(settings.shieldBlockAds, isTrue);
+
+        // Verify VpnController heals cached :0 WARP endpoint on load
+        final VpnController vpnCheck = VpnController(
+          prefs,
+          enableNativePolling: false,
+          client: MockClient(
+            (_) async =>
+                http.Response('ip=104.28.200.12\nloc=US\nwarp=on\n', 200),
+          ),
+        );
+        await vpnCheck.selectProfile(VpnController.builtInWarpId);
+        expect(
+          vpnCheck.selectedProfile.id,
+          equals(VpnController.builtInWarpId),
+        );
+        vpnCheck.dispose();
 
         final MockClient translateMock = MockClient((http.Request req) async {
           expect(req.url.host, 'translate.googleapis.com');
@@ -545,13 +590,14 @@ void main() {
   });
 
   testWidgets(
-    'Step 18 UI on 320px Screen: Zero-Pull Floating Search Bar, Heaven Web Store Top 10 Extensions, Instant Translate + Clean Reader, No Brave Shields',
+    'Step 19 UI on 320px Screen: Zero-Pull Search Bar, Customizable Heaven Shield, Reliable Multi-Country VPN, Extensions Removed',
     (WidgetTester tester) async {
       const MethodChannel nativeChannel = MethodChannel(
         'com.hypertechlabs.heavenbrowser/native_shield',
       );
       Map<Object?, Object?>? capturedShortcutArgs;
       bool testNotificationSent = false;
+      int shieldTotalBlocked = 14;
 
       DiscoverRegionConfig.debugLocaleOverride = const Locale('en', 'GB');
       addTearDown(() {
@@ -563,6 +609,15 @@ void main() {
             switch (call.method) {
               case 'createHomeScreenShortcut':
                 capturedShortcutArgs = call.arguments as Map<Object?, Object?>?;
+                return true;
+              case 'getHeavenShieldStats':
+                return <String, Object>{
+                  'pageBlocked': 4,
+                  'totalBlocked': shieldTotalBlocked,
+                  'enabled': true,
+                };
+              case 'resetHeavenShieldStats':
+                shieldTotalBlocked = 0;
                 return true;
               case 'getNotificationStatus':
                 return <String, Object>{
@@ -609,7 +664,7 @@ void main() {
                 return <String, Object>{
                   'ok': true,
                   'configText':
-                      'client\ndev tun\nremote 89.187.173.169 443 tcp-client\ncipher AES-256-GCM\n<ca>\nCA\n</ca>\n<cert>\nCERT\n</cert>\n<key>\nKEY\n</key>\n',
+                      'client\ndev tun\nproto tcp-client\nremote 89.187.173.169 1194\ncipher AES-256-GCM\n<ca>\nCA\n</ca>\n<cert>\nCERT\n</cert>\n<key>\nKEY\n</key>\n',
                   'serverHost': '89.187.173.169',
                   'countryCode': 'US',
                 };
@@ -765,38 +820,91 @@ void main() {
       await tester.tap(find.byIcon(Icons.close_rounded));
       await tester.pumpAndSettle();
 
-      // 4b. Open Heaven Web Store from 3-dots Browser Menu -> installs Dark Reader from curated Top 10!
+      // 4b. Tap top-bar Heaven Shield icon -> Quick Sheet -> open full Heaven Shield settings & customize!
+      expect(find.byKey(const Key('top_bar_shield_button')), findsOneWidget);
+      await tester.tap(find.byKey(const Key('top_bar_shield_button')));
+      await tester.pumpAndSettle();
+      expect(find.byType(HeavenShieldQuickSheet), findsOneWidget);
+      expect(find.byKey(const Key('quick_shield_site_switch')), findsOneWidget);
+      await tester.tap(find.byKey(const Key('quick_shield_customize_button')));
+      await tester.pumpAndSettle();
+
+      expect(find.byType(HeavenShieldScreen), findsOneWidget);
+      expect(
+        find.byKey(const Key('heaven_shield_blocked_counter')),
+        findsOneWidget,
+      );
+      expect(find.textContaining('Blocked: 14'), findsOneWidget);
+
+      // Switch to Strict mode & toggle Popup Guard off, then add a site exception
+      await tester.tap(find.byKey(const Key('heaven_shield_mode_strict')));
+      await tester.pumpAndSettle();
+      expect(settings.shieldMode, HeavenShieldMode.strict);
+
+      await tester.scrollUntilVisible(
+        find.byKey(const Key('heaven_shield_add_exception_button')),
+        140,
+        scrollable: find
+            .descendant(
+              of: find.byType(HeavenShieldScreen),
+              matching: find.byType(Scrollable),
+            )
+            .first,
+      );
+      await tester.pumpAndSettle();
+      await tester.tap(
+        find.byKey(const Key('heaven_shield_add_exception_button')),
+      );
+      await tester.pumpAndSettle();
+      await tester.enterText(
+        find.byKey(const Key('heaven_shield_exception_input')),
+        'example.org',
+      );
+      await tester.tap(
+        find.byKey(const Key('heaven_shield_exception_save_button')),
+      );
+      await tester.pumpAndSettle();
+      expect(settings.isShieldActiveForHost('example.org'), isFalse);
+
+      // Restore recommended defaults resets Strict -> Standard and clears exceptions
+      await tester.scrollUntilVisible(
+        find.byKey(const Key('heaven_shield_restore_defaults_button')),
+        140,
+        scrollable: find
+            .descendant(
+              of: find.byType(HeavenShieldScreen),
+              matching: find.byType(Scrollable),
+            )
+            .first,
+      );
+      await tester.pumpAndSettle();
+      await tester.tap(
+        find.byKey(const Key('heaven_shield_restore_defaults_button')),
+      );
+      await tester.pumpAndSettle();
+      expect(settings.shieldMode, HeavenShieldMode.standard);
+      expect(settings.isShieldActiveForHost('example.org'), isTrue);
+
+      await tester.pageBack();
+      await tester.pumpAndSettle();
+
+      // Verify 3-dots Browser Menu has Heaven Shield (and NO Web Store!)
       await tester.tap(find.byTooltip('Browser Menu'));
       await tester.pumpAndSettle();
       expect(
         find.byKey(const Key('browser_menu_translate_reader_tile')),
         findsOneWidget,
       );
-      await tester.tap(find.byKey(const Key('browser_menu_web_store_tile')));
-      await tester.pumpAndSettle();
-      expect(tabManager.activeEngine.isShowingWebStorePage, isTrue);
-      expect(find.byType(HeavenWebStoreScreen), findsOneWidget);
       expect(
-        find.byKey(const Key('heaven_web_store_tab_view')),
+        find.byKey(const Key('browser_menu_shield_tile')),
         findsOneWidget,
       );
-      await tester.scrollUntilVisible(
-        find.byKey(const Key('web_store_install_dark_reader')),
-        140,
-        scrollable: find
-            .descendant(
-              of: find.byKey(const Key('heaven_web_store_tab_view')),
-              matching: find.byType(Scrollable),
-            )
-            .first,
+      expect(
+        find.byKey(const Key('browser_menu_web_store_tile')),
+        findsNothing,
       );
+      Navigator.of(tester.element(find.byType(BrowserScreen))).pop();
       await tester.pumpAndSettle();
-      await tester.tap(find.byKey(const Key('web_store_install_dark_reader')));
-      await tester.pumpAndSettle();
-      expect(settings.isExtensionEnabled('dark_reader'), isTrue);
-      await tabManager.closeTab(tabManager.activeTab.id);
-      await tester.pumpAndSettle();
-      expect(tabManager.totalTabCount, 1);
 
       // 5. Starting a download displays tappable 'Download started' popup banner -> tapping it opens Downloads IN A TAB!
       await downloads.startUrlDownload(
@@ -889,7 +997,11 @@ void main() {
         findsNothing,
       );
       expect(find.byKey(const Key('settings_farbling_switch')), findsNothing);
-      expect(find.byKey(const Key('settings_web_store_tile')), findsOneWidget);
+      expect(find.byKey(const Key('settings_web_store_tile')), findsNothing);
+      expect(
+        find.byKey(const Key('settings_heaven_shield_tile')),
+        findsOneWidget,
+      );
 
       await tester.tap(find.byKey(const Key('settings_search_engine_tile')));
       await tester.pumpAndSettle();
@@ -1051,7 +1163,7 @@ void main() {
     );
 
     test(
-      'Native Java, Kotlin & Manifest safety: 120Hz High-Refresh WebView + HeavenExtEngine Top-10 Runtime + Brave Shields Completely Removed',
+      'Native Java, Kotlin, ProGuard & Manifest safety: 120Hz WebView + HeavenShieldEngine + VPN R8/Handshake Fixes + Extensions Removed',
       () {
         expect(
           File(
@@ -1060,9 +1172,16 @@ void main() {
           isFalse,
         );
         expect(
+          File(
+            'android/app/src/main/java/com/hypertechlabs/heavenbrowser/HeavenExtEngine.java',
+          ).existsSync(),
+          isFalse,
+        );
+        expect(
           File('lib/features/shield/brave_shield_status.dart').existsSync(),
           isFalse,
         );
+        expect(Directory('lib/features/store').existsSync(), isFalse);
 
         final String shieldJava = File(
           'android/app/src/main/java/com/hypertechlabs/heavenbrowser/HeavenShieldPlugin.java',
@@ -1070,6 +1189,7 @@ void main() {
         expect(shieldJava.contains('setWebChromeClient'), isFalse);
         expect(shieldJava.contains('ShieldWebChromeClient'), isFalse);
         expect(shieldJava.contains('HeavenBraveShieldEngine'), isFalse);
+        expect(shieldJava.contains('HeavenExtEngine'), isFalse);
         expect(shieldJava.contains('getBraveShieldStats'), isFalse);
         expect(shieldJava.contains('onBlockedRequest'), isFalse);
         expect(shieldJava.contains('canScrollVertically(-1)'), isFalse);
@@ -1081,7 +1201,9 @@ void main() {
         expect(shieldJava.contains('installPullToRefreshListener'), isTrue);
         expect(shieldJava.contains('onPageAtTop'), isTrue);
         expect(shieldJava.contains('onInnerScroll'), isTrue);
-        expect(shieldJava.contains('HeavenExtEngine'), isTrue);
+        expect(shieldJava.contains('HeavenShieldEngine'), isTrue);
+        expect(shieldJava.contains('getHeavenShieldStats'), isTrue);
+        expect(shieldJava.contains('resetHeavenShieldStats'), isTrue);
         expect(shieldJava.contains('FLAG_DEBUGGABLE'), isTrue);
         expect(shieldJava.contains('setOffscreenPreRaster(true)'), isTrue);
         expect(shieldJava.contains('LAYER_TYPE_HARDWARE'), isTrue);
@@ -1091,22 +1213,18 @@ void main() {
         expect(shieldJava.contains('onWebScrollNavBar'), isTrue);
         expect(shieldJava.contains('bgKeepAliveLoop'), isTrue);
 
-        final String extEngineJava = File(
-          'android/app/src/main/java/com/hypertechlabs/heavenbrowser/HeavenExtEngine.java',
+        final String shieldEngineJava = File(
+          'android/app/src/main/java/com/hypertechlabs/heavenbrowser/HeavenShieldEngine.java',
         ).readAsStringSync();
-        expect(extEngineJava.contains('EXT_UBLOCK_LITE'), isTrue);
-        expect(extEngineJava.contains('EXT_DARK_READER'), isTrue);
-        expect(extEngineJava.contains('EXT_SPONSORBLOCK'), isTrue);
-        expect(extEngineJava.contains('EXT_RETURN_YT_DISLIKE'), isTrue);
-        expect(extEngineJava.contains('EXT_VIDEO_SPEED'), isTrue);
-        expect(extEngineJava.contains('EXT_CLEAR_URLS'), isTrue);
-        expect(extEngineJava.contains('EXT_CONSENT_O_MATIC'), isTrue);
-        expect(extEngineJava.contains('EXT_GOOGLE_DICTIONARY'), isTrue);
-        expect(extEngineJava.contains('EXT_WRITE_CHECK'), isTrue);
-        expect(extEngineJava.contains('EXT_ALLOW_COPY'), isTrue);
-        expect(extEngineJava.contains('HeavenExtBridge'), isTrue);
+        expect(shieldEngineJava.contains('interceptSubresource'), isTrue);
+        expect(shieldEngineJava.contains('shouldBlockDomain'), isTrue);
         expect(
-          extEngineJava.contains('io.flutter.plugin.common.MethodChannel'),
+          shieldEngineJava.contains('getCompiledDocumentStartBundle'),
+          isTrue,
+        );
+        expect(shieldEngineJava.contains('__hb_top_safe_css'), isTrue);
+        expect(
+          shieldEngineJava.contains('io.flutter.plugin.common.MethodChannel'),
           isFalse,
         );
 
@@ -1119,7 +1237,22 @@ void main() {
         final String vpnJava = File(
           'android/app/src/main/java/com/hypertechlabs/heavenbrowser/HeavenVpnManager.java',
         ).readAsStringSync();
-        expect(vpnJava.contains('regionalFallbacksFor'), isTrue);
+        expect(vpnJava.contains('normalizeEndpointPort'), isTrue);
+        expect(vpnJava.contains('waitForWireGuardPeerHandshake'), isTrue);
+        expect(vpnJava.contains('normalizeVpnGateOvpnForOpenSsl3'), isTrue);
+        expect(vpnJava.contains('extractRiseupOpenVpnPorts'), isTrue);
+        expect(vpnJava.contains('DEFAULT:@SECLEVEL=0'), isTrue);
+
+        final String proguardRules = File(
+          'android/app/proguard-rules.pro',
+        ).readAsStringSync();
+        expect(proguardRules.contains('-keep class com.wireguard.**'), isTrue);
+
+        final String appGradle = File(
+          'android/app/build.gradle.kts',
+        ).readAsStringSync();
+        expect(appGradle.contains('proguard-rules.pro'), isTrue);
+        expect(appGradle.contains('useLegacyPackaging = true'), isTrue);
 
         final String mediaServiceJava = File(
           'android/app/src/main/java/com/hypertechlabs/heavenbrowser/HeavenMediaService.java',
@@ -1135,6 +1268,12 @@ void main() {
         ).readAsStringSync();
         expect(manifestXml.contains('android:label="Heaven"'), isTrue);
         expect(manifestXml.contains('android:hardwareAccelerated="true"'), isTrue);
+        expect(manifestXml.contains('android:extractNativeLibs="true"'), isTrue);
+        expect(
+          manifestXml.contains('com.wireguard.android.backend.GoBackend\$VpnService'),
+          isTrue,
+        );
+        expect(manifestXml.contains('systemExempted'), isTrue);
         expect(manifestXml.contains('android.permission.USE_BIOMETRIC'), isTrue);
       },
     );

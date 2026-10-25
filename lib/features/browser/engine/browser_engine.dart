@@ -50,13 +50,6 @@ class BrowserEngine extends ChangeNotifier {
           ..clear()
           ..add(AppConstants.downloadsTabUrl);
         _virtualIndex = 0;
-      } else if (OmniboxParser.isWebStoreUrl(cleanInitialUrl)) {
-        _currentUrl = AppConstants.webStoreTabUrl;
-        _pageTitle = 'Heaven Web Store';
-        _virtualHistory
-          ..clear()
-          ..add(AppConstants.webStoreTabUrl);
-        _virtualIndex = 0;
       } else {
         _currentUrl = cleanInitialUrl;
         _lastCompletedWebUrl = cleanInitialUrl;
@@ -74,8 +67,7 @@ class BrowserEngine extends ChangeNotifier {
       _initializeController();
       if (_currentUrl != null &&
           _currentUrl!.isNotEmpty &&
-          !isShowingDownloadsPage &&
-          !isShowingWebStorePage) {
+          !isShowingDownloadsPage) {
         final Uri? restoredUri = Uri.tryParse(_currentUrl!);
         if (restoredUri != null) {
           unawaited(_loadRestoredUri(restoredUri));
@@ -142,11 +134,7 @@ class BrowserEngine extends ChangeNotifier {
   String? get currentUrl => _currentUrl;
   bool get isShowingStartPage => _currentUrl == null || _currentUrl!.isEmpty;
   bool get isShowingDownloadsPage => OmniboxParser.isDownloadsUrl(_currentUrl);
-  bool get isShowingWebStorePage => OmniboxParser.isWebStoreUrl(_currentUrl);
-  bool get isShowingWebPage =>
-      !isShowingStartPage &&
-      !isShowingDownloadsPage &&
-      !isShowingWebStorePage;
+  bool get isShowingWebPage => !isShowingStartPage && !isShowingDownloadsPage;
   bool get isNavBarVisible => _isNavBarVisible || isShowingDownloadsPage;
   bool get isMediaPlaying => _isMediaPlaying;
   String get playingMediaTitle => _playingMediaTitle;
@@ -179,7 +167,6 @@ class BrowserEngine extends ChangeNotifier {
 
   bool get isSecure =>
       isShowingDownloadsPage ||
-      isShowingWebStorePage ||
       (_currentUrl != null && _currentUrl!.startsWith('https://'));
 
   String? get currentHost {
@@ -666,11 +653,6 @@ class BrowserEngine extends ChangeNotifier {
       return NavigationDecision.prevent;
     }
 
-    if (OmniboxParser.isWebStoreUrl(request.url)) {
-      openWebStorePage();
-      return NavigationDecision.prevent;
-    }
-
     if (uri.scheme == 'about' || uri.scheme == 'data' || uri.scheme == 'blob') {
       return NavigationDecision.navigate;
     }
@@ -686,12 +668,30 @@ class BrowserEngine extends ChangeNotifier {
     if (request.isMainFrame) {
       final Uri? unwrappedGoogle = OmniboxParser.unwrapGoogleRedirectUri(uri);
       if (unwrappedGoogle != null && unwrappedGoogle != uri) {
-        await _applyControllerSettings(forHost: unwrappedGoogle.host);
+        final Uri cleanedUnwrapped =
+            settings.isShieldActiveForHost(unwrappedGoogle.host) &&
+                settings.shieldCleanUrls
+            ? BrowserSettingsController.stripTrackingParameters(unwrappedGoogle)
+            : unwrappedGoogle;
+        await _applyControllerSettings(forHost: cleanedUnwrapped.host);
         await _controller?.loadRequest(
-          unwrappedGoogle,
+          cleanedUnwrapped,
           headers: _headersForTarget(),
         );
         return NavigationDecision.prevent;
+      }
+
+      if (settings.isShieldActiveForHost(uri.host) && settings.shieldCleanUrls) {
+        final Uri cleanedUri = BrowserSettingsController.stripTrackingParameters(
+          uri,
+        );
+        if (cleanedUri != uri) {
+          await _controller?.loadRequest(
+            cleanedUri,
+            headers: _headersForTarget(),
+          );
+          return NavigationDecision.prevent;
+        }
       }
     }
 
@@ -921,30 +921,10 @@ class BrowserEngine extends ChangeNotifier {
     notifyListeners();
   }
 
-  void openWebStorePage() {
-    _pushVirtualLocation(AppConstants.webStoreTabUrl);
-    _currentUrl = AppConstants.webStoreTabUrl;
-    _pageTitle = 'Heaven Web Store';
-    _isLoading = false;
-    _isNavBarVisible = true;
-    _isPageTranslated = false;
-    _translatedLangCode = null;
-    _progress = 0;
-    _pullProgress = 0;
-    _errorMessage = null;
-    _webViewCanGoBack = false;
-    _webViewCanGoForward = false;
-    notifyListeners();
-  }
-
   Future<void> loadUserEntry(String rawInput) async {
     final String trimmed = rawInput.trim();
     if (OmniboxParser.isDownloadsUrl(trimmed)) {
       openDownloadsPage();
-      return;
-    }
-    if (OmniboxParser.isWebStoreUrl(trimmed)) {
-      openWebStorePage();
       return;
     }
     if (!isIncognito &&
@@ -963,10 +943,6 @@ class BrowserEngine extends ChangeNotifier {
   Future<void> loadUri(Uri uri) async {
     if (OmniboxParser.isDownloadsUrl(uri.toString())) {
       openDownloadsPage();
-      return;
-    }
-    if (OmniboxParser.isWebStoreUrl(uri.toString())) {
-      openWebStorePage();
       return;
     }
     _errorMessage = null;
@@ -992,6 +968,10 @@ class BrowserEngine extends ChangeNotifier {
         finalUri.scheme == 'http' &&
         !OmniboxParser.isLocalOrPrivateHost(finalUri.host)) {
       finalUri = finalUri.replace(scheme: 'https');
+    }
+    if (settings.isShieldActiveForHost(finalUri.host) &&
+        settings.shieldCleanUrls) {
+      finalUri = BrowserSettingsController.stripTrackingParameters(finalUri);
     }
 
     final String targetUrl = finalUri.toString();
@@ -1090,18 +1070,6 @@ class BrowserEngine extends ChangeNotifier {
     if (OmniboxParser.isDownloadsUrl(target)) {
       _currentUrl = AppConstants.downloadsTabUrl;
       _pageTitle = 'Downloads';
-      _isLoading = false;
-      _isPageTranslated = false;
-      _translatedLangCode = null;
-      _progress = 0;
-      _webViewCanGoBack = false;
-      _webViewCanGoForward = false;
-      notifyListeners();
-      return;
-    }
-    if (OmniboxParser.isWebStoreUrl(target)) {
-      _currentUrl = AppConstants.webStoreTabUrl;
-      _pageTitle = 'Heaven Web Store';
       _isLoading = false;
       _isPageTranslated = false;
       _translatedLangCode = null;

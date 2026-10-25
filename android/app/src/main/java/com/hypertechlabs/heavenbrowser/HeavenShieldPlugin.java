@@ -294,7 +294,7 @@ public class HeavenShieldPlugin
   private MethodChannel.Result pendingSiteHardwarePermResult;
   private MethodChannel.Result pendingBiometricResult;
   private HeavenVpnManager vpnManager;
-  private HeavenExtEngine extEngine;
+  private HeavenShieldEngine shieldEngine;
   private volatile long activeFocusedWebViewId = -1L;
 
   private final ExecutorService downloadPool = Executors.newCachedThreadPool();
@@ -360,7 +360,7 @@ public class HeavenShieldPlugin
     this.customDownloadPath = sp.getString(PREF_DOWNLOAD_PATH, "");
     this.downloadNotificationsEnabled = sp.getBoolean(PREF_DL_NOTIFS_ENABLED, true);
     this.vpnManager = new HeavenVpnManager(appCtx);
-    this.extEngine = new HeavenExtEngine();
+    this.shieldEngine = new HeavenShieldEngine(appCtx);
     this.channel = new MethodChannel(binding.getBinaryMessenger(), CHANNEL_NAME);
     this.channel.setMethodCallHandler(this);
     registerDownloadControlReceiver(appCtx);
@@ -379,10 +379,7 @@ public class HeavenShieldPlugin
     unregisterDownloadControlReceiver(binding.getApplicationContext());
     unregisterMediaCommandReceiver(binding.getApplicationContext());
     stopBackgroundMediaService();
-    if (this.extEngine != null) {
-      this.extEngine.shutdown();
-      this.extEngine = null;
-    }
+    this.shieldEngine = null;
     if (this.channel != null) {
       this.channel.setMethodCallHandler(null);
       this.channel = null;
@@ -827,6 +824,7 @@ public class HeavenShieldPlugin
       case "attachToWebView":
         Object idObj = call.argument("webViewId");
         Boolean initDesktop = call.argument("desktopMode");
+        String initHost = call.argument("pageHost");
         if (initDesktop != null) {
           this.desktopMode = initDesktop;
         }
@@ -834,11 +832,31 @@ public class HeavenShieldPlugin
           long wvId = ((Number) idObj).longValue();
           this.activeFocusedWebViewId = wvId;
           pageAtTopByWv.put(wvId, Boolean.TRUE);
-          boolean attached = attachShieldToWebView(wvId);
+          boolean attached = attachShieldToWebView(wvId, initHost);
           result.success(attached);
         } else {
           result.success(false);
         }
+        break;
+
+      case "getHeavenShieldStats":
+        Object statsWvObj = call.argument("webViewId");
+        long statsWvId =
+            statsWvObj instanceof Number
+                ? ((Number) statsWvObj).longValue()
+                : this.activeFocusedWebViewId;
+        if (this.shieldEngine != null) {
+          result.success(this.shieldEngine.getStats(statsWvId));
+        } else {
+          result.success(Collections.emptyMap());
+        }
+        break;
+
+      case "resetHeavenShieldStats":
+        if (this.shieldEngine != null) {
+          this.shieldEngine.resetStats();
+        }
+        result.success(true);
         break;
 
       case "focusWebView":
@@ -889,9 +907,13 @@ public class HeavenShieldPlugin
       case "updatePageHost":
       case "setWebViewPageHost":
         Object wvIdObj = call.argument("webViewId");
+        String nextHost = call.argument("pageHost");
         if (wvIdObj instanceof Number) {
           long id = ((Number) wvIdObj).longValue();
           this.activeFocusedWebViewId = id;
+          if (this.shieldEngine != null) {
+            this.shieldEngine.updateWebViewHost(id, nextHost);
+          }
           pageLoadingUntilMsByWv.put(id, SystemClock.elapsedRealtime() + 650L);
           pageAtTopByWv.put(id, Boolean.TRUE);
           accumulatedScrollDyByWv.put(id, 0);
@@ -1182,19 +1204,32 @@ public class HeavenShieldPlugin
     if (bgPlayNotifArg != null) {
       this.backgroundPlayNotifEnabled = bgPlayNotifArg;
     }
-    if (this.extEngine != null) {
-      List<String> enabledExts = call.argument("enabledExtensions");
-      if (enabledExts != null) {
-        this.extEngine.setEnabledExtensions(enabledExts);
-      }
+    if (this.shieldEngine != null) {
+      Boolean shieldEnabledArg = call.argument("shieldEnabled");
+      Boolean strictModeArg = call.argument("shieldStrictMode");
+      Boolean blockAdsArg = call.argument("shieldBlockAds");
+      Boolean blockCookiesArg = call.argument("shieldBlockCookieBanners");
+      Boolean cleanUrlsArg = call.argument("shieldCleanUrls");
+      Boolean antiFpArg = call.argument("shieldAntiFingerprinting");
+      Boolean blockPopupsArg = call.argument("shieldBlockPopups");
+      List<String> disabledHostsArg = call.argument("shieldDisabledHosts");
+      this.shieldEngine.updateConfiguration(
+          shieldEnabledArg,
+          strictModeArg,
+          blockAdsArg,
+          blockCookiesArg,
+          cleanUrlsArg,
+          antiFpArg,
+          blockPopupsArg,
+          disabledHostsArg);
     }
     refreshAllDocumentStartHandlers();
   }
 
   private String buildDocumentStartBundle() {
-    String extBundle =
-        (this.extEngine != null) ? this.extEngine.getCompiledDocumentStartBundle() : "";
-    return extBundle
+    String shieldBundle =
+        (this.shieldEngine != null) ? this.shieldEngine.getCompiledDocumentStartBundle() : "";
+    return shieldBundle
         + "window.__heavenBgMediaEnabled="
         + this.backgroundMediaEnabled
         + ";window.__heavenWebNotifsBlocked="
@@ -1395,7 +1430,7 @@ public class HeavenShieldPlugin
   }
 
   @SuppressLint("JavascriptInterface")
-  private boolean attachShieldToWebView(final long webViewId) {
+  private boolean attachShieldToWebView(final long webViewId, final String initialHost) {
     if (pluginBinding == null) {
       return false;
     }
@@ -1432,8 +1467,8 @@ public class HeavenShieldPlugin
             });
       }
 
-      if (this.extEngine != null) {
-        this.extEngine.attachBridgeAndClient(webView, webViewId);
+      if (this.shieldEngine != null) {
+        this.shieldEngine.attachClient(webView, webViewId, initialHost);
       }
       applyDesktopSettingsToWebView(webView, webViewId, this.desktopMode, false);
       installOrRefreshDocumentStartShield(webView, webViewId);

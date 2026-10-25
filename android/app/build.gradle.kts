@@ -23,7 +23,7 @@ android {
         versionName = flutter.versionName
     }
 
-    // Required for OpenVPN native binary execution (libovpnexec.so & libopenvpn.so) on Android 9+
+    // Required for OpenVPN & WireGuard native binary execution (libovpnexec.so, libopenvpn.so, libwg-go.so)
     packaging {
         jniLibs {
             useLegacyPackaging = true
@@ -33,6 +33,10 @@ android {
     buildTypes {
         release {
             signingConfig = signingConfigs.getByName("debug")
+            proguardFiles(
+                getDefaultProguardFile("proguard-android-optimize.txt"),
+                "proguard-rules.pro",
+            )
         }
     }
 }

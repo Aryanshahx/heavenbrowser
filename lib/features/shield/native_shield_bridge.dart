@@ -12,6 +12,18 @@ typedef NativeMediaPlaybackChangedCallback =
     void Function(bool playing, String title);
 typedef NativeWebScrollNavBarCallback = void Function(bool visible);
 
+class HeavenShieldStats {
+  const HeavenShieldStats({
+    required this.pageBlocked,
+    required this.totalBlocked,
+    required this.shieldEnabled,
+  });
+
+  final int pageBlocked;
+  final int totalBlocked;
+  final bool shieldEnabled;
+}
+
 class NativeShieldBridge {
   NativeShieldBridge._() {
     _channel.setMethodCallHandler(_handleNativeCall);
@@ -97,7 +109,14 @@ class NativeShieldBridge {
     bool backgroundMediaEnabled = true,
     bool webNotificationsEnabled = false,
     bool backgroundPlayNotificationEnabled = true,
-    List<String> enabledExtensions = const <String>[],
+    bool shieldEnabled = true,
+    bool shieldStrictMode = false,
+    bool shieldBlockAds = true,
+    bool shieldBlockCookieBanners = true,
+    bool shieldCleanUrls = true,
+    bool shieldAntiFingerprinting = true,
+    bool shieldBlockPopups = true,
+    List<String> shieldDisabledHosts = const <String>[],
   }) async {
     try {
       await _channel.invokeMethod<bool>('updateConfig', <String, Object>{
@@ -105,8 +124,52 @@ class NativeShieldBridge {
         'backgroundMediaEnabled': backgroundMediaEnabled,
         'webNotificationsEnabled': webNotificationsEnabled,
         'backgroundPlayNotificationEnabled': backgroundPlayNotificationEnabled,
-        'enabledExtensions': enabledExtensions,
+        'shieldEnabled': shieldEnabled,
+        'shieldStrictMode': shieldStrictMode,
+        'shieldBlockAds': shieldBlockAds,
+        'shieldBlockCookieBanners': shieldBlockCookieBanners,
+        'shieldCleanUrls': shieldCleanUrls,
+        'shieldAntiFingerprinting': shieldAntiFingerprinting,
+        'shieldBlockPopups': shieldBlockPopups,
+        'shieldDisabledHosts': shieldDisabledHosts,
       });
+    } on MissingPluginException {
+      // Expected in unit/widget tests.
+    } on PlatformException {
+      // Ignore transient platform channel errors.
+    }
+  }
+
+  Future<HeavenShieldStats> getHeavenShieldStats({int? webViewId}) async {
+    try {
+      final Map<String, Object?> args = <String, Object?>{};
+      if (webViewId != null) {
+        args['webViewId'] = webViewId;
+      }
+      final Map<Object?, Object?>? raw = await _channel
+          .invokeMethod<Map<Object?, Object?>>('getHeavenShieldStats', args);
+      if (raw != null) {
+        return HeavenShieldStats(
+          pageBlocked: (raw['pageBlocked'] as num?)?.toInt() ?? 0,
+          totalBlocked: (raw['totalBlocked'] as num?)?.toInt() ?? 0,
+          shieldEnabled: raw['shieldEnabled'] != false,
+        );
+      }
+    } on MissingPluginException {
+      // Expected in unit/widget tests.
+    } on PlatformException {
+      // Ignore transient platform channel errors.
+    }
+    return const HeavenShieldStats(
+      pageBlocked: 0,
+      totalBlocked: 0,
+      shieldEnabled: true,
+    );
+  }
+
+  Future<void> resetHeavenShieldStats() async {
+    try {
+      await _channel.invokeMethod<bool>('resetHeavenShieldStats');
     } on MissingPluginException {
       // Expected in unit/widget tests.
     } on PlatformException {

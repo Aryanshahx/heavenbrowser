@@ -514,21 +514,6 @@ class TabManagerController extends ChangeNotifier {
     );
   }
 
-  Future<BrowserTab> openWebStoreTab({bool? incognito}) async {
-    final bool targetIncognito = incognito ?? isActiveIncognito;
-    for (final BrowserTab t in _tabs) {
-      if (t.isIncognito == targetIncognito && t.engine.isShowingWebStorePage) {
-        switchToTab(t.id);
-        return t;
-      }
-    }
-    return openNewTab(
-      incognito: targetIncognito,
-      initialInput: AppConstants.webStoreTabUrl,
-      switchTo: true,
-    );
-  }
-
   Future<BrowserTab> openNewTab({
     bool incognito = false,
     String? initialInput,

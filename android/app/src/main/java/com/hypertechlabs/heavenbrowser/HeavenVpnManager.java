@@ -19,6 +19,7 @@ import com.wireguard.config.Config;
 import com.wireguard.config.InetEndpoint;
 import com.wireguard.config.InetNetwork;
 import com.wireguard.config.Peer;
+import com.wireguard.crypto.Key;
 import com.wireguard.crypto.KeyPair;
 import io.flutter.plugin.common.MethodChannel;
 import java.io.BufferedReader;
@@ -59,10 +60,11 @@ import org.json.JSONObject;
 
 /**
  * Multi-Engine VPN Manager for Heaven Browser:
- * 1) 1-Tap Local Fast Edge WireGuard via Cloudflare WARP anonymous registration.
+ * 1) 1-Tap Fast Edge WireGuard via Cloudflare WARP anonymous registration with cryptographic
+ *    Noise_IKpsk2 handshake verification and multi-port ISP-throttling failover.
  * 2) 1-Tap Foreign Country OpenVPN Servers (USA, Netherlands, France, Canada, Japan,
- *    South Korea, Hong Kong, Thailand & live global relays) verified by real OpenVPN V2
- *    wire-packet handshakes before connecting.
+ *    South Korea, United Kingdom, Thailand & live global relays) verified by real OpenVPN V2
+ *    wire-packet handshakes and OpenVPN 2.7 / OpenSSL 3.5 cipher compatibility.
  * 3) Custom Country WireGuard (.conf) & OpenVPN (.ovpn) profile support + Browser Split-Tunnel.
  */
 public final class HeavenVpnManager {
@@ -71,6 +73,15 @@ public final class HeavenVpnManager {
   private static final int VPN_NOTIF_ID = 77001;
   private static final String TUNNEL_NAME = "heavenvpn";
   private static final String WARP_REG_URL = "https://api.cloudflareclient.com/v0a2158/reg";
+  private static final String WARP_PEER_PUBKEY = "bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo=";
+
+  private static final String[] WARP_FALLBACK_ENDPOINTS =
+      new String[] {
+        "162.159.193.2:500",
+        "188.114.96.3:4500",
+        "162.159.192.1:1701",
+        "engage.cloudflareclient.com:2408"
+      };
 
   private static final String RISEUP_CA_URL = "https://api.black.riseup.net/ca.crt";
   private static final String RISEUP_CERT_URL = "https://api.black.riseup.net/3/cert";
@@ -191,7 +202,7 @@ public final class HeavenVpnManager {
 
   /**
    * Provisions a verified, live foreign OpenVPN (.ovpn) configuration for the requested
-   * countryCode (e.g. US, NL, FR, CA, JP, KR, HK, TH, VN, SE, or AUTO_FOREIGN).
+   * countryCode (e.g. US, NL, FR, CA, JP, KR, GB, TH, VN, or AUTO_FOREIGN).
    */
   public void provisionForeignOpenVpnConfig(
       String countryCode, List<String> excludeHosts, MethodChannel.Result result) {
@@ -211,7 +222,7 @@ public final class HeavenVpnManager {
 
             VerifiedCandidate chosen = null;
 
-            // 1. Try dedicated RiseupVPN gateways first (supports US, NL, FR, CA, DE, SE, GB & AUTO_FOREIGN)
+            // 1. Try dedicated RiseupVPN gateways first (supports US, NL, FR, CA & AUTO_FOREIGN)
             chosen = tryProvisionRiseupCandidate(cc, excluded);
 
             // 2. Try live VPNGate servers for the exact requested country code
@@ -222,11 +233,11 @@ public final class HeavenVpnManager {
             // 3. Nearest-region fallback if specific country slot is momentarily full
             if (chosen == null && !"AUTO_FOREIGN".equals(cc)) {
               for (String neighborCc : regionalFallbacksFor(cc)) {
-                chosen = tryProvisionVpnGateCandidate(neighborCc, excluded);
+                chosen = tryProvisionRiseupCandidate(neighborCc, excluded);
                 if (chosen != null) {
                   break;
                 }
-                chosen = tryProvisionRiseupCandidate(neighborCc, excluded);
+                chosen = tryProvisionVpnGateCandidate(neighborCc, excluded);
                 if (chosen != null) {
                   break;
                 }
@@ -356,37 +367,60 @@ public final class HeavenVpnManager {
         if (gwCc.isEmpty() || "IN".equals(gwCc)) continue;
         if (!"AUTO_FOREIGN".equals(targetCc) && !targetCc.equals(gwCc)) continue;
 
+        final List<Integer> tcpPorts = extractRiseupOpenVpnPorts(gw, "tcp");
+        final List<Integer> udpPorts = extractRiseupOpenVpnPorts(gw, "udp");
         final String finalCc = gwCc;
         final String finalCountryName = countryNameForCode(gwCc) + " (" + locDisplay + ")";
+
         tasks.add(
             () -> {
-              long rtt = probeOpenVpnTcp(ip, 1194, 2100);
-              int bestTcpPort = 1194;
-              if (rtt < 0) {
-                rtt = probeOpenVpnTcp(ip, 80, 2100);
-                bestTcpPort = 80;
+              // Prefer verified OpenVPN TCP (1194 / 53 / 80) first because TCP traverses
+              // carrier UDP filters cleanly and OpenVPN V2 reset confirms live daemon.
+              int chosenPort = -1;
+              String chosenProto = "tcp-client";
+              long bestRtt = -1L;
+
+              for (int port : tcpPorts) {
+                long rtt = probeOpenVpnTcp(ip, port, 1900);
+                if (rtt >= 0 && (bestRtt < 0 || rtt < bestRtt)) {
+                  bestRtt = rtt;
+                  chosenPort = port;
+                  chosenProto = "tcp-client";
+                  if (port == 1194) {
+                    break;
+                  }
+                }
               }
-              if (rtt < 0) {
+
+              if (bestRtt < 0) {
+                for (int port : udpPorts) {
+                  long rtt = probeOpenVpnUdp(ip, port, 1600);
+                  if (rtt >= 0 && (bestRtt < 0 || rtt < bestRtt)) {
+                    bestRtt = rtt;
+                    chosenPort = port;
+                    chosenProto = "udp";
+                    break;
+                  }
+                }
+              }
+
+              if (bestRtt < 0 || chosenPort <= 0) {
                 return null;
               }
-              long udpRtt = probeOpenVpnUdp(ip, 1194, 1400);
+
               StringBuilder cfg = new StringBuilder();
               cfg.append("client\n");
               cfg.append("dev tun\n");
+              cfg.append("proto ").append(chosenProto).append('\n');
+              cfg.append("remote ").append(ip).append(' ').append(chosenPort).append('\n');
               cfg.append("nobind\n");
               cfg.append("persist-key\n");
-              if (udpRtt >= 0) {
-                cfg.append("remote ").append(ip).append(" 1194 udp\n");
-              }
-              cfg.append("remote ").append(ip).append(' ').append(bestTcpPort).append(" tcp-client\n");
-              if (bestTcpPort != 80) {
-                cfg.append("remote ").append(ip).append(" 80 tcp-client\n");
-              }
-              cfg.append("connect-timeout 7\n");
+              cfg.append("connect-timeout 8\n");
+              cfg.append("connect-retry-max 2\n");
               cfg.append("remote-cert-tls server\n");
               cfg.append("tls-version-min 1.2\n");
               cfg.append("cipher AES-256-GCM\n");
-              cfg.append("data-ciphers AES-256-GCM\n");
+              cfg.append("data-ciphers AES-256-GCM:AES-128-GCM:CHACHA20-POLY1305\n");
               cfg.append("auth SHA512\n");
               cfg.append("keepalive 10 30\n");
               cfg.append("verb 3\n");
@@ -394,19 +428,74 @@ public final class HeavenVpnManager {
               cfg.append("<cert>\n").append(cachedRiseupCert).append("\n</cert>\n");
               cfg.append("<key>\n").append(cachedRiseupKey).append("\n</key>\n");
 
-              long effectiveRtt = udpRtt >= 0 ? Math.min(rtt, udpRtt) : rtt;
               return new VerifiedCandidate(
-                  cfg.toString(), ip, finalCc, finalCountryName, effectiveRtt, 250_000_000L);
+                  cfg.toString(), ip, finalCc, finalCountryName, bestRtt, 250_000_000L);
             });
       }
 
       if (tasks.isEmpty()) {
         return null;
       }
-      return pickBestCandidate(tasks, 4500);
+      return pickBestCandidate(tasks, 5000);
     } catch (Throwable ignored) {
       return null;
     }
+  }
+
+  private static List<Integer> extractRiseupOpenVpnPorts(JSONObject gw, String wantedProto) {
+    List<Integer> ordered = new ArrayList<>();
+    JSONObject caps = gw.optJSONObject("capabilities");
+    JSONArray transports = caps != null ? caps.optJSONArray("transport") : null;
+    if (transports != null) {
+      for (int i = 0; i < transports.length(); i++) {
+        JSONObject tr = transports.optJSONObject(i);
+        if (tr == null || !"openvpn".equalsIgnoreCase(tr.optString("type", ""))) {
+          continue;
+        }
+        boolean protoSupported = false;
+        JSONArray protos = tr.optJSONArray("protocols");
+        if (protos != null) {
+          for (int p = 0; p < protos.length(); p++) {
+            if (wantedProto.equalsIgnoreCase(protos.optString(p, ""))) {
+              protoSupported = true;
+              break;
+            }
+          }
+        }
+        if (!protoSupported) {
+          continue;
+        }
+        JSONArray ports = tr.optJSONArray("ports");
+        if (ports != null) {
+          for (int k = 0; k < ports.length(); k++) {
+            try {
+              int portNum = Integer.parseInt(ports.optString(k, "").trim());
+              if (portNum > 0 && !ordered.contains(portNum)) {
+                ordered.add(portNum);
+              }
+            } catch (NumberFormatException ignored) {
+            }
+          }
+        }
+      }
+    }
+    if (ordered.isEmpty()) {
+      ordered.add(1194);
+      if ("tcp".equalsIgnoreCase(wantedProto)) {
+        ordered.add(53);
+        ordered.add(80);
+      }
+    } else {
+      // Prioritize 1194 first, then 53, then 80 (avoids transparent port-80 HTTP proxies).
+      Collections.sort(
+          ordered,
+          (a, b) -> {
+            int rankA = a == 1194 ? 0 : (a == 53 ? 1 : (a == 80 ? 2 : 3));
+            int rankB = b == 1194 ? 0 : (b == 53 ? 1 : (b == 80 ? 2 : 3));
+            return Integer.compare(rankA, rankB);
+          });
+    }
+    return ordered;
   }
 
   private VerifiedCandidate tryProvisionVpnGateCandidate(String targetCc, Set<String> excluded) {
@@ -461,8 +550,8 @@ public final class HeavenVpnManager {
         tasks.add(
             () -> {
               byte[] decoded = Base64.decode(row.b64Ovpn, Base64.DEFAULT);
-              String ovpn = new String(decoded, StandardCharsets.UTF_8);
-              Matcher remM = OVPN_REMOTE_PATTERN.matcher(ovpn);
+              String rawOvpn = new String(decoded, StandardCharsets.UTF_8);
+              Matcher remM = OVPN_REMOTE_PATTERN.matcher(rawOvpn);
               if (!remM.find()) {
                 return null;
               }
@@ -471,23 +560,24 @@ public final class HeavenVpnManager {
               if (host == null || excluded.contains(host)) {
                 return null;
               }
-              Matcher protoM = OVPN_PROTO_PATTERN.matcher(ovpn);
+              Matcher protoM = OVPN_PROTO_PATTERN.matcher(rawOvpn);
               String proto = protoM.find() ? protoM.group(1).toLowerCase(Locale.US) : "tcp";
 
               long rtt =
                   proto.contains("udp")
-                      ? probeOpenVpnUdp(host, port, 2300)
-                      : probeOpenVpnTcp(host, port, 2300);
+                      ? probeOpenVpnUdp(host, port, 2200)
+                      : probeOpenVpnTcp(host, port, 2200);
               if (rtt < 0) {
                 return null;
               }
-              String enhancedOvpn =
-                  ovpn
-                      + "\ndata-ciphers AES-256-GCM:AES-128-GCM:CHACHA20-POLY1305:AES-128-CBC\n"
-                      + "data-ciphers-fallback AES-128-CBC\n"
-                      + "connect-timeout 8\n";
+
+              // Normalize VPNGate .ovpn for OpenVPN 2.7 + OpenSSL 3.5:
+              // Strip pre-existing data-ciphers / data-ciphers-fallback so openvpn_flutter 2.0.0's
+              // addCipherFallback() configures the server's exact --cipher & legacy provider,
+              // and add tls-cipher DEFAULT:@SECLEVEL=0 for legacy SoftEther RSA/SHA-1 certs.
+              String normalizedOvpn = normalizeVpnGateOvpnForOpenSsl3(rawOvpn);
               return new VerifiedCandidate(
-                  enhancedOvpn, host, row.countryCode, row.countryLong, rtt, row.speedBps);
+                  normalizedOvpn, host, row.countryCode, row.countryLong, rtt, row.speedBps);
             });
       }
 
@@ -495,6 +585,59 @@ public final class HeavenVpnManager {
     } catch (Throwable ignored) {
       return null;
     }
+  }
+
+  static String normalizeVpnGateOvpnForOpenSsl3(String rawOvpn) {
+    String[] lines = rawOvpn.replace("\r\n", "\n").split("\n");
+    StringBuilder out = new StringBuilder(rawOvpn.length() + 128);
+    boolean hasTlsCipher = false;
+    boolean hasConnectTimeout = false;
+    boolean insidePemBlock = false;
+
+    for (String line : lines) {
+      String trimmed = line.trim();
+      String lower = trimmed.toLowerCase(Locale.US);
+      if (lower.startsWith("<ca>")
+          || lower.startsWith("<cert>")
+          || lower.startsWith("<key>")
+          || lower.startsWith("<tls-auth>")
+          || lower.startsWith("<tls-crypt>")) {
+        insidePemBlock = true;
+      } else if (lower.startsWith("</ca>")
+          || lower.startsWith("</cert>")
+          || lower.startsWith("</key>")
+          || lower.startsWith("</tls-auth>")
+          || lower.startsWith("</tls-crypt>")) {
+        insidePemBlock = false;
+        out.append(line).append('\n');
+        continue;
+      }
+
+      if (!insidePemBlock) {
+        if (lower.startsWith("data-ciphers ")
+            || lower.startsWith("data-ciphers\t")
+            || lower.startsWith("data-ciphers-fallback ")
+            || lower.startsWith("data-ciphers-fallback\t")) {
+          continue;
+        }
+        if (lower.startsWith("tls-cipher ") || lower.startsWith("tls-cipher\t")) {
+          hasTlsCipher = true;
+        }
+        if (lower.startsWith("connect-timeout ")) {
+          hasConnectTimeout = true;
+        }
+      }
+      out.append(line).append('\n');
+    }
+
+    if (!hasTlsCipher) {
+      out.append("tls-cipher DEFAULT:@SECLEVEL=0\n");
+    }
+    if (!hasConnectTimeout) {
+      out.append("connect-timeout 8\n");
+      out.append("connect-retry-max 2\n");
+    }
+    return out.toString();
   }
 
   private VerifiedCandidate pickBestCandidate(
@@ -580,7 +723,6 @@ public final class HeavenVpnManager {
       frame[1] = 0x0E; // 14-byte OpenVPN payload
       frame[2] = 0x38; // P_CONTROL_HARD_RESET_CLIENT_V2 << 3
       System.arraycopy(sessionId, 0, frame, 3, 8);
-      // frame[11..15] = ack_len(0) + packet_id(0)
 
       OutputStream out = s.getOutputStream();
       out.write(frame);
@@ -752,7 +894,7 @@ public final class HeavenVpnManager {
             conn.setRequestProperty("Content-Type", "application/json");
             conn.setRequestProperty("Accept", "application/json");
             conn.setRequestProperty("CF-Client-Version", "a-6.30-3596");
-            conn.setRequestProperty("User-Agent", "okhttp/3.12.1");
+            conn.setRequestProperty("User-Agent", "okhttp/4.12.0");
 
             try (OutputStream os = conn.getOutputStream()) {
               os.write(payloadBytes);
@@ -775,7 +917,7 @@ public final class HeavenVpnManager {
             if (status < 200 || status >= 300) {
               postError(
                   result,
-                  "WARP registration HTTP " + status + ". Try a Foreign Country server instead.");
+                  "WARP registration HTTP " + status + ". Connecting via OpenVPN fallback.");
               return;
             }
 
@@ -795,19 +937,27 @@ public final class HeavenVpnManager {
             JSONObject peer0 = (peers != null && peers.length() > 0) ? peers.optJSONObject(0) : null;
             String peerPubKey =
                 peer0 != null
-                    ? peer0.optString(
-                        "public_key", "bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo=")
-                    : "bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo=";
+                    ? peer0.optString("public_key", WARP_PEER_PUBKEY)
+                    : WARP_PEER_PUBKEY;
 
-            String endpointHost = "162.159.192.6:2408";
+            int preferredPort = 2408;
+            String endpointHost = "162.159.192.2:2408";
             if (peer0 != null) {
               JSONObject ep = peer0.optJSONObject("endpoint");
               if (ep != null) {
+                JSONArray portsArr = ep.optJSONArray("ports");
+                if (portsArr != null) {
+                  for (int i = 0; i < portsArr.length(); i++) {
+                    int candidatePort = portsArr.optInt(i, -1);
+                    if (candidatePort > 0) {
+                      preferredPort = candidatePort;
+                      break;
+                    }
+                  }
+                }
                 String rawV4 = ep.optString("v4", "").trim();
                 if (!rawV4.isEmpty()) {
-                  int colon = rawV4.indexOf(':');
-                  String ipOnly = colon > 0 ? rawV4.substring(0, colon) : rawV4;
-                  endpointHost = ipOnly + ":2408";
+                  endpointHost = normalizeEndpointPort(rawV4, preferredPort);
                 }
               }
             }
@@ -824,7 +974,7 @@ public final class HeavenVpnManager {
             wgConf.append("MTU = 1280\n\n");
             wgConf.append("[Peer]\n");
             wgConf.append("PublicKey = ").append(peerPubKey).append('\n');
-            wgConf.append("AllowedIPs = 0.0.0.0/0, ::/0\n");
+            wgConf.append("AllowedIPs = 0.0.0.0/0\n");
             wgConf.append("Endpoint = ").append(endpointHost).append('\n');
             wgConf.append("PersistentKeepalive = 25\n");
 
@@ -846,11 +996,69 @@ public final class HeavenVpnManager {
         });
   }
 
+  static String normalizeEndpointPort(String endpoint, int defaultPort) {
+    if (endpoint == null || endpoint.trim().isEmpty()) {
+      return "162.159.192.2:" + defaultPort;
+    }
+    String clean = endpoint.trim();
+    int lastColon = clean.lastIndexOf(':');
+    int rightBracket = clean.lastIndexOf(']');
+    if (lastColon > rightBracket && lastColon > 0) {
+      String hostPart = clean.substring(0, lastColon).trim();
+      String portPart = clean.substring(lastColon + 1).trim();
+      try {
+        int p = Integer.parseInt(portPart);
+        if (p > 0 && p <= 65535) {
+          return hostPart + ":" + p;
+        }
+      } catch (NumberFormatException ignored) {
+      }
+      return hostPart + ":" + defaultPort;
+    }
+    return clean + ":" + defaultPort;
+  }
+
+  static String sanitizeWireGuardEndpoints(String rawText) {
+    String[] lines = rawText.replace("\r\n", "\n").split("\n");
+    StringBuilder out = new StringBuilder(rawText.length() + 16);
+    for (String line : lines) {
+      String trimmed = line.trim();
+      if (trimmed.toLowerCase(Locale.US).startsWith("endpoint")) {
+        int eq = trimmed.indexOf('=');
+        if (eq > 0) {
+          String rhs = trimmed.substring(eq + 1).trim();
+          out.append("Endpoint = ").append(normalizeEndpointPort(rhs, 2408)).append('\n');
+          continue;
+        }
+      }
+      out.append(line).append('\n');
+    }
+    return out.toString();
+  }
+
+  static String replaceWireGuardEndpoint(String rawText, String newEndpoint) {
+    String[] lines = rawText.replace("\r\n", "\n").split("\n");
+    StringBuilder out = new StringBuilder(rawText.length() + 32);
+    for (String line : lines) {
+      String trimmed = line.trim();
+      if (trimmed.toLowerCase(Locale.US).startsWith("endpoint")) {
+        out.append("Endpoint = ").append(newEndpoint).append('\n');
+      } else if (trimmed.toLowerCase(Locale.US).startsWith("allowedips")
+          && rawText.contains(WARP_PEER_PUBKEY)) {
+        // Route IPv4 cleanly without IPv6 leak/blackhole on IPv4-only mobile APNs.
+        out.append("AllowedIPs = 0.0.0.0/0\n");
+      } else {
+        out.append(line).append('\n');
+      }
+    }
+    return out.toString();
+  }
+
   public void validateWireGuardConfig(String configText, MethodChannel.Result result) {
     vpnExecutor.execute(
         () -> {
           try {
-            Config parsed = parseConfig(configText, false);
+            Config parsed = parseConfig(sanitizeWireGuardEndpoints(configText), false);
             String endpoint = "";
             for (Peer p : parsed.getPeers()) {
               InetEndpoint ep = p.getEndpoint().orElse(null);
@@ -932,29 +1140,73 @@ public final class HeavenVpnManager {
       MethodChannel.Result result) {
     vpnExecutor.execute(
         () -> {
+          GoBackend backend = ensureBackend();
           try {
-            Config parsed = parseConfig(rawConfigText, browserOnly);
-            GoBackend backend = ensureBackend();
-            if (backend.getState(wgTunnel) == Tunnel.State.UP) {
-              backend.setState(wgTunnel, Tunnel.State.DOWN, null);
+            String sanitized = sanitizeWireGuardEndpoints(rawConfigText);
+            boolean isWarpConfig = sanitized.contains(WARP_PEER_PUBKEY);
+
+            List<String> candidateConfigs = new ArrayList<>();
+            candidateConfigs.add(sanitized);
+            if (isWarpConfig) {
+              for (String altEp : WARP_FALLBACK_ENDPOINTS) {
+                String altCfg = replaceWireGuardEndpoint(sanitized, altEp);
+                if (!candidateConfigs.contains(altCfg)) {
+                  candidateConfigs.add(altCfg);
+                }
+              }
             }
-            Tunnel.State finalState = backend.setState(wgTunnel, Tunnel.State.UP, parsed);
-            currentState = finalState;
-            activeProfileName =
+
+            String label =
                 (profileName != null && !profileName.trim().isEmpty())
                     ? profileName.trim()
                     : "Heaven Free VPN";
 
-            if (finalState == Tunnel.State.UP) {
-              showConnectedNotification(activeProfileName, browserOnly);
+            for (int idx = 0; idx < candidateConfigs.size(); idx++) {
+              String candidateText = candidateConfigs.get(idx);
+              Config parsed = parseConfig(candidateText, browserOnly);
+
+              if (backend.getState(wgTunnel) == Tunnel.State.UP) {
+                backend.setState(wgTunnel, Tunnel.State.DOWN, null);
+              }
+              Tunnel.State state = backend.setState(wgTunnel, Tunnel.State.UP, parsed);
+              if (state != Tunnel.State.UP) {
+                continue;
+              }
+
+              // For user-imported custom WireGuard configs, keep the user's tunnel up directly;
+              // for built-in WARP configs, cryptographically verify a real peer handshake so we
+              // never leave a UDP-blocked carrier tunnel in a black-hole state.
+              if (!isWarpConfig || waitForWireGuardPeerHandshake(backend, 3100L)) {
+                currentState = Tunnel.State.UP;
+                activeProfileName = label;
+                showConnectedNotification(activeProfileName, browserOnly);
+
+                Map<String, Object> out = new HashMap<>();
+                out.put("ok", true);
+                out.put("connected", true);
+                out.put("profileName", activeProfileName);
+                out.put("activeConfigText", candidateText);
+                mainHandler.post(() -> result.success(out));
+                return;
+              }
+
+              // No handshake received on this UDP endpoint — tear down before trying next port.
+              try {
+                backend.setState(wgTunnel, Tunnel.State.DOWN, null);
+              } catch (Throwable ignored) {
+              }
             }
 
-            Map<String, Object> out = new HashMap<>();
-            out.put("ok", finalState == Tunnel.State.UP);
-            out.put("connected", finalState == Tunnel.State.UP);
-            out.put("profileName", activeProfileName);
-            mainHandler.post(() -> result.success(out));
+            currentState = Tunnel.State.DOWN;
+            cancelStatusNotification();
+            postError(
+                result,
+                "WireGuard UDP ports are blocked on this network. Switching to OpenVPN TCP.");
           } catch (Throwable t) {
+            try {
+              backend.setState(wgTunnel, Tunnel.State.DOWN, null);
+            } catch (Throwable ignored) {
+            }
             currentState = Tunnel.State.DOWN;
             cancelStatusNotification();
             postError(
@@ -962,6 +1214,44 @@ public final class HeavenVpnManager {
                 t.getMessage() != null ? t.getMessage() : "Failed to establish WireGuard tunnel");
           }
         });
+  }
+
+  private boolean waitForWireGuardPeerHandshake(GoBackend backend, long maxWaitMs) {
+    // Trigger an immediate packet through tun0 so WireGuard initiates Noise_IKpsk2 right away.
+    probePool.execute(
+        () -> {
+          try {
+            httpGetText("https://1.1.1.1/cdn-cgi/trace", null, 2200);
+          } catch (Throwable ignored) {
+          }
+        });
+
+    long deadline = System.currentTimeMillis() + maxWaitMs;
+    while (System.currentTimeMillis() < deadline) {
+      try {
+        Statistics stats = backend.getStatistics(wgTunnel);
+        if (stats != null) {
+          if (stats.totalRx() > 0L) {
+            return true;
+          }
+          Key[] peers = stats.peers();
+          if (peers != null) {
+            for (Key k : peers) {
+              Statistics.PeerStats ps = stats.peer(k);
+              if (ps != null && (ps.rxBytes() > 0L || ps.latestHandshakeEpochMillis() > 0L)) {
+                return true;
+              }
+            }
+          }
+        }
+        Thread.sleep(200L);
+      } catch (InterruptedException ie) {
+        Thread.currentThread().interrupt();
+        return false;
+      } catch (Throwable ignored) {
+      }
+    }
+    return false;
   }
 
   public void disconnectVpn(MethodChannel.Result result) {
@@ -1051,7 +1341,7 @@ public final class HeavenVpnManager {
                 VPN_NOTIF_CHANNEL,
                 "Heaven VPN Status",
                 NotificationManager.IMPORTANCE_LOW);
-        ch.setDescription("Shows encrypted WireGuard VPN status");
+        ch.setDescription("Shows encrypted Heaven VPN tunnel status");
         ch.setShowBadge(false);
         nm.createNotificationChannel(ch);
       }
@@ -1076,7 +1366,7 @@ public final class HeavenVpnManager {
       builder
           .setSmallIcon(android.R.drawable.ic_lock_lock)
           .setContentTitle("Heaven VPN Active - " + profileName)
-          .setContentText("Encrypted WireGuard (" + scope + ")")
+          .setContentText("Encrypted Tunnel (" + scope + ")")
           .setOngoing(true);
       if (pi != null) {
         builder.setContentIntent(pi);
@@ -1118,7 +1408,7 @@ public final class HeavenVpnManager {
       case "PL":
       case "RO":
       case "CZ":
-        return new String[] {"NL", "FR", "DE", "GB", "SE"};
+        return new String[] {"NL", "FR", "GB"};
       case "JP":
       case "KR":
       case "SG":
@@ -1131,7 +1421,7 @@ public final class HeavenVpnManager {
       case "PH":
       case "AU":
       case "NZ":
-        return new String[] {"JP", "KR", "SG", "HK", "TH"};
+        return new String[] {"JP", "KR", "TH"};
       case "US":
       case "CA":
       case "MX":
@@ -1141,7 +1431,7 @@ public final class HeavenVpnManager {
       case "CO":
         return new String[] {"US", "CA"};
       default:
-        return new String[] {"NL", "FR", "US", "JP"};
+        return new String[] {"US", "NL", "FR", "JP"};
     }
   }
 

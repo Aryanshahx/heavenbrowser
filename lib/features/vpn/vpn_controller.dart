@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
@@ -589,7 +590,11 @@ class VpnController extends ChangeNotifier {
   }
 
   void _load() {
-    _cachedWarpConfig = _prefs.getString(_keyWarpConfig) ?? '';
+    _cachedWarpConfig = (_prefs.getString(_keyWarpConfig) ?? '')
+        .replaceAllMapped(
+          RegExp(r'^(\s*Endpoint\s*=\s*[^:\s]+):0\s*$', multiLine: true),
+          (Match m) => '${m.group(1)}:2408',
+        );
     _selectedProfileId =
         _prefs.getString(_keySelectedProfileId) ?? defaultForeignUsId;
     _browserOnly = _prefs.getBool(_keyBrowserOnly) ?? true;
@@ -900,15 +905,16 @@ class VpnController extends ChangeNotifier {
       // Ensure any active WireGuard tunnel is stopped before starting OpenVPN
       await NativeShieldBridge.instance.disconnectVpn();
       _statsTimer?.cancel();
+      String? lastEngineError;
 
-      for (int attempt = 0; attempt < 2; attempt++) {
+      for (int attempt = 0; attempt < 3; attempt++) {
         String configToUse = target.configText.trim();
         String? connectedHost;
 
         if (target.isBuiltInForeign) {
           _statusMessage = attempt == 0
               ? 'Probing live ${target.name} servers...'
-              : 'Switching to backup ${target.name} server...';
+              : 'Switching to backup ${target.name} server (#${attempt + 1})...';
           notifyListeners();
 
           final Map<String, Object?> provisioned = await NativeShieldBridge
@@ -933,6 +939,9 @@ class VpnController extends ChangeNotifier {
           }
           configToUse = provisioned['configText']!.toString().trim();
           connectedHost = provisioned['serverHost']?.toString().trim();
+        } else {
+          configToUse =
+              await ovpn.OpenVPN.filteredConfig(configToUse) ?? configToUse;
         }
 
         // In unit/widget test mode (enableNativePolling == false), mark connected cleanly
@@ -962,11 +971,17 @@ class VpnController extends ChangeNotifier {
 
         final bool hasCert =
             configToUse.contains('<cert>') && configToUse.contains('<key>');
+        final bool usesUserPass = RegExp(
+          r'^\s*auth-user-pass(\s|$)',
+          multiLine: true,
+          caseSensitive: false,
+        ).hasMatch(configToUse);
+
         final bool started = await engine.connect(
           configToUse,
           'Heaven VPN • ${target.name}',
-          username: 'vpn',
-          password: 'vpn',
+          username: usesUserPass || !hasCert ? 'vpn' : null,
+          password: usesUserPass || !hasCert ? 'vpn' : null,
           certIsRequired: hasCert,
           allowedPackages: _browserOnly
               ? const <String>['com.hypertechlabs.heavenbrowser']
@@ -987,12 +1002,13 @@ class VpnController extends ChangeNotifier {
           _isConnected = true;
           _isBusy = false;
           _statusMessage = null;
-          unawaited(refreshExitIpInfo());
+          unawaited(refreshExitIpInfo(allowDelayedRetry: true));
           onTunnelConnected?.call();
           notifyListeners();
           return true;
         }
 
+        lastEngineError = await engine.lastError();
         // Server stalled during TLS/auth -> exclude host and auto-try next live server!
         await engine.disconnect();
         if (connectedHost != null && connectedHost.isNotEmpty) {
@@ -1006,8 +1022,12 @@ class VpnController extends ChangeNotifier {
       _isConnected = false;
       _isBusy = false;
       _statusMessage = null;
+      final String detail =
+          (lastEngineError != null && lastEngineError.trim().isNotEmpty)
+          ? ' (${lastEngineError.trim()})'
+          : '';
       _errorMessage =
-          'Could not complete handshake with ${target.name}. Try Netherlands, France, Japan, or USA.';
+          'Could not complete handshake with ${target.name}$detail. Try United States, Netherlands, France, or Japan.';
       notifyListeners();
       return false;
     } catch (e) {
@@ -1065,6 +1085,20 @@ class VpnController extends ChangeNotifier {
             .provisionFreeWarpConfig();
         if (provisioned['ok'] != true ||
             (provisioned['configText']?.toString().trim().isEmpty ?? true)) {
+          if (enableNativePolling) {
+            return await _connectOpenVpnProfile(
+              const VpnProfile(
+                id: 'foreign_auto',
+                name: 'Fastest Auto Server',
+                countryLabel: 'Auto OpenVPN TCP Fallback',
+                configText: '',
+                flagEmoji: '🌍',
+                countryCode: 'AUTO_FOREIGN',
+                protocol: VpnProtocol.openvpn,
+                isBuiltInForeign: true,
+              ),
+            );
+          }
           _isBusy = false;
           _statusMessage = null;
           _errorMessage =
@@ -1089,22 +1123,54 @@ class VpnController extends ChangeNotifier {
           );
 
       final bool ok = res['ok'] == true && res['connected'] == true;
-      _activeEngineProtocol = ok ? VpnProtocol.wireguard : null;
-      _isConnected = ok;
-      _isBusy = false;
-      _statusMessage = null;
-
       if (!ok) {
-        _errorMessage =
-            res['error']?.toString() ?? 'Unable to connect WireGuard VPN';
+        final String rawErr = res['error']?.toString() ?? '';
+        // If user declined Android VPN dialog, stop immediately; otherwise if UDP WireGuard
+        // is blocked by the carrier/Wi-Fi, seamlessly fail over to verified OpenVPN TCP!
+        if (target.isBuiltInWarp &&
+            enableNativePolling &&
+            !rawErr.toLowerCase().contains('declined')) {
+          _statusMessage = 'UDP blocked — switching to OpenVPN TCP...';
+          notifyListeners();
+          return await _connectOpenVpnProfile(
+            VpnProfile(
+              id: 'foreign_auto',
+              name: target.name,
+              countryLabel: 'OpenVPN TCP Relay',
+              configText: '',
+              flagEmoji: target.flagEmoji,
+              countryCode: 'AUTO_FOREIGN',
+              protocol: VpnProtocol.openvpn,
+              isBuiltInForeign: true,
+            ),
+          );
+        }
+        _activeEngineProtocol = null;
+        _isConnected = false;
+        _isBusy = false;
+        _statusMessage = null;
+        _errorMessage = rawErr.isNotEmpty
+            ? rawErr
+            : 'Unable to connect WireGuard VPN';
         notifyListeners();
         return false;
       }
 
+      final String? activeCfg = res['activeConfigText']?.toString().trim();
+      if (target.isBuiltInWarp && activeCfg != null && activeCfg.isNotEmpty) {
+        _cachedWarpConfig = activeCfg;
+        unawaited(_prefs.setString(_keyWarpConfig, _cachedWarpConfig));
+      }
+
+      _activeEngineProtocol = VpnProtocol.wireguard;
+      _isConnected = true;
+      _isBusy = false;
+      _statusMessage = null;
+
       if (enableNativePolling) {
         _startWireGuardPolling();
       }
-      await refreshExitIpInfo();
+      await refreshExitIpInfo(allowDelayedRetry: enableNativePolling);
       onTunnelConnected?.call();
       notifyListeners();
       return true;
@@ -1159,15 +1225,50 @@ class VpnController extends ChangeNotifier {
     }
   }
 
-  Future<void> refreshExitIpInfo() async {
+  Future<void> refreshExitIpInfo({bool allowDelayedRetry = false}) async {
+    final bool updated = await _fetchTraceOnce();
+    if (!updated && allowDelayedRetry && _isConnected) {
+      await Future<void>.delayed(const Duration(milliseconds: 1300));
+      if (_isConnected) {
+        await _fetchTraceOnce();
+      }
+    }
+  }
+
+  Future<bool> _fetchTraceOnce() async {
     try {
-      final http.Response resp = await _client
-          .get(Uri.parse('https://1.1.1.1/cdn-cgi/trace'))
-          .timeout(const Duration(seconds: 6));
-      if (resp.statusCode == 200) {
+      String bodyText = '';
+      if (enableNativePolling) {
+        // Open a brand-new socket with zero keep-alive reuse so it traverses tun0!
+        final HttpClient freshClient = HttpClient()
+          ..connectionTimeout = const Duration(seconds: 5)
+          ..idleTimeout = Duration.zero;
+        try {
+          final HttpClientRequest req = await freshClient.getUrl(
+            Uri.parse('https://1.1.1.1/cdn-cgi/trace'),
+          );
+          final HttpClientResponse res = await req.close().timeout(
+            const Duration(seconds: 6),
+          );
+          if (res.statusCode == 200) {
+            bodyText = await res.transform(utf8.decoder).join();
+          }
+        } finally {
+          freshClient.close(force: true);
+        }
+      } else {
+        final http.Response resp = await _client
+            .get(Uri.parse('https://1.1.1.1/cdn-cgi/trace'))
+            .timeout(const Duration(seconds: 6));
+        if (resp.statusCode == 200) {
+          bodyText = resp.body;
+        }
+      }
+
+      if (bodyText.isNotEmpty) {
         String? ip;
         String? loc;
-        for (final String line in resp.body.split('\n')) {
+        for (final String line in bodyText.split('\n')) {
           if (line.startsWith('ip=')) {
             ip = line.substring(3).trim();
           } else if (line.startsWith('loc=')) {
@@ -1178,11 +1279,13 @@ class VpnController extends ChangeNotifier {
           _exitIp = ip;
           _exitCountry = loc;
           notifyListeners();
+          return true;
         }
       }
     } catch (_) {
       // Non-fatal if tunnel routes are still settling.
     }
+    return false;
   }
 
   void _startWireGuardPolling() {

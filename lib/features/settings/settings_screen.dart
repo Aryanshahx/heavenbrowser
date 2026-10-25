@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import '../../core/constants/app_constants.dart';
@@ -5,6 +7,7 @@ import '../../core/theme/app_theme.dart';
 import '../../core/utils/omnibox_parser.dart';
 import '../../core/widgets/site_logo.dart';
 import '../downloads/downloads_controller.dart';
+import '../shield/heaven_shield_screen.dart';
 import '../shield/native_shield_bridge.dart';
 import '../tabs/tab_manager.dart';
 import 'browser_settings.dart';
@@ -180,12 +183,22 @@ class SettingsScreen extends StatelessWidget {
                     ),
                     _thinDivider(colors),
                     ListTile(
-                      key: const Key('settings_web_store_tile'),
+                      key: const Key('settings_heaven_shield_tile'),
                       dense: true,
-                      leading: const Icon(Icons.extension_rounded, size: 20),
-                      title: const Text('Heaven Web Store'),
+                      leading: Icon(
+                        settings.shieldEnabled
+                            ? Icons.verified_user_rounded
+                            : Icons.shield_outlined,
+                        size: 20,
+                        color: settings.shieldEnabled
+                            ? AppTheme.shieldEmerald
+                            : colors.onSurfaceVariant,
+                      ),
+                      title: const Text('Heaven Shield'),
                       subtitle: Text(
-                        '${settings.activeExtensionCount} of 10 curated Chrome extensions active',
+                        settings.shieldEnabled
+                            ? '${settings.shieldMode.label} • ${settings.activeShieldProtectionCount} protections active'
+                            : 'Paused — tap to customize protections',
                         style: const TextStyle(fontSize: 11.5),
                       ),
                       trailing: Icon(
@@ -193,9 +206,24 @@ class SettingsScreen extends StatelessWidget {
                         size: 18,
                         color: colors.onSurfaceVariant,
                       ),
-                      onTap: () async {
-                        Navigator.of(context).pop();
-                        await tabManager.openWebStoreTab();
+                      onTap: () {
+                        Navigator.of(context).push(
+                          MaterialPageRoute<void>(
+                            builder: (_) => HeavenShieldScreen(
+                              settings: settings,
+                              currentHost: tabManager.activeEngine.currentHost,
+                              activeWebViewId:
+                                  tabManager.activeEngine.androidWebViewId,
+                              onShieldChangedForActivePage: () {
+                                if (tabManager.activeEngine.isShowingWebPage) {
+                                  unawaited(
+                                    tabManager.activeEngine.reloadFullPage(),
+                                  );
+                                }
+                              },
+                            ),
+                          ),
+                        );
                       },
                     ),
                     _thinDivider(colors),
