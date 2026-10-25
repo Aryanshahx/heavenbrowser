@@ -99,31 +99,6 @@ class SettingsScreen extends StatelessWidget {
     );
   }
 
-  Future<void> _toggleBiometricSetting(
-    BuildContext context, {
-    required bool currentValue,
-    required Future<void> Function(bool) onApply,
-    required String reason,
-  }) async {
-    final bool ok = await NativeShieldBridge.instance.authenticateBiometric(
-      reason: reason,
-    );
-    if (!ok) {
-      if (context.mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text(
-              'Set up Fingerprint, Face Unlock, or Screen Lock in Android Settings first.',
-            ),
-            behavior: SnackBarBehavior.floating,
-          ),
-        );
-      }
-      return;
-    }
-    await onApply(!currentValue);
-  }
-
   @override
   Widget build(BuildContext context) {
     final ThemeData theme = Theme.of(context);
@@ -197,7 +172,7 @@ class SettingsScreen extends StatelessWidget {
                       title: const Text('Heaven Shield & privacy'),
                       subtitle: Text(
                         settings.shieldEnabled
-                            ? '${settings.trackersAdsLevel.label} • De-AMP, WebRTC, Cookies & Shred'
+                            ? '${settings.trackersAdsLevel.label} • Adblock, De-AMP, WebRTC & Cookies'
                             : 'Paused — tap to customize Shield & privacy',
                         style: const TextStyle(fontSize: 11.5),
                       ),
@@ -335,77 +310,6 @@ class SettingsScreen extends StatelessWidget {
                           ),
                         ],
                       ),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 18),
-                _MinimalSectionLabel('Privacy & Security', colors),
-                _MinimalGroup(
-                  isDark: isDark,
-                  colors: colors,
-                  children: <Widget>[
-                    SwitchListTile.adaptive(
-                      dense: true,
-                      secondary: const Icon(Icons.lock_outline_rounded, size: 20),
-                      title: const Text('HTTPS Upgrade'),
-                      value: settings.httpsUpgrade,
-                      onChanged: settings.setHttpsUpgrade,
-                    ),
-                    _thinDivider(colors),
-                    SwitchListTile.adaptive(
-                      dense: true,
-                      secondary: const Icon(Icons.cookie_outlined, size: 20),
-                      title: const Text('Block Third-Party Cookies'),
-                      value: settings.blockThirdPartyCookies,
-                      onChanged: settings.setBlockThirdPartyCookies,
-                    ),
-                    _thinDivider(colors),
-                    SwitchListTile.adaptive(
-                      dense: true,
-                      secondary: const Icon(Icons.fingerprint_rounded, size: 20),
-                      title: const Text('Biometric App Lock'),
-                      value: settings.biometricLockApp,
-                      onChanged: (_) => _toggleBiometricSetting(
-                        context,
-                        currentValue: settings.biometricLockApp,
-                        onApply: settings.setBiometricLockApp,
-                        reason: 'Verify biometrics to configure Heaven Lock',
-                      ),
-                    ),
-                    _thinDivider(colors),
-                    SwitchListTile.adaptive(
-                      dense: true,
-                      secondary: const Icon(
-                        Icons.shield_moon_outlined,
-                        size: 20,
-                      ),
-                      title: const Text('Biometric Incognito Lock'),
-                      value: settings.biometricLockIncognito,
-                      onChanged: (_) => _toggleBiometricSetting(
-                        context,
-                        currentValue: settings.biometricLockIncognito,
-                        onApply: settings.setBiometricLockIncognito,
-                        reason: 'Verify biometrics to lock Incognito tabs',
-                      ),
-                    ),
-                    _thinDivider(colors),
-                    SwitchListTile.adaptive(
-                      dense: true,
-                      secondary: const Icon(Icons.code_rounded, size: 20),
-                      title: const Text('JavaScript'),
-                      value: settings.javascriptEnabled,
-                      onChanged: settings.setJavascriptEnabled,
-                    ),
-                    _thinDivider(colors),
-                    SwitchListTile.adaptive(
-                      dense: true,
-                      secondary: const Icon(
-                        Icons.auto_delete_outlined,
-                        size: 20,
-                      ),
-                      title: const Text('Clear Data on Exit'),
-                      value: settings.clearOnExit,
-                      onChanged: settings.setClearOnExit,
                     ),
                   ],
                 ),

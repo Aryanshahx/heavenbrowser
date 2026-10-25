@@ -127,6 +127,20 @@ class BrowserEngine extends ChangeNotifier {
   DevToolsInspectedElement? _inspectedElement;
   bool _elementPickerActive = false;
   bool _pageDesignMode = false;
+  bool _devToolsEnabled = false;
+
+  static bool _isYoutubeWatchOrShortsUrl(String? rawUrl) {
+    if (rawUrl == null || rawUrl.isEmpty) return false;
+    final Uri? u = Uri.tryParse(rawUrl);
+    if (u == null) return false;
+    final String h = u.host.toLowerCase();
+    final bool isYt =
+        h == 'youtube.com' || h.endsWith('.youtube.com') || h == 'youtu.be';
+    if (!isYt) return false;
+    if (h == 'youtu.be' && u.pathSegments.isNotEmpty) return true;
+    final String p = u.path.toLowerCase();
+    return p.startsWith('/watch') || p.startsWith('/shorts');
+  }
 
   WebViewController? get controller => _controller;
   int? get androidWebViewId => _androidWebViewId;
@@ -375,6 +389,9 @@ class BrowserEngine extends ChangeNotifier {
             _isLoading = false;
             _progress = 1.0;
             _pullProgress = 0;
+            if (_isYoutubeWatchOrShortsUrl(url)) {
+              _isNavBarVisible = false;
+            }
             _syncVirtualEntryWithWebUrl(url);
             await _injectProtectionAndZoom(url);
             await _refreshNavigationState();
@@ -391,8 +408,16 @@ class BrowserEngine extends ChangeNotifier {
                 nextUrl.isNotEmpty &&
                 nextUrl != 'about:blank' &&
                 !isShowingDownloadsPage) {
+              final String? prevUrl = _currentUrl;
               _currentUrl = nextUrl;
               _syncVirtualEntryWithWebUrl(nextUrl);
+              if (_isYoutubeWatchOrShortsUrl(nextUrl) &&
+                  nextUrl != prevUrl) {
+                setNavBarVisible(false);
+              } else if (_isYoutubeWatchOrShortsUrl(prevUrl) &&
+                  !_isYoutubeWatchOrShortsUrl(nextUrl)) {
+                setNavBarVisible(true);
+              }
               unawaited(_refreshNavigationState());
             }
           },
@@ -893,7 +918,9 @@ class BrowserEngine extends ChangeNotifier {
       if (combined.isNotEmpty) {
         await webController.runJavaScript(combined.toString());
       }
-      await webController.runJavaScript(_buildDevToolsAgentScript());
+      if (_devToolsEnabled) {
+        await webController.runJavaScript(_buildDevToolsAgentScript());
+      }
     } catch (_) {
       // Ignore JS errors on non-HTML responses.
     }
@@ -1142,35 +1169,13 @@ class BrowserEngine extends ChangeNotifier {
     await _controller?.reload();
   }
 
-  Future<String?> startInteractiveElementBlocker() async {
-    final WebViewController? ctrl = _controller;
-    if (ctrl == null || !isShowingWebPage) {
-      return null;
+  Future<void> setDevToolsEnabled(bool enabled) async {
+    _devToolsEnabled = enabled;
+    if (enabled && _controller != null && isShowingWebPage) {
+      try {
+        await _controller!.runJavaScript(_buildDevToolsAgentScript());
+      } catch (_) {}
     }
-    try {
-      await ctrl.runJavaScript(
-        'if(window.__hbStartElementPicker){window.__hbStartElementPicker();}',
-      );
-      for (int i = 0; i < 60; i++) {
-        await Future<void>.delayed(const Duration(milliseconds: 300));
-        final Object raw = await ctrl.runJavaScriptReturningResult(
-          'window.__hbPickedSelector || ""',
-        );
-        String val = raw.toString().trim();
-        if (val.startsWith('"') && val.endsWith('"') && val.length >= 2) {
-          val = val.substring(1, val.length - 1);
-        }
-        if (val == '__CANCEL__') {
-          return null;
-        }
-        if (val.isNotEmpty) {
-          final String host = OmniboxParser.cleanDomain(_currentUrl);
-          await settings.addCustomElementBlockRule(host, val);
-          return val;
-        }
-      }
-    } catch (_) {}
-    return null;
   }
 
   Future<void> reloadOrStop() async {
@@ -1594,9 +1599,15 @@ class BrowserEngine extends ChangeNotifier {
   XMLHttpRequest.prototype.send = function() {
     const t0 = performance.now();
     this.addEventListener('loadend', () => {
+      let sz = 0;
+      try {
+        if (this.responseType === '' || this.responseType === 'text') {
+          sz = this.responseText ? this.responseText.length : 0;
+        }
+      } catch (_) {}
       window.__heavenDevToolsV10.send({
         kind: 'net',
-        entry: { url: this.__hbUrl || '', method: this.__hbMethod || 'GET', type: 'xhr', status: this.status || 0, dur: Math.round(performance.now() - t0), size: (this.responseText ? this.responseText.length : 0) }
+        entry: { url: this.__hbUrl || '', method: this.__hbMethod || 'GET', type: 'xhr', status: this.status || 0, dur: Math.round(performance.now() - t0), size: sz }
       });
     });
     return origSend.apply(this, arguments);

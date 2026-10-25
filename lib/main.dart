@@ -74,6 +74,7 @@ class _HeavenBrowserAppState extends State<HeavenBrowserApp>
   VpnController? _ownedVpn;
   bool _appUnlocked = false;
   bool _verifyingAppLock = false;
+  bool? _lastSyncedBlockScreenshots;
 
   DownloadsController get _effectiveDownloads =>
       widget.downloads ?? _ownedDownloads!;
@@ -146,10 +147,12 @@ class _HeavenBrowserAppState extends State<HeavenBrowserApp>
             HeavenAutoShredMode.appExit) {
           await NativeShieldBridge.instance.clearSiteData(domain: '');
         }
+        final bool initialSecure =
+            _tabManager.activeTab.isIncognito &&
+            !widget.settings.allowPrivateScreenshots;
+        _lastSyncedBlockScreenshots = initialSecure;
         await NativeShieldBridge.instance.updatePrivateWindowSecurity(
-          blockScreenshots:
-              _tabManager.activeTab.isIncognito &&
-              !widget.settings.allowPrivateScreenshots,
+          blockScreenshots: initialSecure,
         );
         await NativeShieldBridge.instance.requestNotificationPermission();
         if (mounted && widget.settings.biometricLockApp && !_appUnlocked) {
@@ -161,11 +164,14 @@ class _HeavenBrowserAppState extends State<HeavenBrowserApp>
 
   void _onPrivacyWindowSettingsChanged() {
     if (!widget.enablePlatformWebView) return;
+    final bool shouldBlock =
+        _tabManager.activeTab.isIncognito &&
+        !widget.settings.allowPrivateScreenshots;
+    if (_lastSyncedBlockScreenshots == shouldBlock) return;
+    _lastSyncedBlockScreenshots = shouldBlock;
     unawaited(
       NativeShieldBridge.instance.updatePrivateWindowSecurity(
-        blockScreenshots:
-            _tabManager.activeTab.isIncognito &&
-            !widget.settings.allowPrivateScreenshots,
+        blockScreenshots: shouldBlock,
       ),
     );
   }

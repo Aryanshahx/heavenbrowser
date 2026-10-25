@@ -172,24 +172,26 @@ public class HeavenShieldPlugin
           + "    setInterval(function(){if(window.__hbInBg){try{window._lact=Date.now();}catch(e){}}},5000);"
           + "  }catch(e){}"
           + "}"
-          + "var lastAtTop=true;var lastInnerSy=0;var lastInnerEmitMs=0;"
+          + "var lastAtTop=true;var lastInnerEmitMs=0;"
           + "window.addEventListener('scroll',function(ev){"
           + "  try{"
           + "    var t=ev&&ev.target;"
           + "    var winSy=window.pageYOffset||document.documentElement.scrollTop||0;"
-          + "    var isInner=(t&&t!==document&&t!==window&&typeof t.scrollTop==='number');"
+          + "    var isVertInner=(t&&t!==document&&t!==window&&typeof t.scrollTop==='number'"
+          + "      &&t.clientHeight>=180&&t.scrollHeight>(t.clientHeight+64));"
           + "    var sy=winSy;"
-          + "    if(isInner&&t.scrollTop>sy){sy=t.scrollTop;}"
+          + "    if(isVertInner&&t.scrollTop>sy){sy=t.scrollTop;}"
           + "    var nowTop=(sy<=6);"
           + "    if(nowTop!==lastAtTop){"
           + "      lastAtTop=nowTop;"
           + "      if(window.HeavenMediaBridge&&window.HeavenMediaBridge.onPageAtTop){window.HeavenMediaBridge.onPageAtTop(nowTop);}"
           + "    }"
-          + "    if(isInner&&winSy<=4&&window.HeavenMediaBridge&&window.HeavenMediaBridge.onInnerScroll){"
-          + "      var dy=t.scrollTop-lastInnerSy;"
-          + "      lastInnerSy=t.scrollTop;"
+          + "    if(isVertInner&&winSy<=4&&window.HeavenMediaBridge&&window.HeavenMediaBridge.onInnerScroll){"
+          + "      var prevSy=(typeof t.__hbLastSy==='number')?t.__hbLastSy:t.scrollTop;"
+          + "      var dy=t.scrollTop-prevSy;"
+          + "      t.__hbLastSy=t.scrollTop;"
           + "      var nowMs=Date.now();"
-          + "      if(Math.abs(dy)>=6&&(nowMs-lastInnerEmitMs)>=55){"
+          + "      if(Math.abs(dy)>=8&&(nowMs-lastInnerEmitMs)>=65){"
           + "        lastInnerEmitMs=nowMs;"
           + "        window.HeavenMediaBridge.onInnerScroll(Math.round(t.scrollTop),Math.round(dy));"
           + "      }"
@@ -199,11 +201,12 @@ public class HeavenShieldPlugin
           + "function reportMedia(el,playing,ended){"
           + "  try{"
           + "    if(!window.HeavenMediaBridge)return;"
+          + "    if(playing&&el&&el.muted&&!window.__hbInBg)return;"
           + "    window.HeavenMediaBridge.onPlaybackState(!!playing,!!ended,document.title||location.hostname||'Heaven',location.hostname||'Heaven');"
           + "  }catch(e){}"
           + "}"
-          + "document.addEventListener('play',function(ev){var t=ev&&ev.target;if(t&&(t.tagName==='VIDEO'||t.tagName==='AUDIO')){t.__hbShouldPlayInBg=true;window.__hbMediaCmdPause=false;reportMedia(t,true,false);}},true);"
-          + "document.addEventListener('playing',function(ev){var t=ev&&ev.target;if(t&&(t.tagName==='VIDEO'||t.tagName==='AUDIO')){t.__hbShouldPlayInBg=true;window.__hbMediaCmdPause=false;reportMedia(t,true,false);}},true);"
+          + "document.addEventListener('play',function(ev){var t=ev&&ev.target;if(t&&(t.tagName==='VIDEO'||t.tagName==='AUDIO')){if(!t.muted)t.__hbShouldPlayInBg=true;window.__hbMediaCmdPause=false;reportMedia(t,true,false);}},true);"
+          + "document.addEventListener('playing',function(ev){var t=ev&&ev.target;if(t&&(t.tagName==='VIDEO'||t.tagName==='AUDIO')){if(!t.muted)t.__hbShouldPlayInBg=true;window.__hbMediaCmdPause=false;reportMedia(t,true,false);}},true);"
           + "document.addEventListener('ended',function(ev){var t=ev&&ev.target;if(t&&(t.tagName==='VIDEO'||t.tagName==='AUDIO')){t.__hbShouldPlayInBg=false;reportMedia(t,false,true);}},true);"
           + "document.addEventListener('pause',function(ev){"
           + "  var t=ev&&ev.target;"
@@ -212,8 +215,7 @@ public class HeavenShieldPlugin
           + "    setTimeout(function(){try{t.play().catch(function(){});}catch(e){}},30);"
           + "    return;"
           + "  }"
-          + "  t.__hbShouldPlayInBg=false;"
-          + "  reportMedia(t,false,!!t.ended);"
+          + "  if(t.__hbShouldPlayInBg){t.__hbShouldPlayInBg=false;reportMedia(t,false,!!t.ended);}"
           + "},true);"
           + "}catch(_){}"
           + "})();";
@@ -322,9 +324,11 @@ public class HeavenShieldPlugin
   private volatile String activeMediaHost = "Heaven";
   private final Map<Long, Boolean> lastNavBarVisibleByWv = new ConcurrentHashMap<>();
   private final Map<Long, Long> lastNavToggleMsByWv = new ConcurrentHashMap<>();
+  private final Map<Long, Long> lastInnerScrollMsByWv = new ConcurrentHashMap<>();
   private final Map<Long, Integer> accumulatedScrollDyByWv = new ConcurrentHashMap<>();
   private final Map<Long, Long> pageLoadingUntilMsByWv = new ConcurrentHashMap<>();
   private final Map<Long, Boolean> pageAtTopByWv = new ConcurrentHashMap<>();
+  private volatile Boolean lastAppliedSecureFlag = null;
   private final Runnable bgKeepAliveLoop =
       new Runnable() {
         @Override
@@ -1283,14 +1287,22 @@ public class HeavenShieldPlugin
   }
 
   private void applyPrivateWindowSecureFlag(boolean secure) {
+    Boolean prev = this.lastAppliedSecureFlag;
+    if (prev != null && prev == secure) {
+      return;
+    }
     final Activity act = this.activity;
     if (act == null) {
       return;
     }
+    this.lastAppliedSecureFlag = secure;
     mainHandler.post(
         () -> {
           try {
             if (act.getWindow() == null) return;
+            int flags = act.getWindow().getAttributes().flags;
+            boolean currentlySecure = (flags & WindowManager.LayoutParams.FLAG_SECURE) != 0;
+            if (currentlySecure == secure) return;
             if (secure) {
               act.getWindow().addFlags(WindowManager.LayoutParams.FLAG_SECURE);
             } else {
@@ -1428,7 +1440,10 @@ public class HeavenShieldPlugin
   }
 
   private void processScrollDeltaForNavBar(final long webViewId, int scrollY, int dy) {
-    if (scrollY <= 18) {
+    if (dy == 0) {
+      return;
+    }
+    if (scrollY <= 8 && dy < 0) {
       accumulatedScrollDyByWv.put(webViewId, 0);
       emitNavBarVisibility(webViewId, true);
       return;
@@ -1454,9 +1469,9 @@ public class HeavenShieldPlugin
       acc += dy;
     }
     accumulatedScrollDyByWv.put(webViewId, acc);
-    if (acc <= -28) {
+    if (acc <= -32) {
       emitNavBarVisibility(webViewId, true);
-    } else if (acc >= 48 && scrollY > 76) {
+    } else if (acc >= 52 && scrollY > 84) {
       emitNavBarVisibility(webViewId, false);
     }
   }
@@ -1475,6 +1490,7 @@ public class HeavenShieldPlugin
 
     @JavascriptInterface
     public void onInnerScroll(int scrollTop, int dy) {
+      lastInnerScrollMsByWv.put(webViewId, SystemClock.elapsedRealtime());
       pageAtTopByWv.put(webViewId, scrollTop <= 6);
       processScrollDeltaForNavBar(webViewId, scrollTop, dy);
     }
@@ -1541,7 +1557,6 @@ public class HeavenShieldPlugin
       if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
         ws.setOffscreenPreRaster(true);
       }
-      webView.setLayerType(View.LAYER_TYPE_HARDWARE, null);
       webView.setOverScrollMode(View.OVER_SCROLL_NEVER);
       webView.onResume();
       webView.resumeTimers();
@@ -1554,8 +1569,18 @@ public class HeavenShieldPlugin
       if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
         webView.setOnScrollChangeListener(
             (v, scrollX, scrollY, oldScrollX, oldScrollY) -> {
+              int dy = scrollY - oldScrollY;
+              if (dy == 0) {
+                return;
+              }
+              Long innerMs = lastInnerScrollMsByWv.get(webViewId);
+              if (innerMs != null
+                  && (SystemClock.elapsedRealtime() - innerMs) < 800L
+                  && scrollY <= 8) {
+                return;
+              }
               pageAtTopByWv.put(webViewId, scrollY <= 6);
-              processScrollDeltaForNavBar(webViewId, scrollY, scrollY - oldScrollY);
+              processScrollDeltaForNavBar(webViewId, scrollY, dy);
             });
       }
 
@@ -1575,8 +1600,9 @@ public class HeavenShieldPlugin
 
   private void installPullToRefreshListener(final WebView webView, final long webViewId) {
     final float density = webView.getResources().getDisplayMetrics().density;
-    final float triggerPx = 88.0f * density;
-    final float touchSlopPx = 14.0f * density;
+    final float triggerPx = 96.0f * density;
+    final float touchSlopPx = 26.0f * density;
+    final float videoPlayerProtectedTopPx = 290.0f * density;
 
     webView.setOnTouchListener(
         new View.OnTouchListener() {
@@ -1587,8 +1613,21 @@ public class HeavenShieldPlugin
           private double lastEmittedProgress = 0.0;
           private long lastEmitMs = 0L;
 
+          private boolean isVideoPlayerTouchZone(float localY) {
+            String u = webView.getUrl();
+            if (u == null) return false;
+            String lower = u.toLowerCase(Locale.US);
+            if (lower.contains("youtube.com/shorts") || lower.contains("youtu.be/")) {
+              return true;
+            }
+            if (lower.contains("youtube.com/watch") && localY <= videoPlayerProtectedTopPx) {
+              return true;
+            }
+            return false;
+          }
+
           private boolean isWebPageAtTop() {
-            if (webView.getScrollY() > 8) {
+            if (webView.getScrollY() > 4) {
               return false;
             }
             Boolean jsTop = pageAtTopByWv.get(webViewId);
@@ -1610,7 +1649,7 @@ public class HeavenShieldPlugin
 
             switch (action) {
               case MotionEvent.ACTION_DOWN:
-                if (isWebPageAtTop()) {
+                if (isWebPageAtTop() && !isVideoPlayerTouchZone(event.getY())) {
                   startY = event.getRawY();
                   startX = event.getRawX();
                   trackingTopPull = true;
@@ -1633,7 +1672,7 @@ public class HeavenShieldPlugin
                 float dy = event.getRawY() - startY;
                 float dx = Math.abs(event.getRawX() - startX);
                 if (!draggingRefresh) {
-                  if (dy > touchSlopPx && dy > dx * 1.3f) {
+                  if (dy > touchSlopPx && dy > dx * 2.0f) {
                     draggingRefresh = true;
                     MotionEvent cancel =
                         MotionEvent.obtain(
@@ -1645,7 +1684,7 @@ public class HeavenShieldPlugin
                             0);
                     webView.onTouchEvent(cancel);
                     cancel.recycle();
-                  } else if (dy < -touchSlopPx || dx > touchSlopPx * 1.8f) {
+                  } else if (dy < -touchSlopPx * 0.6f || dx > touchSlopPx * 1.4f) {
                     trackingTopPull = false;
                   }
                 }

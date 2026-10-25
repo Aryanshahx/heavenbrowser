@@ -914,13 +914,33 @@ void main() {
       expect(find.byType(HeavenShieldQuickSheet), findsOneWidget);
       expect(find.byKey(const Key('quick_shield_site_switch')), findsOneWidget);
       expect(
-        find.byKey(const Key('quick_shield_shred_site_button')),
-        findsOneWidget,
+        find.byKey(const Key('quick_shield_block_element_button')),
+        findsNothing,
       );
+      expect(
+        find.byKey(const Key('quick_shield_shred_site_button')),
+        findsNothing,
+      );
+      expect(
+        find.byKey(const Key('quick_shield_report_broken_button')),
+        findsNothing,
+      );
+      expect(find.text('Block element'), findsNothing);
+      expect(find.text('Shred data'), findsNothing);
+      expect(find.text('Report a broken site'), findsNothing);
       await tester.tap(find.byKey(const Key('quick_shield_customize_button')));
       await tester.pumpAndSettle();
 
       expect(find.byType(HeavenShieldScreen), findsOneWidget);
+      expect(find.byKey(const Key('shield_row_shred')), findsNothing);
+      expect(
+        find.byKey(const Key('shield_switch_store_report_contact')),
+        findsNothing,
+      );
+      expect(
+        find.byKey(const Key('shield_switch_private_element_block')),
+        findsNothing,
+      );
       expect(
         find.byKey(const Key('heaven_shield_blocked_counter')),
         findsOneWidget,
@@ -1011,6 +1031,14 @@ void main() {
       );
       await tester.pumpAndSettle();
       expect(find.byKey(const Key('shield_row_webrtc_policy')), findsOneWidget);
+
+      await tester.scrollUntilVisible(
+        find.byKey(const Key('shield_switch_lock_app')),
+        140,
+        scrollable: shieldScrollable,
+      );
+      await tester.pumpAndSettle();
+      expect(find.byKey(const Key('shield_switch_lock_app')), findsOneWidget);
 
       await tester.scrollUntilVisible(
         find.byKey(const Key('heaven_shield_add_exception_button')),
@@ -1136,6 +1164,9 @@ void main() {
       await tester.pumpAndSettle();
       expect(find.byType(SettingsScreen), findsOneWidget);
       expect(find.text('Ultra Data Saver'), findsNothing);
+      expect(find.text('Privacy & Security'), findsNothing);
+      expect(find.text('HTTPS Upgrade'), findsNothing);
+      expect(find.text('Block Third-Party Cookies'), findsNothing);
       expect(
         find.byKey(const Key('settings_brave_shields_switch')),
         findsNothing,
@@ -1350,7 +1381,10 @@ void main() {
         expect(shieldJava.contains('resetHeavenShieldStats'), isTrue);
         expect(shieldJava.contains('FLAG_DEBUGGABLE'), isTrue);
         expect(shieldJava.contains('setOffscreenPreRaster(true)'), isTrue);
-        expect(shieldJava.contains('LAYER_TYPE_HARDWARE'), isTrue);
+        expect(shieldJava.contains('LAYER_TYPE_HARDWARE'), isFalse);
+        expect(shieldJava.contains('isVideoPlayerTouchZone'), isTrue);
+        expect(shieldJava.contains('lastInnerScrollMsByWv'), isTrue);
+        expect(shieldJava.contains('__hbLastSy'), isTrue);
         expect(shieldJava.contains('focusWebView'), isTrue);
         expect(shieldJava.contains('addDocumentStartJavaScript'), isTrue);
         expect(shieldJava.contains('window.__hbInBg'), isTrue);
@@ -1362,6 +1396,17 @@ void main() {
         ).readAsStringSync();
         expect(shieldEngineJava.contains('interceptSubresource'), isTrue);
         expect(shieldEngineJava.contains('shouldBlockDomain'), isTrue);
+        expect(
+          shieldEngineJava.contains('isFirstPartyYoutubeAdPath'),
+          isTrue,
+        );
+        expect(shieldEngineJava.contains('stripYtAds'), isTrue);
+        expect(shieldEngineJava.contains('adPlacements'), isTrue);
+        expect(shieldEngineJava.contains('__hbShieldRuntimeV21'), isTrue);
+        expect(
+          shieldEngineJava.contains('overflow:auto!important'),
+          isFalse,
+        );
         expect(
           shieldEngineJava.contains('getCompiledDocumentStartBundle'),
           isTrue,

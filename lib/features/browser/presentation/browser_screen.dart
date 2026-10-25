@@ -374,6 +374,7 @@ class _BrowserScreenState extends State<BrowserScreen>
                   }
                   if (_showInspectorPanel) {
                     setState(() => _showInspectorPanel = false);
+                    unawaited(engine.setDevToolsEnabled(false));
                     unawaited(engine.clearInspectorHighlight());
                     return;
                   }
@@ -485,6 +486,22 @@ class _BrowserScreenState extends State<BrowserScreen>
                                   ],
                                 ),
                               ),
+                              if (!showTopNavBar)
+                                Positioned(
+                                  top: 0,
+                                  left: 72,
+                                  right: 72,
+                                  height: 12,
+                                  child: GestureDetector(
+                                    behavior: HitTestBehavior.translucent,
+                                    onVerticalDragUpdate:
+                                        (DragUpdateDetails d) {
+                                          if (d.delta.dy > 5.0) {
+                                            engine.setNavBarVisible(true);
+                                          }
+                                        },
+                                  ),
+                                ),
                               if (showOverlayPanel)
                                 Positioned(
                                   left: 10,
@@ -505,6 +522,7 @@ class _BrowserScreenState extends State<BrowserScreen>
                             engine: engine,
                             onClose: () {
                               setState(() => _showInspectorPanel = false);
+                              unawaited(engine.setDevToolsEnabled(false));
                               unawaited(engine.clearInspectorHighlight());
                             },
                           ),
@@ -876,7 +894,8 @@ class _BrowserScreenState extends State<BrowserScreen>
         } else if (engine.isShowingStartPage) {
           overlayChild = NotificationListener<ScrollUpdateNotification>(
             onNotification: (ScrollUpdateNotification notif) {
-              if (notif.metrics.axis == Axis.vertical &&
+              if (notif.depth == 0 &&
+                  notif.metrics.axis == Axis.vertical &&
                   !_isEditingOmnibox &&
                   !_showLinkActionsCard) {
                 engine.handleWebScrollDelta(
@@ -1704,24 +1723,10 @@ class _BrowserScreenState extends State<BrowserScreen>
           settings: widget.settings,
           currentHost: engine.currentHost,
           activeWebViewId: engine.androidWebViewId,
-          isIncognito: widget.tabManager.isActiveIncognito,
           onReloadActivePage: () {
             if (engine.isShowingWebPage) {
               unawaited(engine.reloadFullPage());
             }
-          },
-          onStartBlockElement: () async {
-            final String? sel = await engine.startInteractiveElementBlocker();
-            if (!mounted || sel == null) return;
-            ScaffoldMessenger.of(this.context)
-              ..clearSnackBars()
-              ..showSnackBar(
-                SnackBar(
-                  content: Text('Blocked element ($sel)'),
-                  behavior: SnackBarBehavior.floating,
-                  duration: const Duration(milliseconds: 1600),
-                ),
-              );
           },
           onOpenFullShieldSettings: _openHeavenShieldScreen,
         );
@@ -2073,9 +2078,9 @@ class _BrowserScreenState extends State<BrowserScreen>
                     ),
                     onTap: () {
                       Navigator.pop(sheetContext);
-                      setState(
-                        () => _showInspectorPanel = !_showInspectorPanel,
-                      );
+                      final bool nextOpen = !_showInspectorPanel;
+                      setState(() => _showInspectorPanel = nextOpen);
+                      unawaited(engine.setDevToolsEnabled(nextOpen));
                     },
                   ),
                   if (hasWebPage)

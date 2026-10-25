@@ -1,9 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
-import 'package:url_launcher/url_launcher.dart';
 
-import '../../core/constants/app_constants.dart';
 import '../../core/theme/app_theme.dart';
 import '../../core/utils/omnibox_parser.dart';
 import '../settings/browser_settings.dart';
@@ -36,11 +34,21 @@ class _HeavenShieldScreenState extends State<HeavenShieldScreen> {
     totalBlocked: 0,
     shieldEnabled: true,
   );
+  bool _activePageNeedsReload = false;
 
   @override
   void initState() {
     super.initState();
     unawaited(_refreshStats());
+  }
+
+  @override
+  void dispose() {
+    if (_activePageNeedsReload && widget.onShieldChangedForActivePage != null) {
+      final VoidCallback reloadCb = widget.onShieldChangedForActivePage!;
+      WidgetsBinding.instance.addPostFrameCallback((_) => reloadCb());
+    }
+    super.dispose();
   }
 
   Future<void> _refreshStats() async {
@@ -52,7 +60,37 @@ class _HeavenShieldScreenState extends State<HeavenShieldScreen> {
   }
 
   void _notifyActivePage() {
-    widget.onShieldChangedForActivePage?.call();
+    // Defer reloading the background WebView until leaving HeavenShieldScreen
+    // so toggling settings never causes Hybrid Composition jank/jitter!
+    _activePageNeedsReload = true;
+  }
+
+  Future<void> _toggleBiometricGuard(
+    BuildContext messengerContext, {
+    required bool nextValue,
+    required Future<void> Function(bool) onApply,
+    required String reason,
+  }) async {
+    final bool ok = await NativeShieldBridge.instance.authenticateBiometric(
+      reason: reason,
+    );
+    if (!ok) {
+      if (messengerContext.mounted) {
+        ScaffoldMessenger.of(messengerContext)
+          ..clearSnackBars()
+          ..showSnackBar(
+            const SnackBar(
+              content: Text(
+                'Set up Fingerprint, Face Unlock, or Screen Lock in Android Settings first.',
+              ),
+              behavior: SnackBarBehavior.floating,
+              duration: Duration(milliseconds: 2200),
+            ),
+          );
+      }
+      return;
+    }
+    await onApply(nextValue);
   }
 
   Future<void> _showHelpDialog(BuildContext context) async {
@@ -63,8 +101,9 @@ class _HeavenShieldScreenState extends State<HeavenShieldScreen> {
           title: const Text('Heaven Shield & privacy'),
           content: const Text(
             'Heaven Shield runs 100% locally on your device with zero cloud telemetry. '
-            'Customize global defaults for ad & tracker blocking, AMP & bounce-URL unwrapping, '
-            'cookie & script rules, WebRTC IP leak protection, social-media embeds, and Auto Shred.',
+            'Customize global defaults for ad & tracker blocking (including YouTube ads), '
+            'AMP & bounce-URL unwrapping, cookie & script rules, WebRTC IP leak protection, '
+            'social-media embeds, and biometric locks.',
           ),
           actions: <Widget>[
             TextButton(
@@ -225,69 +264,6 @@ class _HeavenShieldScreenState extends State<HeavenShieldScreen> {
                     _notifyActivePage();
                   },
                 ),
-            ],
-          ),
-        ),
-      ],
-    );
-  }
-
-  Future<void> _showShredSheet(
-    BuildContext context,
-    BuildContext messengerContext,
-  ) async {
-    final HeavenAutoShredMode current = widget.settings.autoShredMode;
-    final String host = OmniboxParser.cleanDomain(widget.currentHost);
-    await _showModalSelector(
-      context,
-      title: 'Shred & Auto Shred',
-      children: <Widget>[
-        Builder(
-          builder: (BuildContext sheetCtx) => Column(
-            mainAxisSize: MainAxisSize.min,
-            children: <Widget>[
-              for (final HeavenAutoShredMode m in HeavenAutoShredMode.values)
-                _RadioSheetOption<HeavenAutoShredMode>(
-                  title: m.label,
-                  subtitle: m.subtitle,
-                  value: m,
-                  groupValue: current,
-                  onSelect: (HeavenAutoShredMode v) async {
-                    Navigator.pop(sheetCtx);
-                    await widget.settings.setAutoShredMode(v);
-                  },
-                ),
-              if (host.isNotEmpty) ...<Widget>[
-                const Divider(height: 16),
-                SizedBox(
-                  width: double.infinity,
-                  child: FilledButton.tonalIcon(
-                    icon: const Icon(
-                      Icons.delete_forever_rounded,
-                      color: AppTheme.fireCrimson,
-                    ),
-                    label: Text('Shred $host data now'),
-                    onPressed: () async {
-                      Navigator.pop(sheetCtx);
-                      await NativeShieldBridge.instance.clearSiteData(
-                        domain: host,
-                      );
-                      _notifyActivePage();
-                      if (messengerContext.mounted) {
-                        ScaffoldMessenger.of(messengerContext)
-                          ..clearSnackBars()
-                          ..showSnackBar(
-                            SnackBar(
-                              content: Text('Shredded site data for $host'),
-                              behavior: SnackBarBehavior.floating,
-                              duration: const Duration(milliseconds: 1600),
-                            ),
-                          );
-                      }
-                    },
-                  ),
-                ),
-              ],
             ],
           ),
         ),
@@ -836,20 +812,6 @@ class _HeavenShieldScreenState extends State<HeavenShieldScreen> {
                         },
                       ),
                       const SizedBox(height: 4),
-                      _ShieldRowTile.toggle(
-                        tileKey: const Key(
-                          'shield_switch_store_report_contact',
-                        ),
-                        isDark: isDark,
-                        colors: colors,
-                        title:
-                            'Store contact information for future broken site reports',
-                        subtitle:
-                            'If you provide contact info it will be stored for future reports',
-                        value: s.storeBrokenSiteContact,
-                        onChanged: s.setStoreBrokenSiteContact,
-                      ),
-                      const SizedBox(height: 4),
                       _ShieldRowTile.action(
                         tileKey: const Key('shield_row_content_filtering'),
                         isDark: isDark,
@@ -867,29 +829,6 @@ class _HeavenShieldScreenState extends State<HeavenShieldScreen> {
                             ),
                           );
                         },
-                      ),
-                      const SizedBox(height: 4),
-                      _ShieldRowTile.action(
-                        tileKey: const Key('shield_row_shred'),
-                        isDark: isDark,
-                        colors: colors,
-                        title: 'Shred',
-                        subtitle:
-                            'Update Auto Shred and adjust what data is shredded (${s.autoShredMode.label})',
-                        onTap: () => _showShredSheet(innerContext, innerContext),
-                      ),
-                      const SizedBox(height: 4),
-                      _ShieldRowTile.toggle(
-                        tileKey: const Key(
-                          'shield_switch_private_element_block',
-                        ),
-                        isDark: isDark,
-                        colors: colors,
-                        title: 'Allow element blocking in private windows',
-                        subtitle:
-                            'Enables the Shield Block Elements feature in private windows. Note that elements blocked in private windows will also be blocked in non-private windows.',
-                        value: s.allowElementBlockInPrivate,
-                        onChanged: s.setAllowElementBlockInPrivate,
                       ),
 
                       // Section 2: Clear browsing data
@@ -969,15 +908,7 @@ class _HeavenShieldScreenState extends State<HeavenShieldScreen> {
                         subtitle:
                             'Opens links from other apps in a Heaven webview. Note: Heaven must be set as your default browser.',
                         value: s.openExternalLinksInHeaven,
-                        onChanged: (bool v) async {
-                          await s.setOpenExternalLinksInHeaven(v);
-                          if (v) {
-                            unawaited(
-                              NativeShieldBridge.instance
-                                  .openDefaultBrowserSettings(),
-                            );
-                          }
-                        },
+                        onChanged: s.setOpenExternalLinksInHeaven,
                       ),
                       const SizedBox(height: 4),
                       _ShieldRowTile.action(
@@ -1038,9 +969,28 @@ class _HeavenShieldScreenState extends State<HeavenShieldScreen> {
                         title: 'Lock Private tabs when you leave Heaven',
                         subtitle: 'Use screen lock to see open Private tabs',
                         value: s.biometricLockIncognito,
-                        onChanged: (bool v) async {
-                          await s.setBiometricLockIncognito(v);
-                        },
+                        onChanged: (bool v) => _toggleBiometricGuard(
+                          innerContext,
+                          nextValue: v,
+                          onApply: s.setBiometricLockIncognito,
+                          reason: 'Verify biometrics to lock Private tabs',
+                        ),
+                      ),
+                      const SizedBox(height: 4),
+                      _ShieldRowTile.toggle(
+                        tileKey: const Key('shield_switch_lock_app'),
+                        isDark: isDark,
+                        colors: colors,
+                        title: 'Lock Heaven app with biometrics',
+                        subtitle:
+                            'Require fingerprint, face unlock, or PIN on app launch',
+                        value: s.biometricLockApp,
+                        onChanged: (bool v) => _toggleBiometricGuard(
+                          innerContext,
+                          nextValue: v,
+                          onApply: s.setBiometricLockApp,
+                          reason: 'Verify biometrics to configure Heaven Lock',
+                        ),
                       ),
                       const SizedBox(height: 4),
                       _ShieldRowTile.toggle(
@@ -1575,19 +1525,15 @@ class HeavenShieldQuickSheet extends StatefulWidget {
     required this.settings,
     required this.currentHost,
     required this.activeWebViewId,
-    required this.isIncognito,
     required this.onReloadActivePage,
     required this.onOpenFullShieldSettings,
-    this.onStartBlockElement,
   });
 
   final BrowserSettingsController settings;
   final String? currentHost;
   final int? activeWebViewId;
-  final bool isIncognito;
   final VoidCallback onReloadActivePage;
   final VoidCallback onOpenFullShieldSettings;
-  final VoidCallback? onStartBlockElement;
 
   @override
   State<HeavenShieldQuickSheet> createState() => _HeavenShieldQuickSheetState();
@@ -1614,89 +1560,10 @@ class _HeavenShieldQuickSheetState extends State<HeavenShieldQuickSheet> {
     }
   }
 
-  Future<void> _reportBrokenSite(BuildContext context, String host) async {
-    final TextEditingController contactCtrl = TextEditingController(
-      text: widget.settings.brokenSiteContactEmail,
-    );
-    final TextEditingController noteCtrl = TextEditingController();
-
-    await showDialog<void>(
-      context: context,
-      builder: (BuildContext dialogContext) {
-        return AlertDialog(
-          title: const Text('Report a broken site'),
-          content: SingleChildScrollView(
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: <Widget>[
-                Text(
-                  'Site: $host',
-                  style: const TextStyle(fontWeight: FontWeight.w700),
-                ),
-                const SizedBox(height: 10),
-                TextField(
-                  controller: noteCtrl,
-                  maxLines: 2,
-                  decoration: const InputDecoration(
-                    labelText: 'What is broken?',
-                    hintText: 'Video player, login button, layout...',
-                    border: OutlineInputBorder(),
-                    isDense: true,
-                  ),
-                ),
-                const SizedBox(height: 10),
-                TextField(
-                  controller: contactCtrl,
-                  keyboardType: TextInputType.emailAddress,
-                  decoration: const InputDecoration(
-                    labelText: 'Optional contact email',
-                    border: OutlineInputBorder(),
-                    isDense: true,
-                  ),
-                ),
-              ],
-            ),
-          ),
-          actions: <Widget>[
-            TextButton(
-              onPressed: () => Navigator.pop(dialogContext),
-              child: const Text('Cancel'),
-            ),
-            FilledButton(
-              onPressed: () async {
-                final String note = noteCtrl.text.trim();
-                final String contact = contactCtrl.text.trim();
-                await widget.settings.setBrokenSiteContactEmail(contact);
-                if (dialogContext.mounted) {
-                  Navigator.pop(dialogContext);
-                }
-                final Uri mailUri = Uri(
-                  scheme: 'mailto',
-                  path: AppConstants.supportEmail,
-                  queryParameters: <String, String>{
-                    'subject': 'Heaven Shield Broken Site: $host',
-                    'body': 'Site: $host\nIssue: $note\nContact: $contact',
-                  },
-                );
-                if (await canLaunchUrl(mailUri)) {
-                  await launchUrl(mailUri);
-                }
-              },
-              child: const Text('Send Report'),
-            ),
-          ],
-        );
-      },
-    );
-  }
-
   @override
   Widget build(BuildContext context) {
     final ColorScheme colors = Theme.of(context).colorScheme;
     final String host = OmniboxParser.cleanDomain(widget.currentHost);
-    final bool canBlockElements =
-        !widget.isIncognito || widget.settings.allowElementBlockInPrivate;
 
     return SafeArea(
       child: ListenableBuilder(
@@ -1755,72 +1622,7 @@ class _HeavenShieldQuickSheetState extends State<HeavenShieldQuickSheet> {
                     },
                   ),
                 ),
-                const SizedBox(height: 10),
-                if (host.isNotEmpty) ...<Widget>[
-                  Row(
-                    children: <Widget>[
-                      if (canBlockElements &&
-                          widget.onStartBlockElement != null) ...<Widget>[
-                        Expanded(
-                          child: OutlinedButton.icon(
-                            key: const Key('quick_shield_block_element_button'),
-                            onPressed: () {
-                              Navigator.pop(context);
-                              widget.onStartBlockElement!.call();
-                            },
-                            icon: const Icon(
-                              Icons.ads_click_rounded,
-                              size: 17,
-                            ),
-                            label: const Text(
-                              'Block element',
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                              style: TextStyle(fontSize: 12),
-                            ),
-                          ),
-                        ),
-                        const SizedBox(width: 8),
-                      ],
-                      Expanded(
-                        child: OutlinedButton.icon(
-                          key: const Key('quick_shield_shred_site_button'),
-                          onPressed: () async {
-                            Navigator.pop(context);
-                            await NativeShieldBridge.instance.clearSiteData(
-                              domain: host,
-                            );
-                            widget.onReloadActivePage();
-                          },
-                          icon: const Icon(
-                            Icons.delete_sweep_outlined,
-                            size: 17,
-                            color: AppTheme.fireCrimson,
-                          ),
-                          label: const Text(
-                            'Shred data',
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            style: TextStyle(fontSize: 12),
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 6),
-                  Align(
-                    alignment: Alignment.centerRight,
-                    child: TextButton.icon(
-                      key: const Key('quick_shield_report_broken_button'),
-                      onPressed: () => _reportBrokenSite(context, host),
-                      icon: const Icon(Icons.flag_outlined, size: 15),
-                      label: const Text(
-                        'Report a broken site',
-                        style: TextStyle(fontSize: 12),
-                      ),
-                    ),
-                  ),
-                ],
+                const SizedBox(height: 12),
                 SizedBox(
                   width: double.infinity,
                   child: FilledButton.tonalIcon(

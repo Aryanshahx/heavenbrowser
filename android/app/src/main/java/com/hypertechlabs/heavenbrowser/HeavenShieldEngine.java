@@ -34,8 +34,8 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
- * Native Heaven Shield Engine — zero-jank O(1) subresource ad/tracker/social/malware filter and
- * customizable {@code DOCUMENT_START} privacy runtime.
+ * Native Heaven Shield Engine — zero-jank O(1) subresource ad/tracker/social/malware filter,
+ * YouTube JSON player-response ad stripper, and customizable {@code DOCUMENT_START} privacy runtime.
  *
  * <p>Engineered for 120Hz scrolling smoothness: performs zero IPC/MethodChannel calls on
  * subresource interception, maintaining lock-free atomic counters queried passively by Flutter.
@@ -53,7 +53,11 @@ public final class HeavenShieldEngine {
                   "googleadservices.com",
                   "adservice.google.com",
                   "pagead2.googlesyndication.com",
+                  "tpc.googlesyndication.com",
                   "2mdn.net",
+                  "s0.2mdn.net",
+                  "innovid.com",
+                  "fwmrm.net",
                   "adnxs.com",
                   "rubiconproject.com",
                   "pubmatic.com",
@@ -218,6 +222,7 @@ public final class HeavenShieldEngine {
 
   private static final byte[] EMPTY_JS = "/*hb*/".getBytes(StandardCharsets.UTF_8);
   private static final byte[] EMPTY_CSS = "/*hb*/".getBytes(StandardCharsets.UTF_8);
+  private static final byte[] EMPTY_JSON = "{}".getBytes(StandardCharsets.UTF_8);
   private static final byte[] EMPTY_TEXT = new byte[0];
   private static final byte[] TRANSPARENT_GIF =
       new byte[] {
@@ -252,14 +257,13 @@ public final class HeavenShieldEngine {
   private volatile boolean antiFingerprinting = true;
   private volatile boolean blockPopups = true;
 
-  // Step 20: Extended Heaven Shield & Privacy protections
   private volatile boolean autoRedirectAmp = true;
   private volatile boolean preventLanguageFingerprinting = true;
   private volatile boolean allowFacebookEmbeds = true;
   private volatile boolean allowTwitterEmbeds = true;
   private volatile boolean allowLinkedinEmbeds = false;
   private volatile String safeBrowsingMode = "standard"; // enhanced | standard | off
-  private volatile String webrtcPolicy = "default"; // default | public_only | public_and_private | disable_non_proxied_udp
+  private volatile String webrtcPolicy = "default";
   private volatile boolean allowPaymentMethodQuery = true;
   private volatile boolean strictJsSecurity = false;
   private volatile boolean blockSwitchToAppNotices = true;
@@ -518,8 +522,16 @@ public final class HeavenShieldEngine {
       }
     }
 
-    // Never block same-domain first-party subresources
+    // Never block same-domain first-party subresources by domain alone
     if (!normPage.isEmpty() && (cur.equals(normPage) || cur.endsWith("." + normPage))) {
+      return false;
+    }
+
+    // Never block YouTube / Google Video media CDN streams or BotGuard attestation
+    if (cur.endsWith("googlevideo.com")
+        || cur.endsWith("ytimg.com")
+        || cur.endsWith("ggpht.com")
+        || cur.equals("jnn-pa.googleapis.com")) {
       return false;
     }
 
@@ -588,6 +600,23 @@ public final class HeavenShieldEngine {
     return false;
   }
 
+  private static boolean isFirstPartyYoutubeAdPath(String lowerHost, String lowerPath) {
+    boolean isYtHost =
+        lowerHost.equals("youtube.com")
+            || lowerHost.endsWith(".youtube.com")
+            || lowerHost.equals("youtube-nocookie.com")
+            || lowerHost.endsWith(".youtube-nocookie.com");
+    if (!isYtHost) {
+      return false;
+    }
+    return lowerPath.startsWith("/api/stats/ads")
+        || lowerPath.startsWith("/pagead/")
+        || lowerPath.startsWith("/ptracking")
+        || lowerPath.startsWith("/get_midroll_")
+        || lowerPath.startsWith("/pcs/activeview")
+        || lowerPath.contains("/youtubei/v1/player/ad_break");
+  }
+
   private WebResourceResponse interceptSubresource(long webViewId, WebResourceRequest request) {
     if (!this.shieldEnabled || request == null || request.isForMainFrame()) {
       return null;
@@ -602,15 +631,17 @@ public final class HeavenShieldEngine {
     }
     String reqHost = uri.getHost();
     String path = uri.getPath();
+    String lowerHost = reqHost != null ? reqHost.toLowerCase(Locale.US) : "";
+    String lowerPath = path != null ? path.toLowerCase(Locale.US) : "";
 
-    // Third-party Facebook / Twitter embed iframe paths
     boolean blocked = shouldBlockDomain(reqHost, pageHost);
-    if (!blocked && reqHost != null && path != null) {
-      String lowerHost = reqHost.toLowerCase(Locale.US);
-      String lowerPath = path.toLowerCase(Locale.US);
+    if (!blocked && !lowerHost.isEmpty() && !lowerPath.isEmpty()) {
       if (!this.allowFacebookEmbeds
-          && (lowerHost.endsWith("facebook.com"))
+          && lowerHost.endsWith("facebook.com")
           && (lowerPath.startsWith("/plugins/") || lowerPath.contains("/plugins/post.php"))) {
+        blocked = true;
+      } else if (this.blockAdsAndTrackers && isFirstPartyYoutubeAdPath(lowerHost, lowerPath)) {
+        // Block first-party YouTube ad-break & ad-beacon endpoints in BOTH Standard & Aggressive!
         blocked = true;
       } else if (this.blockAdsAndTrackers && this.strictMode) {
         if (lowerPath.contains("/pagead/")
@@ -634,28 +665,30 @@ public final class HeavenShieldEngine {
       prefs.edit().putLong(KEY_TOTAL_BLOCKED, nextTotal).apply();
     }
 
-    String safePath = path != null ? path.toLowerCase(Locale.US) : "";
     Map<String, String> reqHeaders = request.getRequestHeaders();
     String accept = "";
+    String origin = "*";
     if (reqHeaders != null) {
       String rawAccept = reqHeaders.get("Accept");
-      if (rawAccept == null) {
-        rawAccept = reqHeaders.get("accept");
-      }
-      if (rawAccept != null) {
-        accept = rawAccept.toLowerCase(Locale.US);
-      }
+      if (rawAccept == null) rawAccept = reqHeaders.get("accept");
+      if (rawAccept != null) accept = rawAccept.toLowerCase(Locale.US);
+      String rawOrigin = reqHeaders.get("Origin");
+      if (rawOrigin == null) rawOrigin = reqHeaders.get("origin");
+      if (rawOrigin != null && !rawOrigin.isEmpty()) origin = rawOrigin;
     }
 
-    Map<String, String> respHeaders = new HashMap<>(4);
-    respHeaders.put("Access-Control-Allow-Origin", "*");
+    Map<String, String> respHeaders = new HashMap<>(6);
+    respHeaders.put("Access-Control-Allow-Origin", origin);
+    if (!"*".equals(origin)) {
+      respHeaders.put("Access-Control-Allow-Credentials", "true");
+    }
     respHeaders.put("Cache-Control", "no-store");
 
-    if (safePath.endsWith(".png")
-        || safePath.endsWith(".gif")
-        || safePath.endsWith(".jpg")
-        || safePath.endsWith(".jpeg")
-        || safePath.endsWith(".webp")
+    if (lowerPath.endsWith(".png")
+        || lowerPath.endsWith(".gif")
+        || lowerPath.endsWith(".jpg")
+        || lowerPath.endsWith(".jpeg")
+        || lowerPath.endsWith(".webp")
         || accept.startsWith("image/")) {
       return new WebResourceResponse(
           "image/gif",
@@ -665,11 +698,11 @@ public final class HeavenShieldEngine {
           respHeaders,
           new ByteArrayInputStream(TRANSPARENT_GIF));
     }
-    if (safePath.endsWith(".css") || accept.startsWith("text/css")) {
+    if (lowerPath.endsWith(".css") || accept.startsWith("text/css")) {
       return new WebResourceResponse(
           "text/css", "utf-8", 200, "OK", respHeaders, new ByteArrayInputStream(EMPTY_CSS));
     }
-    if (safePath.endsWith(".js")
+    if (lowerPath.endsWith(".js")
         || accept.contains("javascript")
         || accept.contains("ecmascript")) {
       return new WebResourceResponse(
@@ -680,14 +713,24 @@ public final class HeavenShieldEngine {
           respHeaders,
           new ByteArrayInputStream(EMPTY_JS));
     }
+    if (accept.contains("application/json") || lowerPath.contains("/youtubei/v1/")) {
+      return new WebResourceResponse(
+          "application/json",
+          "utf-8",
+          200,
+          "OK",
+          respHeaders,
+          new ByteArrayInputStream(EMPTY_JSON));
+    }
     return new WebResourceResponse(
-        "text/plain", "utf-8", 200, "OK", respHeaders, new ByteArrayInputStream(EMPTY_TEXT));
+        "text/plain", "utf-8", 204, "No Content", respHeaders, new ByteArrayInputStream(EMPTY_TEXT));
   }
 
   /**
    * Builds and caches a single zero-jank {@code DOCUMENT_START} bundle containing:
-   * 1) Top safe-area inset for the floating zero-pull search bar, and
-   * 2) All customizable Heaven Shield & Privacy protections (respecting per-site allowlist).
+   * 1) Non-destructive top safe-area inset for document pages (skipping fixed-player SPAs like YouTube),
+   * 2) YouTube pre-roll/mid-roll/Shorts JSON ad stripper + unmuted instant playback guard, and
+   * 3) All customizable Heaven Shield & Privacy protections (respecting per-site allowlist).
    */
   public String getCompiledDocumentStartBundle() {
     String existing = cachedDocumentStartBundle;
@@ -695,52 +738,29 @@ public final class HeavenShieldEngine {
       return existing;
     }
 
-    StringBuilder sb = new StringBuilder(16384);
+    StringBuilder sb = new StringBuilder(20480);
     sb.append("(function(){try{");
-    sb.append("if(window.__hbShieldRuntimeV20)return;window.__hbShieldRuntimeV20=true;");
+    sb.append("if(window.__hbShieldRuntimeV21)return;window.__hbShieldRuntimeV21=true;");
+    sb.append("var rawHost=(location.hostname||'').toLowerCase();");
+    sb.append("var host=rawHost.replace(/^(www\\.|m\\.)/,'');");
+    sb.append("var isYt=(host==='youtube.com'||host.endsWith('.youtube.com')||host==='youtu.be');");
 
-    // 1. Static top breathing space for the floating zero-pull top bar (never mutates on scroll!)
+    // 1. Safe top breathing space for standard document pages (NEVER distorts 100vh/overflow:hidden SPAs or YouTube's fixed player!)
     sb.append(
         "function applyTopSafeSpace(){"
-            + "if(window!==window.top)return;"
+            + "if(window!==window.top||isYt)return;"
             + "if(document.getElementById('__hb_top_safe_css'))return;"
+            + "var de=document.documentElement;var bd=document.body;"
+            + "if(de&&bd){"
+            + "  var csH=window.getComputedStyle(de);var csB=window.getComputedStyle(bd);"
+            + "  if(csH.overflowY==='hidden'||csB.overflowY==='hidden')return;"
+            + "}"
             + "var st=document.createElement('style');st.id='__hb_top_safe_css';"
-            + "st.textContent='html:not(:fullscreen){padding-top:52px!important;scroll-padding-top:56px!important;box-sizing:border-box;}';"
+            + "st.textContent='html:not(:fullscreen) body{padding-top:50px;scroll-padding-top:54px;}';"
             + "(document.head||document.documentElement).appendChild(st);"
             + "}"
-            + "if(document.head||document.documentElement){applyTopSafeSpace();}"
-            + "else{document.addEventListener('DOMContentLoaded',applyTopSafeSpace,{once:true});}");
-
-    // 2. Interactive Element Blocker helper (invoked on-demand from Heaven Shield Quick Sheet)
-    sb.append(
-        "window.__hbStartElementPicker=function(){"
-            + "if(window.__hbPickerActive)return;"
-            + "window.__hbPickerActive=true;"
-            + "window.__hbPickedSelector='';"
-            + "var badge=document.createElement('div');"
-            + "badge.id='__hb_picker_hud';"
-            + "badge.style.cssText='position:fixed;bottom:20px;left:50%;transform:translateX(-50%);background:#0B162C;color:#fff;padding:10px 16px;border-radius:999px;font:600 13px system-ui,sans-serif;z-index:2147483647;box-shadow:0 6px 24px rgba(0,0,0,.45);border:1.5px solid #10B981;';"
-            + "badge.textContent='Tap any annoying element to block it (or tap here to cancel)';"
-            + "(document.body||document.documentElement).appendChild(badge);"
-            + "var cleanup=function(){window.__hbPickerActive=false;if(badge.parentNode)badge.parentNode.removeChild(badge);document.removeEventListener('click',onTap,true);};"
-            + "var buildSel=function(el){"
-            + "if(!el||el===document.body||el===document.documentElement)return '';"
-            + "if(el.id&&/^[a-zA-Z][\\w-]*$/.test(el.id))return '#'+el.id;"
-            + "var tag=el.tagName.toLowerCase();"
-            + "var cls=(typeof el.className==='string')?el.className.trim().split(/\\s+/).filter(function(c){return /^[a-zA-Z][\\w-]{2,40}$/.test(c);}).slice(0,2):[];"
-            + "if(cls.length)return tag+'.'+cls.join('.');"
-            + "return tag;"
-            + "};"
-            + "var onTap=function(ev){"
-            + "ev.preventDefault();ev.stopPropagation();"
-            + "if(ev.target===badge){window.__hbPickedSelector='__CANCEL__';cleanup();return;}"
-            + "var sel=buildSel(ev.target);"
-            + "if(sel){try{ev.target.style.setProperty('display','none','important');}catch(_){}}"
-            + "window.__hbPickedSelector=sel||'__CANCEL__';"
-            + "cleanup();"
-            + "};"
-            + "document.addEventListener('click',onTap,true);"
-            + "};");
+            + "if(document.readyState==='loading'){document.addEventListener('DOMContentLoaded',applyTopSafeSpace,{once:true});}"
+            + "else{applyTopSafeSpace();}");
 
     // Global WebRTC IP Handling Policy (applies even if site ad-shield is paused)
     if ("disable_non_proxied_udp".equals(this.webrtcPolicy)
@@ -783,10 +803,10 @@ public final class HeavenShieldEngine {
               + "Object.defineProperty(navigator,'globalPrivacyControl',{get:function(){return true;},configurable:true});}catch(_){}");
     }
 
-    // Strict JavaScript security (disable WebAssembly & SharedArrayBuffer JIT attack surfaces on HTTP/untrusted)
+    // Strict JavaScript security (HTTP / untrusted origins only — never break YouTube WASM decoder)
     if (this.strictJsSecurity) {
       sb.append(
-          "try{if(location.protocol==='http:'||window.top===window){"
+          "try{if(!isYt&&location.protocol==='http:'){"
               + "Object.defineProperty(window,'SharedArrayBuffer',{get:function(){return undefined;},configurable:true});"
               + "Object.defineProperty(window,'WebAssembly',{get:function(){return undefined;},configurable:true});"
               + "}}catch(_){}");
@@ -798,7 +818,7 @@ public final class HeavenShieldEngine {
           "function hideSwitchAppPrompts(){"
               + "if(document.getElementById('__hb_no_app_nag'))return;"
               + "var s=document.createElement('style');s.id='__hb_no_app_nag';"
-              + "s.textContent='.smartbanner,#smartbanner,[id*=\"branch-banner\"],.branch-journeys-top,[class*=\"SmartBanner\"],[data-testid=\"xpromo-app-selector\"],shreddit-experience-tree,[class*=\"OpenInAppBanner\"]{display:none!important;}';"
+              + "s.textContent='.smartbanner,#smartbanner,[id*=\"branch-banner\"],.branch-journeys-top,[class*=\"SmartBanner\"],[data-testid=\"xpromo-app-selector\"],shreddit-experience-tree,[class*=\"OpenInAppBanner\"],ytm-mealbar-promo-renderer{display:none!important;}';"
               + "(document.head||document.documentElement).appendChild(s);"
               + "var metas=document.querySelectorAll('meta[name=\"apple-itunes-app\"],meta[name=\"google-play-app\"]');"
               + "for(var i=0;i<metas.length;i++){if(metas[i].parentNode)metas[i].parentNode.removeChild(metas[i]);}"
@@ -806,6 +826,60 @@ public final class HeavenShieldEngine {
               + "if(document.head||document.documentElement){hideSwitchAppPrompts();}"
               + "else{document.addEventListener('DOMContentLoaded',hideSwitchAppPrompts,{once:true});}");
     }
+
+    // YouTube Smooth Playback & Unmute Guard (prevents m.youtube.com feed-preview mute carry-over!)
+    sb.append(
+        "if(isYt){(function(){"
+            + "var lastTapMs=Date.now();"
+            + "var userMutedVid='';"
+            + "var autoHandledVid='';"
+            + "function curVidKey(){"
+            + "  try{"
+            + "    var p=location.pathname||'';"
+            + "    if(p.indexOf('/shorts/')===0)return 's:'+p.slice(8).split('/')[0];"
+            + "    if(p.indexOf('/watch')===0)return 'w:'+(new URLSearchParams(location.search).get('v')||p);"
+            + "  }catch(_){}"
+            + "  return '';"
+            + "}"
+            + "window.addEventListener('pointerdown',function(ev){"
+            + "  lastTapMs=Date.now();"
+            + "  try{"
+            + "    var el=ev&&ev.target;"
+            + "    for(var d=0;el&&d<5;d++,el=el.parentElement){"
+            + "      var lbl=((el.getAttribute&&el.getAttribute('aria-label'))||el.className||'').toString().toLowerCase();"
+            + "      if(lbl.indexOf('mute')!==-1&&lbl.indexOf('unmute')===-1){userMutedVid=curVidKey();break;}"
+            + "      if(lbl.indexOf('unmute')!==-1){userMutedVid='';break;}"
+            + "    }"
+            + "  }catch(_){}"
+            + "},{capture:true,passive:true});"
+            + "function ensureWatchAudioAndPlay(vid){"
+            + "  try{"
+            + "    if(!vid||vid.tagName!=='VIDEO')return;"
+            + "    var vk=curVidKey();"
+            + "    if(!vk)return;"
+            + "    var player=document.getElementById('movie_player');"
+            + "    if(player&&(player.classList.contains('ad-showing')||player.classList.contains('ad-interrupting')))return;"
+            + "    if(userMutedVid!==vk&&vid.muted&&vid.currentTime<1.5){"
+            + "      vid.muted=false;"
+            + "      if(vid.volume===0)vid.volume=1.0;"
+            + "      var unmuteBtn=document.querySelector('.ytp-unmute:not([style*=\"display: none\"]),button[aria-label*=\"Unmute\" i],button[aria-label*=\"Tap to unmute\" i]');"
+            + "      if(unmuteBtn){try{unmuteBtn.click();}catch(_){}}"
+            + "    }"
+            + "    if(autoHandledVid!==vk&&vid.paused&&!vid.ended&&vid.currentTime<0.6&&(Date.now()-lastTapMs)<6500){"
+            + "      autoHandledVid=vk;"
+            + "      vid.play().catch(function(){});"
+            + "    }"
+            + "  }catch(_){}"
+            + "}"
+            + "document.addEventListener('loadedmetadata',function(e){ensureWatchAudioAndPlay(e.target);},true);"
+            + "document.addEventListener('canplay',function(e){if(curVidKey()&&autoHandledVid!==curVidKey())ensureWatchAudioAndPlay(e.target);},true);"
+            + "document.addEventListener('volumechange',function(e){"
+            + "  var v=e&&e.target;"
+            + "  if(v&&v.tagName==='VIDEO'&&v.muted&&curVidKey()&&userMutedVid!==curVidKey()&&v.currentTime<0.8&&(Date.now()-lastTapMs)<3500){"
+            + "    v.muted=false;if(v.volume===0)v.volume=1.0;"
+            + "  }"
+            + "},true);"
+            + "})();}");
 
     if (!this.shieldEnabled) {
       sb.append("}catch(_){}})();");
@@ -815,7 +889,6 @@ public final class HeavenShieldEngine {
     }
 
     // Per-site allowlist check inside JS
-    sb.append("var host=(location.hostname||'').toLowerCase().replace(/^(www\\.|m\\.)/,'');");
     if (!this.disabledHosts.isEmpty()) {
       sb.append("var allow=[");
       boolean first = true;
@@ -830,6 +903,98 @@ public final class HeavenShieldEngine {
               + "var ah=allow[i];"
               + "if(host===ah||host.endsWith('.'+ah))return;"
               + "}");
+    }
+
+    // 2. YouTube First-Party Ad Blocker (strips adPlacements/playerAds/adSlots BEFORE player boots + skips any fallback ad!)
+    if (this.blockAdsAndTrackers) {
+      sb.append(
+          "if(isYt){(function(){"
+              + "function stripYtAds(o,depth){"
+              + "  if(!o||typeof o!=='object'||(depth||0)>7)return o;"
+              + "  var d=(depth||0)+1;"
+              + "  if(Array.isArray(o)){"
+              + "    for(var i=o.length-1;i>=0;i--){"
+              + "      var it=o[i];"
+              + "      if(it&&typeof it==='object'&&(it.adSlotRenderer||it.promotedSparklesWebRenderer||it.compactPromotedVideoRenderer||it.inFeedAdLayoutRenderer||it.statementBannerRenderer||it.brandVideoSingletonRenderer)){"
+              + "        o.splice(i,1);"
+              + "      }else{stripYtAds(it,d);}"
+              + "    }"
+              + "    return o;"
+              + "  }"
+              + "  delete o.adPlacements;"
+              + "  delete o.playerAds;"
+              + "  delete o.adSlots;"
+              + "  delete o.adBreakHeartbeatParams;"
+              + "  if(o.auxiliaryUi&&o.auxiliaryUi.messageRenderers){delete o.auxiliaryUi.messageRenderers.bkaEnforcementMessageViewModel;}"
+              + "  if(o.playabilityStatus&&o.playabilityStatus.errorScreen&&o.playabilityStatus.errorScreen.adBlockerMessagingRenderer){"
+              + "    delete o.playabilityStatus.errorScreen;"
+              + "    o.playabilityStatus.status='OK';"
+              + "  }"
+              + "  if(o.playerResponse&&typeof o.playerResponse==='object'){stripYtAds(o.playerResponse,d);}"
+              + "  if(o.contents){stripYtAds(o.contents,d);}"
+              + "  if(o.onResponseReceivedEndpoints){stripYtAds(o.onResponseReceivedEndpoints,d);}"
+              + "  if(o.engagementPanels){stripYtAds(o.engagementPanels,d);}"
+              + "  if(o.entries&&Array.isArray(o.entries)){"
+              + "    for(var j=o.entries.length-1;j>=0;j--){"
+              + "      var en=o.entries[j];"
+              + "      if(en&&en.command&&en.command.reelWatchEndpoint&&en.command.reelWatchEndpoint.adClientParams){o.entries.splice(j,1);}"
+              + "    }"
+              + "  }"
+              + "  return o;"
+              + "}"
+              + "function hookYtProp(prop){"
+              + "  try{"
+              + "    var curVal=window[prop];"
+              + "    if(curVal&&typeof curVal==='object')stripYtAds(curVal,0);"
+              + "    Object.defineProperty(window,prop,{"
+              + "      configurable:true,"
+              + "      get:function(){return curVal;},"
+              + "      set:function(v){curVal=(v&&typeof v==='object')?stripYtAds(v,0):v;}"
+              + "    });"
+              + "  }catch(_){}"
+              + "}"
+              + "hookYtProp('ytInitialPlayerResponse');"
+              + "hookYtProp('ytInitialData');"
+              + "var origParse=JSON.parse;"
+              + "JSON.parse=function(txt){"
+              + "  var parsed=origParse.apply(this,arguments);"
+              + "  if(parsed&&typeof parsed==='object'&&typeof txt==='string'&&("
+              + "      txt.indexOf('\"adPlacements\"')!==-1||txt.indexOf('\"playerAds\"')!==-1||"
+              + "      txt.indexOf('\"adSlots\"')!==-1||txt.indexOf('\"adSlotRenderer\"')!==-1||"
+              + "      txt.indexOf('\"bkaEnforcementMessageViewModel\"')!==-1||txt.indexOf('\"adClientParams\"')!==-1)){"
+              + "    try{stripYtAds(parsed,0);}catch(_){}"
+              + "  }"
+              + "  return parsed;"
+              + "};"
+              + "if(window.Response&&Response.prototype&&Response.prototype.json){"
+              + "  var origResJson=Response.prototype.json;"
+              + "  Response.prototype.json=function(){"
+              + "    return origResJson.apply(this,arguments).then(function(data){"
+              + "      if(data&&typeof data==='object'){try{stripYtAds(data,0);}catch(_){}}"
+              + "      return data;"
+              + "    });"
+              + "  };"
+              + "}"
+              + "function sweepYtAdDom(){"
+              + "  try{"
+              + "    var pl=document.getElementById('movie_player')||document.querySelector('.html5-video-player');"
+              + "    if(!pl)return;"
+              + "    var skip=pl.querySelector('.ytp-ad-skip-button,.ytp-ad-skip-button-modern,.ytp-skip-ad-button,.ytm-skip-ad-button');"
+              + "    if(skip){try{skip.click();}catch(_){}}"
+              + "    if(pl.classList.contains('ad-showing')||pl.classList.contains('ad-interrupting')){"
+              + "      var v=pl.querySelector('video');"
+              + "      if(v&&isFinite(v.duration)&&v.duration>0&&v.currentTime<v.duration-0.1){"
+              + "        v.currentTime=v.duration;"
+              + "      }"
+              + "    }"
+              + "  }catch(_){}"
+              + "}"
+              + "document.addEventListener('DOMContentLoaded',function(){"
+              + "  sweepYtAdDom();"
+              + "  var mo=new MutationObserver(sweepYtAdDom);"
+              + "  mo.observe(document.documentElement,{attributes:true,subtree:true,attributeFilter:['class']});"
+              + "},{once:true});"
+              + "})();}");
     }
 
     // Auto-redirect AMP pages (<html amp> canonical link redirect)
@@ -847,29 +1012,35 @@ public final class HeavenShieldEngine {
               + "}catch(_){}},{once:true});");
     }
 
-    // Anti-Adblock Killer defuser
+    // Anti-Adblock Killer defuser (NEVER set google_ad_status=1 on YouTube — it causes YouTube to wait for IMA SDK!)
     if (this.filterAntiAdblockKiller && this.blockAdsAndTrackers) {
       sb.append(
-          "try{window.canRunAds=true;window.isAdBlockActive=false;window.google_ad_status=1;}catch(_){}");
+          "if(!isYt){try{window.canRunAds=true;window.isAdBlockActive=false;}catch(_){}}");
     }
 
-    // Cosmetic Ad, Cookie Banner, Fanboy Annoyances & Custom CSS Element Hiding
+    // Cosmetic Ad, YouTube Feed Ad, Cookie Banner, Fanboy Annoyances & Custom CSS Element Hiding
     if (this.blockAdsAndTrackers || this.blockCookieBanners || !this.customCssRules.isEmpty()) {
-      StringBuilder css = new StringBuilder(2048);
+      StringBuilder css = new StringBuilder(2560);
       if (this.blockAdsAndTrackers) {
         css.append(
             "ins.adsbygoogle,[id^='div-gpt-ad'],[data-ad-slot],[data-google-query-id],"
                 + "iframe[src*='doubleclick.net'],iframe[src*='googlesyndication.com'],"
-                + ".taboola-widget,.OUTBRAIN,[id*='taboola-']{display:none!important;}");
+                + ".taboola-widget,.OUTBRAIN,[id*='taboola-'],"
+                + "ytm-promoted-sparkles-web-renderer,ytm-promoted-video-renderer,"
+                + "ytm-companion-ad-renderer,ytm-statement-banner-renderer,ytm-ad-slot-renderer,"
+                + "ytd-ad-slot-renderer,ytd-in-feed-ad-layout-renderer,ytd-promoted-sparkles-web-renderer,"
+                + "ytd-display-ad-renderer,ytd-player-legacy-desktop-watch-ads-renderer,"
+                + "#masthead-ad,.ytp-ad-overlay-container,.ytp-ad-message-container,"
+                + ".ytp-featured-product{display:none!important;}");
       }
       if (this.blockCookieBanners) {
+        // NOTE: Never force root overflow rules — that creates dual scrollbars & jitter on SPAs!
         css.append(
             "#onetrust-consent-sdk,#onetrust-banner-sdk,.onetrust-pc-dark-filter,"
                 + "#CybotCookiebotDialog,#CybotCookiebotDialogBodyUnderlay,"
                 + ".qc-cmp2-container,#sp_message_container,.fc-consent-root,"
                 + "#didomi-host,.cc-window,.cc-banner,[id*='cookie-banner'],"
-                + "[class*='cookie-consent-banner']{display:none!important;}"
-                + "html,body{overflow:auto!important;}");
+                + "[class*='cookie-consent-banner']{display:none!important;}");
       }
       if (this.filterFanboyAnnoyances) {
         css.append(
@@ -883,10 +1054,10 @@ public final class HeavenShieldEngine {
       }
       if (css.length() > 0) {
         sb.append(
-            "function applyShieldCss(){"
-                + "if(document.getElementById('__hb_shield_css'))return;"
-                + "var s=document.createElement('style');s.id='__hb_shield_css';"
-                + "s.textContent='")
+                "function applyShieldCss(){"
+                    + "if(document.getElementById('__hb_shield_css'))return;"
+                    + "var s=document.createElement('style');s.id='__hb_shield_css';"
+                    + "s.textContent='")
             .append(escapeJsSingleQuote(css.toString()))
             .append(
                 "';(document.head||document.documentElement).appendChild(s);"
@@ -894,7 +1065,6 @@ public final class HeavenShieldEngine {
                     + "if(document.head||document.documentElement){applyShieldCss();}"
                     + "else{document.addEventListener('DOMContentLoaded',applyShieldCss,{once:true});}");
       }
-      // Host-specific custom CSS rules (including per-site blocked elements)
       boolean hasHostSpecific = false;
       for (HostCssRule r : this.customCssRules) {
         if (!r.host.isEmpty()) {
@@ -922,18 +1092,15 @@ public final class HeavenShieldEngine {
       }
     }
 
-    // URL Tracking Parameter Cleaner inside History API (SPA navigations)
+    // URL Tracking Parameter Cleaner (deferred to DOMContentLoaded & skipped on YouTube SPA router)
     if (this.cleanTrackingUrls) {
       sb.append(
-          "(function(){"
-              + "var rx=/^(utm_[a-z0-9_]+|fbclid|gclid|dclid|msclkid|twclid|mc_cid|mc_eid|igshid|_hsenc|_hsmi|yclid|vero_id|mkt_tok|si)$/i;"
-              + "function cleanHref(u){try{"
-              + "var p=new URL(u,location.href);var ch=false;"
+          "if(!isYt){document.addEventListener('DOMContentLoaded',function(){try{"
+              + "var rx=/^(utm_[a-z0-9_]+|fbclid|gclid|dclid|msclkid|twclid|mc_cid|mc_eid|igshid|_hsenc|_hsmi|yclid|vero_id|mkt_tok)$/i;"
+              + "var p=new URL(location.href);var ch=false;"
               + "Array.from(p.searchParams.keys()).forEach(function(k){if(rx.test(k)){p.searchParams.delete(k);ch=true;}});"
-              + "return ch?p.toString():u;}catch(_){return u;}}"
-              + "var cleaned=cleanHref(location.href);"
-              + "if(cleaned!==location.href&&history.replaceState){history.replaceState(history.state,'',cleaned);}"
-              + "})();");
+              + "if(ch&&history.replaceState){history.replaceState(history.state,'',p.toString());}"
+              + "}catch(_){}},{once:true});}");
     }
 
     // Anti-Fingerprinting Guard
