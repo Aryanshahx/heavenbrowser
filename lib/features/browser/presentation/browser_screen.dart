@@ -313,49 +313,24 @@ class _BrowserScreenState extends State<BrowserScreen>
     }
   }
 
-  PageRoute<T> _smoothRoute<T>(Widget page, {bool zoomStyle = false}) {
-    return PageRouteBuilder<T>(
-      transitionDuration: const Duration(milliseconds: 210),
-      reverseTransitionDuration: const Duration(milliseconds: 185),
-      pageBuilder:
-          (
-            BuildContext context,
-            Animation<double> animation,
-            Animation<double> secondaryAnimation,
-          ) => page,
-      transitionsBuilder:
-          (
-            BuildContext context,
-            Animation<double> animation,
-            Animation<double> secondaryAnimation,
-            Widget child,
-          ) {
-            final Animation<double> curved = CurvedAnimation(
-              parent: animation,
-              curve: Curves.easeOutCubic,
-              reverseCurve: Curves.easeInCubic,
-            );
-            if (zoomStyle) {
-              return FadeTransition(
-                opacity: curved,
-                child: ScaleTransition(
-                  scale: Tween<double>(begin: 0.94, end: 1.0).animate(curved),
-                  child: child,
-                ),
-              );
-            }
-            return FadeTransition(
-              opacity: curved,
-              child: SlideTransition(
-                position: Tween<Offset>(
-                  begin: const Offset(0.04, 0.0),
-                  end: Offset.zero,
-                ).animate(curved),
-                child: child,
-              ),
-            );
-          },
-    );
+  int _coveredSubScreenDepth = 0;
+
+  Future<T?> _pushSubScreen<T>(Widget page) async {
+    if (!mounted) return null;
+    _coveredSubScreenDepth += 1;
+    if (_coveredSubScreenDepth == 1) {
+      unawaited(NativeShieldBridge.instance.setActiveWebViewCovered(true));
+    }
+    try {
+      return await Navigator.of(
+        context,
+      ).push<T>(MaterialPageRoute<T>(builder: (_) => page));
+    } finally {
+      _coveredSubScreenDepth = math.max(0, _coveredSubScreenDepth - 1);
+      if (_coveredSubScreenDepth == 0) {
+        unawaited(NativeShieldBridge.instance.setActiveWebViewCovered(false));
+      }
+    }
   }
 
   @override
@@ -393,13 +368,6 @@ class _BrowserScreenState extends State<BrowserScreen>
           child: ListenableBuilder(
             listenable: engine,
             builder: (BuildContext context, _) {
-              final bool showTopNavBar =
-                  _isEditingOmnibox ||
-                  engine.isShowingDownloadsPage ||
-                  engine.isNavBarVisible;
-              final double topBarHeight = _isEditingOmnibox ? 59.0 : 55.0;
-              final double findBarHeight = _showFindBar ? 48.0 : 0.0;
-
               return PopScope<void>(
                 canPop:
                     !engine.canGoBack &&
@@ -433,59 +401,47 @@ class _BrowserScreenState extends State<BrowserScreen>
                   body: SafeArea(
                     child: Column(
                       children: <Widget>[
+                        // Fixed Search Bar Area — stays visible (never auto-hides)
+                        // and sits strictly ABOVE websites (never overlays websites).
+                        RepaintBoundary(
+                          key: const Key('top_navigation_bar_wrapper'),
+                          child: ColoredBox(
+                            color: effectiveTheme.scaffoldBackgroundColor,
+                            child: _buildCommandCapsuleBar(
+                              context,
+                              colors,
+                              engine,
+                            ),
+                          ),
+                        ),
+                        if (_showFindBar) _buildFindBar(colors),
                         Expanded(
-                          child: _NonOverlayCollapsibleBrowserViewport(
-                            barVisible: showTopNavBar,
-                            barHeight: topBarHeight,
-                            findBarHeight: findBarHeight,
-                            topBar: ColoredBox(
-                              key: const Key('top_navigation_bar_wrapper'),
-                              color: effectiveTheme.scaffoldBackgroundColor,
-                              child: _buildCommandCapsuleBar(
-                                context,
-                                colors,
-                                engine,
+                          key: const Key('browser_website_viewport_box'),
+                          child: Stack(
+                            children: <Widget>[
+                              Positioned.fill(
+                                child: RepaintBoundary(
+                                  child: ValueListenableBuilder<int>(
+                                    valueListenable:
+                                        widget.tabManager.viewportRevision,
+                                    builder: (BuildContext context, int _, _) {
+                                      return _buildTabsViewport(colors);
+                                    },
+                                  ),
+                                ),
                               ),
-                            ),
-                            findBar: _showFindBar
-                                ? _buildFindBar(colors)
-                                : null,
-                            progressBar: engine.isLoading
-                                ? RepaintBoundary(
-                                    child: IgnorePointer(
-                                      child: LinearProgressIndicator(
-                                        value:
-                                            engine.progress > 0 &&
-                                                engine.progress < 1
-                                            ? engine.progress
-                                            : null,
-                                        minHeight: 2.5,
-                                        backgroundColor: Colors.transparent,
-                                      ),
-                                    ),
-                                  )
-                                : null,
-                            viewport: RepaintBoundary(
-                              child: ValueListenableBuilder<int>(
-                                valueListenable:
-                                    widget.tabManager.viewportRevision,
-                                builder: (BuildContext context, int _, _) {
-                                  return _AnimatedTabSwitchViewport(
-                                    epoch: widget.tabManager.tabTransitionEpoch,
-                                    direction: widget
-                                        .tabManager
-                                        .lastTransitionDirection,
-                                    child: _buildTabsViewport(colors),
-                                  );
-                                },
-                              ),
-                            ),
-                            overlays: <Widget>[
+                              if (engine.isLoading)
+                                Positioned(
+                                  top: 0,
+                                  left: 0,
+                                  right: 0,
+                                  child: _SinglePassLoadingBar(
+                                    progress: engine.progress,
+                                  ),
+                                ),
                               if (engine.pullProgress > 0.02)
                                 Positioned(
-                                  top:
-                                      (showTopNavBar ? topBarHeight + 8 : 12) +
-                                      (engine.pullProgress * 46),
+                                  top: 10 + (engine.pullProgress * 46),
                                   left: 0,
                                   right: 0,
                                   child: Center(
@@ -526,27 +482,11 @@ class _BrowserScreenState extends State<BrowserScreen>
                                     ),
                                   ),
                                 ),
-                              if (!showTopNavBar)
-                                Positioned(
-                                  top: 0,
-                                  left: 72,
-                                  right: 72,
-                                  height: 12,
-                                  child: GestureDetector(
-                                    behavior: HitTestBehavior.translucent,
-                                    onVerticalDragUpdate:
-                                        (DragUpdateDetails d) {
-                                          if (d.delta.dy > 5.0) {
-                                            engine.setNavBarVisible(true);
-                                          }
-                                        },
-                                  ),
-                                ),
                               if (showOverlayPanel)
                                 Positioned(
                                   left: 10,
                                   right: 10,
-                                  top: topBarHeight + 4,
+                                  top: 4,
                                   child: _buildOmniboxOverlayPanel(
                                     context,
                                     colors,
@@ -996,38 +936,23 @@ class _BrowserScreenState extends State<BrowserScreen>
             topOverlayInset: 0,
           );
         } else if (engine.isShowingStartPage) {
-          overlayChild = NotificationListener<ScrollUpdateNotification>(
-            onNotification: (ScrollUpdateNotification notif) {
-              if (notif.depth == 0 &&
-                  notif.metrics.axis == Axis.vertical &&
-                  !_isEditingOmnibox &&
-                  !_showLinkActionsCard) {
-                engine.handleWebScrollDelta(
-                  notif.metrics.pixels,
-                  notif.scrollDelta ?? 0.0,
-                );
-              }
-              return false;
-            },
-            child: StartPage(
-              settings: widget.settings,
-              isIncognito: tab.isIncognito,
-              searchService: widget.searchService,
-              newsService: widget.newsService,
-              interests: widget.interests,
-              topOverlayInset: 0,
-              onSelectUrl: (String input) => engine.loadUserEntry(input),
-              onOpenInNewTab: (String url) => widget.tabManager.openNewTab(
-                incognito: false,
-                initialInput: url,
-              ),
-              onOpenInIncognitoTab: (String url) =>
-                  widget.tabManager.openNewTab(
-                    incognito: true,
-                    initialInput: url,
-                  ),
-              onVoiceSearch: _triggerVoiceSearch,
+          overlayChild = StartPage(
+            settings: widget.settings,
+            isIncognito: tab.isIncognito,
+            searchService: widget.searchService,
+            newsService: widget.newsService,
+            interests: widget.interests,
+            topOverlayInset: 0,
+            onSelectUrl: (String input) => engine.loadUserEntry(input),
+            onOpenInNewTab: (String url) => widget.tabManager.openNewTab(
+              incognito: false,
+              initialInput: url,
             ),
+            onOpenInIncognitoTab: (String url) => widget.tabManager.openNewTab(
+              incognito: true,
+              initialInput: url,
+            ),
+            onVoiceSearch: _triggerVoiceSearch,
           );
         } else if (engine.errorMessage != null) {
           overlayChild = Center(
@@ -1807,17 +1732,12 @@ class _BrowserScreenState extends State<BrowserScreen>
   Future<void> _openTabsScreen() async {
     await widget.tabManager.captureTabPreview(widget.tabManager.activeTab);
     if (!mounted) return;
-    await Navigator.of(context).push(
-      _smoothRoute<void>(
-        TabsScreen(tabManager: widget.tabManager),
-        zoomStyle: true,
-      ),
-    );
+    await _pushSubScreen<void>(TabsScreen(tabManager: widget.tabManager));
   }
 
   void _openLibraryScreen({required int initialTabIndex}) {
-    Navigator.of(context).push(
-      _smoothRoute<void>(
+    unawaited(
+      _pushSubScreen<void>(
         LibraryScreen(
           settings: widget.settings,
           initialTabIndex: initialTabIndex,
@@ -1832,15 +1752,13 @@ class _BrowserScreenState extends State<BrowserScreen>
   }
 
   void _openVpnScreen() {
-    Navigator.of(context).push(
-      _smoothRoute<void>(HeavenVpnScreen(vpn: widget.vpn)),
-    );
+    unawaited(_pushSubScreen<void>(HeavenVpnScreen(vpn: widget.vpn)));
   }
 
   void _openHeavenShieldScreen() {
     final BrowserEngine engine = _activeEngine;
-    Navigator.of(context).push(
-      _smoothRoute<void>(
+    unawaited(
+      _pushSubScreen<void>(
         HeavenShieldScreen(
           settings: widget.settings,
           tabManager: widget.tabManager,
@@ -2167,8 +2085,8 @@ class _BrowserScreenState extends State<BrowserScreen>
                           accent: colors.primary,
                           onTap: () {
                             Navigator.pop(sheetContext);
-                            Navigator.of(context).push(
-                              _smoothRoute<void>(
+                            unawaited(
+                              _pushSubScreen<void>(
                                 SettingsScreen(
                                   settings: widget.settings,
                                   tabManager: widget.tabManager,
@@ -2276,10 +2194,9 @@ class _BrowserScreenState extends State<BrowserScreen>
                     title: const Text('Notifications'),
                     onTap: () {
                       Navigator.pop(sheetContext);
-                      Navigator.of(context).push(
-                        MaterialPageRoute<void>(
-                          builder: (_) =>
-                              NotificationsScreen(settings: widget.settings),
+                      unawaited(
+                        _pushSubScreen<void>(
+                          NotificationsScreen(settings: widget.settings),
                         ),
                       );
                     },
@@ -2302,10 +2219,9 @@ class _BrowserScreenState extends State<BrowserScreen>
                     ),
                     onTap: () {
                       Navigator.pop(sheetContext);
-                      Navigator.of(context).push(
-                        MaterialPageRoute<void>(
-                          builder: (_) =>
-                              LanguagesScreen(settings: widget.settings),
+                      unawaited(
+                        _pushSubScreen<void>(
+                          LanguagesScreen(settings: widget.settings),
                         ),
                       );
                     },
@@ -2706,233 +2622,33 @@ class _CreateShortcutDialogState extends State<_CreateShortcutDialog> {
   }
 }
 
-/// Positions the search bar area cleanly ABOVE the website viewport (never
-/// overlaying website content when visible), and smoothly slides + fades the
-/// search bar upward out of view when scrolling down.
-///
-/// Anti-jitter optimization for old & weak Android phones:
-/// While the 220ms collapse/expand animation is in flight, the website
-/// viewport's layout height stays constant (`totalHeight - findBarHeight`) and
-/// only its GPU Y-offset moves (`barHeight * factor`), preventing Chromium
-/// `WebView.onSizeChanged` 60fps relayout thrashing. Once fully expanded at
-/// rest (`factor >= 0.999`), the viewport settles cleanly to
-/// `totalHeight - barHeight - findBarHeight`.
-class _NonOverlayCollapsibleBrowserViewport extends StatefulWidget {
-  const _NonOverlayCollapsibleBrowserViewport({
-    required this.barVisible,
-    required this.barHeight,
-    required this.findBarHeight,
-    required this.topBar,
-    required this.viewport,
-    required this.overlays,
-    this.findBar,
-    this.progressBar,
-  });
+/// Smooth determinate single-pass loading progress bar.
+/// Never falls back to an indeterminate (`value: null`) sweep and never resets
+/// backwards across search redirects, preventing double-sweep restarts.
+class _SinglePassLoadingBar extends StatelessWidget {
+  const _SinglePassLoadingBar({required this.progress});
 
-  final bool barVisible;
-  final double barHeight;
-  final double findBarHeight;
-  final Widget topBar;
-  final Widget? findBar;
-  final Widget? progressBar;
-  final Widget viewport;
-  final List<Widget> overlays;
-
-  @override
-  State<_NonOverlayCollapsibleBrowserViewport> createState() =>
-      _NonOverlayCollapsibleBrowserViewportState();
-}
-
-class _NonOverlayCollapsibleBrowserViewportState
-    extends State<_NonOverlayCollapsibleBrowserViewport>
-    with SingleTickerProviderStateMixin {
-  late final AnimationController _controller;
-  late final Animation<double> _factor;
-
-  @override
-  void initState() {
-    super.initState();
-    _controller = AnimationController(
-      vsync: this,
-      value: widget.barVisible ? 1.0 : 0.0,
-      duration: const Duration(milliseconds: 220),
-      reverseDuration: const Duration(milliseconds: 235),
-    );
-    _factor = CurvedAnimation(
-      parent: _controller,
-      curve: Curves.easeOutCubic,
-      reverseCurve: Curves.easeInCubic,
-    );
-  }
-
-  @override
-  void didUpdateWidget(covariant _NonOverlayCollapsibleBrowserViewport old) {
-    super.didUpdateWidget(old);
-    if (widget.barVisible != old.barVisible) {
-      if (widget.barVisible) {
-        _controller.forward();
-      } else {
-        _controller.reverse();
-      }
-    }
-  }
-
-  @override
-  void dispose() {
-    _controller.dispose();
-    super.dispose();
-  }
+  final double progress;
 
   @override
   Widget build(BuildContext context) {
-    return LayoutBuilder(
-      builder: (BuildContext context, BoxConstraints constraints) {
-        final double totalH = constraints.maxHeight;
-        final double totalW = constraints.maxWidth;
-        return ClipRect(
-          child: AnimatedBuilder(
-            animation: _controller,
-            child: widget.viewport,
-            builder: (BuildContext context, Widget? cachedViewport) {
-              final double t = _factor.value.clamp(0.0, 1.0);
-              final double visibleBarOffset = widget.barHeight * t;
-              final double contentTop = visibleBarOffset + widget.findBarHeight;
-              final bool settledVisible =
-                  !_controller.isAnimating && t >= 0.999;
-              final double viewportHeight = math.max(
-                0.0,
-                settledVisible
-                    ? (totalH - contentTop)
-                    : (totalH - widget.findBarHeight),
-              );
-
-              return Stack(
-                clipBehavior: Clip.hardEdge,
-                children: <Widget>[
-                  Positioned(
-                    key: const Key('browser_website_viewport_box'),
-                    top: contentTop,
-                    left: 0,
-                    width: totalW,
-                    height: viewportHeight,
-                    child: cachedViewport!,
-                  ),
-                  if (widget.findBar != null)
-                    Positioned(
-                      top: visibleBarOffset,
-                      left: 0,
-                      right: 0,
-                      height: widget.findBarHeight,
-                      child: widget.findBar!,
-                    ),
-                  Positioned(
-                    top: -widget.barHeight * (1.0 - t),
-                    left: 0,
-                    right: 0,
-                    height: widget.barHeight,
-                    child: RepaintBoundary(
-                      child: Opacity(
-                        opacity: t,
-                        child: IgnorePointer(
-                          ignoring: t < 0.05,
-                          child: SizedBox(
-                            height: widget.barHeight,
-                            child: widget.topBar,
-                          ),
-                        ),
-                      ),
-                    ),
-                  ),
-                  if (widget.progressBar != null)
-                    Positioned(
-                      top: contentTop,
-                      left: 0,
-                      right: 0,
-                      child: widget.progressBar!,
-                    ),
-                  ...widget.overlays,
-                ],
-              );
-            },
-          ),
-        );
-      },
-    );
-  }
-}
-
-/// Lightweight GPU-only slide + scale + fade animation whenever the user opens,
-/// closes, or switches tabs (`epoch` increments). Keeps `IndexedStack` alive as
-/// a single cached `child` so `WebViewWidget` state is never recreated!
-class _AnimatedTabSwitchViewport extends StatefulWidget {
-  const _AnimatedTabSwitchViewport({
-    required this.epoch,
-    required this.direction,
-    required this.child,
-  });
-
-  final int epoch;
-  final int direction;
-  final Widget child;
-
-  @override
-  State<_AnimatedTabSwitchViewport> createState() =>
-      _AnimatedTabSwitchViewportState();
-}
-
-class _AnimatedTabSwitchViewportState extends State<_AnimatedTabSwitchViewport>
-    with SingleTickerProviderStateMixin {
-  late final AnimationController _controller;
-  late final Animation<double> _curved;
-  int _activeDirection = 1;
-
-  @override
-  void initState() {
-    super.initState();
-    _controller = AnimationController(
-      vsync: this,
-      value: 1.0,
-      duration: const Duration(milliseconds: 190),
-    );
-    _curved = CurvedAnimation(parent: _controller, curve: Curves.easeOutCubic);
-  }
-
-  @override
-  void didUpdateWidget(covariant _AnimatedTabSwitchViewport oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    if (widget.epoch != oldWidget.epoch) {
-      _activeDirection = widget.direction == 0 ? 1 : widget.direction;
-      _controller.forward(from: 0.0);
-    }
-  }
-
-  @override
-  void dispose() {
-    _controller.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return AnimatedBuilder(
-      animation: _curved,
-      child: widget.child,
-      builder: (BuildContext context, Widget? child) {
-        final double t = _curved.value;
-        if (t >= 0.999) {
-          return child!;
-        }
-        final double dx = (1.0 - t) * 20.0 * _activeDirection;
-        final double scale = 0.985 + (0.015 * t);
-        final double opacity = (0.76 + (0.24 * t)).clamp(0.0, 1.0);
-        return Opacity(
-          opacity: opacity,
-          child: Transform.translate(
-            offset: Offset(dx, 0.0),
-            child: Transform.scale(scale: scale, child: child),
-          ),
-        );
-      },
+    final double target = progress.clamp(0.12, 1.0);
+    return RepaintBoundary(
+      child: IgnorePointer(
+        child: TweenAnimationBuilder<double>(
+          key: const Key('browser_single_pass_loading_bar'),
+          tween: Tween<double>(begin: 0.10, end: target),
+          duration: const Duration(milliseconds: 140),
+          curve: Curves.easeOutCubic,
+          builder: (BuildContext context, double animatedValue, _) {
+            return LinearProgressIndicator(
+              value: animatedValue.clamp(0.0, 1.0),
+              minHeight: 2.5,
+              backgroundColor: Colors.transparent,
+            );
+          },
+        ),
+      ),
     );
   }
 }

@@ -48,6 +48,25 @@ jobs:
       - name: Run Flutter tests
         run: flutter test
 
+      - name: Configure Play Store Upload Signing Key
+        if: github.event_name != 'pull_request'
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          if [ -n "$ANDROID_KEYSTORE_BASE64" ] && [ -n "$ANDROID_KEYSTORE_PASSWORD" ] && [ -n "$ANDROID_KEY_ALIAS" ] && [ -n "$ANDROID_KEY_PASSWORD" ]; then
+            printf '%s' "$ANDROID_KEYSTORE_BASE64" | tr -d ' \n\r\t' | base64 --decode > android/app/upload-keystore.jks
+            printf 'storePassword=%s\nkeyPassword=%s\nkeyAlias=%s\nstoreFile=upload-keystore.jks\n' \
+              "$ANDROID_KEYSTORE_PASSWORD" \
+              "$ANDROID_KEY_PASSWORD" \
+              "$ANDROID_KEY_ALIAS" > android/key.properties
+            echo "Play Store release signing enabled (upload-keystore.jks)."
+          else
+            echo "Play Store signing secrets not set yet; building with fallback signing."
+          fi
+
       - name: Build Release APK
         if: github.event_name != 'pull_request'
         run: flutter build apk --release
@@ -79,3 +98,7 @@ jobs:
           path: dist-artifacts/HeavenBrowser-v0.0.1-release.aab
           archive: false
           if-no-files-found: error
+
+      - name: Clean up temporary signing files
+        if: always()
+        run: rm -f android/app/upload-keystore.jks android/key.properties

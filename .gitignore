@@ -44,6 +44,9 @@ app.*.map.json
 /android/app/profile
 /android/app/release
 
-# Local update scripts and CI staging
+# Local update scripts, private Play Store signing keys, and CI staging
 /*.sh
 /dist-artifacts/
+*.jks
+*.keystore
+key.properties

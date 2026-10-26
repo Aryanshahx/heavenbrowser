@@ -7,6 +7,7 @@ import io.flutter.embedding.engine.FlutterEngine
 
 class MainActivity : FlutterActivity() {
     private var shieldPlugin: HeavenShieldPlugin? = null
+    private var refreshRateConfigured: Boolean = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -32,7 +33,6 @@ class MainActivity : FlutterActivity() {
 
     override fun onResume() {
         super.onResume()
-        enableHighestRefreshRate()
         shieldPlugin?.onActivityResumed()
     }
 
@@ -42,7 +42,8 @@ class MainActivity : FlutterActivity() {
     }
 
     private fun enableHighestRefreshRate() {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) return
+        if (refreshRateConfigured || Build.VERSION.SDK_INT < Build.VERSION_CODES.M) return
+        refreshRateConfigured = true
         try {
             val currentDisplay = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
                 display

@@ -18,90 +18,12 @@ class TabsScreen extends StatefulWidget {
     BuildContext context, {
     required TabManagerController tabManager,
     required String tabId,
-  }) async {
-    final TextEditingController nameCtrl = TextEditingController(
-      text: 'Research',
-    );
-    int selectedColor = TabGroup.palette.first;
-    final TabGroup? created = await showDialog<TabGroup>(
+  }) {
+    return showDialog<TabGroup>(
       context: context,
-      builder: (BuildContext dialogContext) {
-        return StatefulBuilder(
-          builder: (BuildContext context, StateSetter setModalState) {
-            return AlertDialog(
-              title: const Text('Add Tab to New Group'),
-              content: Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: <Widget>[
-                  TextField(
-                    controller: nameCtrl,
-                    autofocus: true,
-                    decoration: const InputDecoration(
-                      labelText: 'Group Name',
-                      border: OutlineInputBorder(),
-                      isDense: true,
-                    ),
-                  ),
-                  const SizedBox(height: 14),
-                  const Text(
-                    'Group Color',
-                    style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700),
-                  ),
-                  const SizedBox(height: 8),
-                  Wrap(
-                    spacing: 10,
-                    children: <Widget>[
-                      for (final int c in TabGroup.palette)
-                        GestureDetector(
-                          onTap: () => setModalState(() => selectedColor = c),
-                          child: Container(
-                            width: 30,
-                            height: 30,
-                            decoration: BoxDecoration(
-                              color: Color(c),
-                              shape: BoxShape.circle,
-                              border: selectedColor == c
-                                  ? Border.all(color: Colors.white, width: 2.5)
-                                  : null,
-                            ),
-                            child: selectedColor == c
-                                ? const Icon(
-                                    Icons.check_rounded,
-                                    size: 16,
-                                    color: Colors.white,
-                                  )
-                                : null,
-                          ),
-                        ),
-                    ],
-                  ),
-                ],
-              ),
-              actions: <Widget>[
-                TextButton(
-                  onPressed: () => Navigator.pop(dialogContext),
-                  child: const Text('Cancel'),
-                ),
-                FilledButton(
-                  onPressed: () {
-                    final TabGroup g = tabManager.createGroupAndAddTab(
-                      name: nameCtrl.text,
-                      tabId: tabId,
-                      colorValue: selectedColor,
-                    );
-                    Navigator.pop(dialogContext, g);
-                  },
-                  child: const Text('Create Group'),
-                ),
-              ],
-            );
-          },
-        );
-      },
+      builder: (BuildContext _) =>
+          _CreateTabGroupDialog(tabManager: tabManager, tabId: tabId),
     );
-    nameCtrl.dispose();
-    return created;
   }
 
   @override
@@ -112,7 +34,9 @@ class _TabsScreenState extends State<TabsScreen> {
   late bool _viewingIncognito;
   String? _selectedGroupId;
   bool _authenticatingIncognito = false;
-  final Set<String> _closingTabIds = <String>{};
+  String? _draggingTabId;
+  final ScrollController _gridScrollController = ScrollController();
+  final GlobalKey _gridViewportKey = GlobalKey();
 
   @override
   void initState() {
@@ -120,15 +44,46 @@ class _TabsScreenState extends State<TabsScreen> {
     _viewingIncognito = widget.tabManager.isActiveIncognito;
   }
 
-  Future<void> _animateAndCloseTab(String tabId) async {
-    if (_closingTabIds.contains(tabId)) return;
-    HapticFeedback.selectionClick();
-    setState(() => _closingTabIds.add(tabId));
-    await Future<void>.delayed(const Duration(milliseconds: 170));
-    if (mounted) {
-      _closingTabIds.remove(tabId);
+  @override
+  void dispose() {
+    _gridScrollController.dispose();
+    super.dispose();
+  }
+
+  void _handleDragAutoScroll(DragUpdateDetails details) {
+    if (!_gridScrollController.hasClients) return;
+    final BuildContext? boxCtx = _gridViewportKey.currentContext;
+    if (boxCtx == null) return;
+    final RenderBox? renderBox = boxCtx.findRenderObject() as RenderBox?;
+    if (renderBox == null || !renderBox.hasSize) return;
+
+    final Offset local = renderBox.globalToLocal(details.globalPosition);
+    const double edgeZone = 68.0;
+    const double maxStep = 14.0;
+    final ScrollPosition pos = _gridScrollController.position;
+
+    if (local.dy < edgeZone && pos.pixels > pos.minScrollExtent) {
+      final double factor = ((edgeZone - local.dy) / edgeZone).clamp(0.15, 1.0);
+      _gridScrollController.jumpTo(
+        (pos.pixels - (maxStep * factor)).clamp(
+          pos.minScrollExtent,
+          pos.maxScrollExtent,
+        ),
+      );
+    } else if (local.dy > renderBox.size.height - edgeZone &&
+        pos.pixels < pos.maxScrollExtent) {
+      final double factor =
+          ((local.dy - (renderBox.size.height - edgeZone)) / edgeZone).clamp(
+            0.15,
+            1.0,
+          );
+      _gridScrollController.jumpTo(
+        (pos.pixels + (maxStep * factor)).clamp(
+          pos.minScrollExtent,
+          pos.maxScrollExtent,
+        ),
+      );
     }
-    await widget.tabManager.closeTab(tabId);
   }
 
   Future<void> _unlockIncognitoWithBiometrics() async {
@@ -153,163 +108,253 @@ class _TabsScreenState extends State<TabsScreen> {
 
   @override
   Widget build(BuildContext context) {
-    return ListenableBuilder(
-      listenable: widget.tabManager,
-      builder: (BuildContext context, _) {
-        final ThemeData theme = _viewingIncognito
-            ? AppTheme.incognitoTheme
-            : Theme.of(context);
-        final ColorScheme colors = theme.colorScheme;
-        final bool isDark = theme.brightness == Brightness.dark;
-        final List<BrowserTab> allModeTabs = _viewingIncognito
-            ? widget.tabManager.incognitoTabs
-            : widget.tabManager.normalTabs;
-        final List<BrowserTab> tabs =
-            (!_viewingIncognito && _selectedGroupId != null)
-            ? allModeTabs
-                  .where((BrowserTab t) => t.groupId == _selectedGroupId)
-                  .toList(growable: false)
-            : allModeTabs;
-        final bool incognitoLocked =
-            _viewingIncognito && widget.tabManager.isIncognitoLocked;
+    return ScaffoldMessenger(
+      child: ListenableBuilder(
+        listenable: widget.tabManager,
+        builder: (BuildContext context, _) {
+          final ThemeData theme = _viewingIncognito
+              ? AppTheme.incognitoTheme
+              : Theme.of(context);
+          final ColorScheme colors = theme.colorScheme;
+          final bool isDark = theme.brightness == Brightness.dark;
+          final List<BrowserTab> allModeTabs = _viewingIncognito
+              ? widget.tabManager.incognitoTabs
+              : widget.tabManager.normalTabs;
+          final List<BrowserTab> tabs =
+              (!_viewingIncognito && _selectedGroupId != null)
+              ? allModeTabs
+                    .where((BrowserTab t) => t.groupId == _selectedGroupId)
+                    .toList(growable: false)
+              : allModeTabs;
+          final bool incognitoLocked =
+              _viewingIncognito && widget.tabManager.isIncognitoLocked;
 
-        return Theme(
-          data: theme,
-          child: Scaffold(
-            appBar: AppBar(
-              leading: IconButton(
-                tooltip: 'Back to browser',
-                icon: const Icon(Icons.close_rounded),
-                onPressed: () => Navigator.pop(context),
-              ),
-              titleSpacing: 0,
-              title: Padding(
-                padding: const EdgeInsets.only(right: 8),
-                child: _buildModeToggleBar(colors, isDark),
-              ),
-            ),
-            body: SafeArea(
-              child: Column(
-                children: <Widget>[
-                  if (!_viewingIncognito)
-                    _buildGroupFilterBar(context, colors, isDark),
-                  if (_viewingIncognito)
-                    Container(
-                      margin: const EdgeInsets.fromLTRB(16, 4, 16, 8),
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 14,
-                        vertical: 10,
-                      ),
-                      decoration: BoxDecoration(
-                        color: AppTheme.incognitoCyan.withValues(alpha: 0.12),
-                        borderRadius: BorderRadius.circular(14),
-                        border: Border.all(
-                          color: AppTheme.incognitoCyan.withValues(alpha: 0.35),
-                        ),
-                      ),
-                      child: Row(
-                        children: <Widget>[
-                          const Icon(
-                            Icons.shield_moon_rounded,
-                            size: 18,
-                            color: AppTheme.incognitoCyan,
-                          ),
-                          const SizedBox(width: 10),
-                          const Expanded(
-                            child: Text(
-                              'Incognito Mode: History, search queries, and site usage are never saved.',
-                              style: TextStyle(fontSize: 12, height: 1.35),
-                            ),
-                          ),
-                          if (widget.tabManager.settings.biometricLockIncognito &&
-                              !incognitoLocked)
-                            IconButton(
-                              tooltip: 'Lock Incognito Tabs',
-                              visualDensity: VisualDensity.compact,
-                              icon: const Icon(
-                                Icons.lock_outline_rounded,
-                                size: 18,
-                                color: AppTheme.incognitoCyan,
+          return Theme(
+            data: theme,
+            child: Scaffold(
+              appBar: AppBar(
+                leading: IconButton(
+                  tooltip: 'Back to browser',
+                  icon: const Icon(Icons.close_rounded),
+                  onPressed: () => Navigator.pop(context),
+                ),
+                titleSpacing: 0,
+                title: Padding(
+                  padding: const EdgeInsets.only(right: 4),
+                  child: _buildModeToggleBar(colors, isDark),
+                ),
+                actions: <Widget>[
+                  if (!incognitoLocked)
+                    PopupMenuButton<String>(
+                      key: const Key('tabs_appbar_more_button'),
+                      tooltip: 'More tab options',
+                      icon: const Icon(Icons.more_vert_rounded),
+                      onSelected: (String action) async {
+                        if (action == 'add_to_new_group') {
+                          final BrowserTab targetTab =
+                              (!_viewingIncognito &&
+                                  !widget.tabManager.activeTab.isIncognito)
+                              ? widget.tabManager.activeTab
+                              : (tabs.isNotEmpty
+                                    ? tabs.first
+                                    : widget.tabManager.activeTab);
+                          await TabsScreen.showCreateGroupDialog(
+                            context,
+                            tabManager: widget.tabManager,
+                            tabId: targetTab.id,
+                          );
+                        } else if (action == 'new_tab') {
+                          await widget.tabManager.openNewTab(
+                            incognito: _viewingIncognito,
+                          );
+                          if (context.mounted) {
+                            Navigator.pop(context);
+                          }
+                        } else if (action == 'close_all') {
+                          await widget.tabManager.closeAllTabsByMode(
+                            incognito: _viewingIncognito,
+                          );
+                        }
+                      },
+                      itemBuilder: (BuildContext context) =>
+                          <PopupMenuEntry<String>>[
+                            if (!_viewingIncognito && tabs.isNotEmpty)
+                              const PopupMenuItem<String>(
+                                key: Key('tabs_appbar_add_new_group_item'),
+                                value: 'add_to_new_group',
+                                child: Row(
+                                  children: <Widget>[
+                                    Icon(Icons.workspaces_outline, size: 19),
+                                    SizedBox(width: 10),
+                                    Expanded(
+                                      child: Text('Add tab to new group'),
+                                    ),
+                                  ],
+                                ),
                               ),
-                              onPressed: () =>
-                                  widget.tabManager.markIncognitoUnlocked(false),
+                            PopupMenuItem<String>(
+                              value: 'new_tab',
+                              child: Row(
+                                children: <Widget>[
+                                  Icon(
+                                    _viewingIncognito
+                                        ? Icons.shield_moon_rounded
+                                        : Icons.add_rounded,
+                                    size: 19,
+                                  ),
+                                  const SizedBox(width: 10),
+                                  Expanded(
+                                    child: Text(
+                                      _viewingIncognito
+                                          ? 'New Incognito tab'
+                                          : 'New tab',
+                                    ),
+                                  ),
+                                ],
+                              ),
                             ),
-                        ],
-                      ),
+                            if (tabs.isNotEmpty)
+                              const PopupMenuItem<String>(
+                                value: 'close_all',
+                                child: Row(
+                                  children: <Widget>[
+                                    Icon(Icons.delete_sweep_outlined, size: 19),
+                                    SizedBox(width: 10),
+                                    Expanded(child: Text('Close all tabs')),
+                                  ],
+                                ),
+                              ),
+                          ],
                     ),
-                  Expanded(
-                    child: AnimatedSwitcher(
-                      duration: const Duration(milliseconds: 200),
-                      switchInCurve: Curves.easeOutCubic,
-                      switchOutCurve: Curves.easeInCubic,
-                      child: incognitoLocked
-                          ? KeyedSubtree(
-                              key: const ValueKey<String>('tabs_locked'),
-                              child: _buildBiometricLockState(colors),
-                            )
-                          : (tabs.isEmpty
-                                ? KeyedSubtree(
-                                    key: ValueKey<String>(
-                                      'tabs_empty_$_viewingIncognito',
-                                    ),
-                                    child: _buildEmptyState(context, colors),
-                                  )
-                                : KeyedSubtree(
-                                    key: ValueKey<String>(
-                                      'tabs_grid_${_viewingIncognito}_${_selectedGroupId ?? 'all'}',
-                                    ),
-                                    child: LayoutBuilder(
-                                      builder:
-                                          (
-                                            BuildContext context,
-                                            BoxConstraints constraints,
-                                          ) {
-                                            final int columns =
-                                                constraints.maxWidth >= 620
-                                                ? 3
-                                                : 2;
-                                            return GridView.builder(
-                                              padding:
-                                                  const EdgeInsets.fromLTRB(
-                                                    12,
-                                                    8,
-                                                    12,
-                                                    18,
-                                                  ),
-                                              gridDelegate:
-                                                  SliverGridDelegateWithFixedCrossAxisCount(
-                                                    crossAxisCount: columns,
-                                                    mainAxisSpacing: 12,
-                                                    crossAxisSpacing: 12,
-                                                    childAspectRatio: 0.58,
-                                                  ),
-                                              itemCount: tabs.length,
-                                              itemBuilder:
-                                                  (
-                                                    BuildContext context,
-                                                    int index,
-                                                  ) {
-                                                    return _buildFullTabWindowCard(
-                                                      context,
-                                                      colors,
-                                                      isDark,
-                                                      tabs[index],
-                                                      index,
-                                                    );
-                                                  },
-                                            );
-                                          },
-                                    ),
-                                  )),
-                    ),
-                  ),
-                  if (!incognitoLocked) _buildBottomBar(context, colors, tabs),
                 ],
               ),
+              body: SafeArea(
+                child: Column(
+                  children: <Widget>[
+                    if (!_viewingIncognito)
+                      _buildGroupFilterBar(context, colors, isDark),
+                    if (_viewingIncognito)
+                      Container(
+                        margin: const EdgeInsets.fromLTRB(16, 4, 16, 8),
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 14,
+                          vertical: 10,
+                        ),
+                        decoration: BoxDecoration(
+                          color: AppTheme.incognitoCyan.withValues(alpha: 0.12),
+                          borderRadius: BorderRadius.circular(14),
+                          border: Border.all(
+                            color: AppTheme.incognitoCyan.withValues(
+                              alpha: 0.35,
+                            ),
+                          ),
+                        ),
+                        child: Row(
+                          children: <Widget>[
+                            const Icon(
+                              Icons.shield_moon_rounded,
+                              size: 18,
+                              color: AppTheme.incognitoCyan,
+                            ),
+                            const SizedBox(width: 10),
+                            const Expanded(
+                              child: Text(
+                                'Incognito Mode: History, search queries, and site usage are never saved.',
+                                style: TextStyle(fontSize: 12, height: 1.35),
+                              ),
+                            ),
+                            if (widget
+                                    .tabManager
+                                    .settings
+                                    .biometricLockIncognito &&
+                                !incognitoLocked)
+                              IconButton(
+                                tooltip: 'Lock Incognito Tabs',
+                                visualDensity: VisualDensity.compact,
+                                icon: const Icon(
+                                  Icons.lock_outline_rounded,
+                                  size: 18,
+                                  color: AppTheme.incognitoCyan,
+                                ),
+                                onPressed: () => widget.tabManager
+                                    .markIncognitoUnlocked(false),
+                              ),
+                          ],
+                        ),
+                      ),
+                    Expanded(
+                      key: _gridViewportKey,
+                      child: incognitoLocked
+                          ? _buildBiometricLockState(colors)
+                          : (tabs.isEmpty
+                                ? _buildEmptyState(context, colors)
+                                : LayoutBuilder(
+                                    builder:
+                                        (
+                                          BuildContext context,
+                                          BoxConstraints constraints,
+                                        ) {
+                                          final int columns =
+                                              constraints.maxWidth >= 620
+                                              ? 3
+                                              : 2;
+                                          const double hPad = 12.0;
+                                          const double crossSpacing = 12.0;
+                                          const double aspectRatio = 0.58;
+                                          final double cardWidth =
+                                              (constraints.maxWidth -
+                                                  (hPad * 2) -
+                                                  (crossSpacing *
+                                                      (columns - 1))) /
+                                              columns;
+                                          final double cardHeight =
+                                              cardWidth / aspectRatio;
+
+                                          return GridView.builder(
+                                            controller: _gridScrollController,
+                                            padding: const EdgeInsets.fromLTRB(
+                                              hPad,
+                                              8,
+                                              hPad,
+                                              18,
+                                            ),
+                                            gridDelegate:
+                                                SliverGridDelegateWithFixedCrossAxisCount(
+                                                  crossAxisCount: columns,
+                                                  mainAxisSpacing: 12,
+                                                  crossAxisSpacing:
+                                                      crossSpacing,
+                                                  childAspectRatio: aspectRatio,
+                                                ),
+                                            itemCount: tabs.length,
+                                            itemBuilder:
+                                                (
+                                                  BuildContext context,
+                                                  int index,
+                                                ) {
+                                                  return _buildDraggableTabSlot(
+                                                    context,
+                                                    theme: theme,
+                                                    colors: colors,
+                                                    isDark: isDark,
+                                                    tab: tabs[index],
+                                                    cardWidth: cardWidth,
+                                                    cardHeight: cardHeight,
+                                                  );
+                                                },
+                                          );
+                                        },
+                                  )),
+                    ),
+                    if (!incognitoLocked)
+                      _buildBottomBar(context, colors, tabs),
+                  ],
+                ),
+              ),
             ),
-          ),
-        );
-      },
+          );
+        },
+      ),
     );
   }
 
@@ -452,15 +497,105 @@ class _TabsScreenState extends State<TabsScreen> {
     );
   }
 
+  Widget _buildDraggableTabSlot(
+    BuildContext context, {
+    required ThemeData theme,
+    required ColorScheme colors,
+    required bool isDark,
+    required BrowserTab tab,
+    required double cardWidth,
+    required double cardHeight,
+  }) {
+    return RepaintBoundary(
+      key: ValueKey<String>('tab_card_${tab.id}'),
+      child: DragTarget<String>(
+        key: ValueKey<String>('tab_drop_target_${tab.id}'),
+        onWillAcceptWithDetails: (DragTargetDetails<String> details) {
+          final String incomingId = details.data;
+          if (incomingId.isEmpty || incomingId == tab.id) {
+            return false;
+          }
+          if (widget.tabManager.moveTab(incomingId, tab.id)) {
+            HapticFeedback.selectionClick();
+          }
+          return true;
+        },
+        onAcceptWithDetails: (_) {},
+        builder:
+            (
+              BuildContext context,
+              List<String?> candidateData,
+              List<dynamic> rejectedData,
+            ) {
+              final Widget cardVisual = _buildFullTabWindowCard(
+                context,
+                colors: colors,
+                isDark: isDark,
+                tab: tab,
+                isHighlightedTarget: candidateData.isNotEmpty,
+              );
+
+              return LongPressDraggable<String>(
+                key: ValueKey<String>('tab_draggable_${tab.id}'),
+                data: tab.id,
+                delay: const Duration(milliseconds: 210),
+                onDragStarted: () {
+                  HapticFeedback.mediumImpact();
+                  setState(() => _draggingTabId = tab.id);
+                },
+                onDragUpdate: _handleDragAutoScroll,
+                onDragEnd: (_) {
+                  if (mounted && _draggingTabId != null) {
+                    setState(() => _draggingTabId = null);
+                  }
+                },
+                onDraggableCanceled: (_, _) {
+                  if (mounted && _draggingTabId != null) {
+                    setState(() => _draggingTabId = null);
+                  }
+                },
+                feedback: Theme(
+                  data: theme,
+                  child: Material(
+                    color: Colors.transparent,
+                    elevation: 10,
+                    borderRadius: BorderRadius.circular(18),
+                    child: SizedBox(
+                      width: cardWidth,
+                      height: cardHeight,
+                      child: Transform.scale(
+                        scale: 1.03,
+                        child: _buildFullTabWindowCard(
+                          context,
+                          colors: colors,
+                          isDark: isDark,
+                          tab: tab,
+                          isDragFeedback: true,
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+                childWhenDragging: Opacity(
+                  opacity: 0.28,
+                  child: cardVisual,
+                ),
+                child: cardVisual,
+              );
+            },
+      ),
+    );
+  }
+
   Widget _buildFullTabWindowCard(
-    BuildContext context,
-    ColorScheme colors,
-    bool isDark,
-    BrowserTab tab,
-    int index,
-  ) {
+    BuildContext context, {
+    required ColorScheme colors,
+    required bool isDark,
+    required BrowserTab tab,
+    bool isHighlightedTarget = false,
+    bool isDragFeedback = false,
+  }) {
     final bool isActive = widget.tabManager.activeTab.id == tab.id;
-    final bool isClosing = _closingTabIds.contains(tab.id);
     final bool isPlayingAudio = tab.engine.isMediaPlaying;
     final Color cardBg = tab.isIncognito
         ? const Color(0xFF0D1B22)
@@ -471,239 +606,184 @@ class _TabsScreenState extends State<TabsScreen> {
               ? AppTheme.navyElevated
               : colors.surfaceContainerHighest.withValues(alpha: 0.72));
 
-    final Color borderColor = isActive
-        ? colors.primary
-        : (widget.tabManager.groupById(tab.groupId)?.color ??
-              colors.outlineVariant.withValues(alpha: 0.45));
-    final double borderWidth = isActive
+    final Color borderColor = isHighlightedTarget
+        ? AppTheme.shieldEmerald
+        : (isActive
+              ? colors.primary
+              : (widget.tabManager.groupById(tab.groupId)?.color ??
+                    colors.outlineVariant.withValues(alpha: 0.45)));
+    final double borderWidth = (isActive || isHighlightedTarget)
         ? 2.6
         : (tab.groupId != null ? 1.8 : 1.1);
 
-    return RepaintBoundary(
-      key: ValueKey<String>('tab_card_${tab.id}'),
-      child: Dismissible(
-        key: ValueKey<String>('tab_dismiss_${tab.id}'),
-        direction: DismissDirection.horizontal,
-        movementDuration: const Duration(milliseconds: 180),
-        resizeDuration: const Duration(milliseconds: 140),
-        onDismissed: (_) {
-          HapticFeedback.lightImpact();
-          unawaited(widget.tabManager.closeTab(tab.id));
-        },
-        child: TweenAnimationBuilder<double>(
-          tween: Tween<double>(begin: 0.92, end: 1.0),
-          duration: Duration(milliseconds: 180 + ((index % 6) * 22)),
-          curve: Curves.easeOutCubic,
-          builder: (BuildContext context, double entranceScale, Widget? child) {
-            return Transform.scale(scale: entranceScale, child: child);
-          },
-          child: AnimatedOpacity(
-            opacity: isClosing ? 0.0 : 1.0,
-            duration: const Duration(milliseconds: 155),
-            curve: Curves.easeInOut,
-            child: AnimatedScale(
-              scale: isClosing ? 0.76 : (isActive ? 1.0 : 0.988),
-              duration: const Duration(milliseconds: 170),
-              curve: isClosing ? Curves.easeInCubic : Curves.easeOutCubic,
-              child: Padding(
-                padding: const EdgeInsets.all(2),
-                child: AnimatedContainer(
-                  duration: const Duration(milliseconds: 200),
-                  curve: Curves.easeOutCubic,
-                  decoration: BoxDecoration(
-                    color: cardBg,
-                    borderRadius: BorderRadius.circular(18),
-                    boxShadow: isActive
-                        ? <BoxShadow>[
-                            BoxShadow(
-                              color: colors.primary.withValues(alpha: 0.28),
-                              blurRadius: 10,
-                              spreadRadius: 0.5,
-                            ),
-                          ]
-                        : <BoxShadow>[
-                            BoxShadow(
-                              color: Colors.black.withValues(
-                                alpha: isDark ? 0.24 : 0.08,
-                              ),
-                              blurRadius: 4,
-                              offset: const Offset(0, 2),
-                            ),
-                          ],
-                  ),
-                  // Paint rounded border in foregroundDecoration ON TOP OF clipped child
-                  // so all 4 rounded corners of the blue active border stay 100% uncut!
-                  foregroundDecoration: BoxDecoration(
-                    borderRadius: BorderRadius.circular(18),
-                    border: Border.all(color: borderColor, width: borderWidth),
-                  ),
-                  child: Material(
-                    color: Colors.transparent,
-                    borderRadius: BorderRadius.circular(18),
-                    clipBehavior: Clip.antiAlias,
-                    child: InkWell(
-                      borderRadius: BorderRadius.circular(18),
-                      onTap: () {
-                        HapticFeedback.selectionClick();
-                        widget.tabManager.switchToTab(tab.id);
-                        Navigator.pop(context);
-                      },
-                      onLongPress: tab.isIncognito
-                          ? null
-                          : () => _showGroupSheetForTab(context, tab),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.stretch,
-                        children: <Widget>[
-                          Container(
-                            height: 36,
-                            padding: const EdgeInsets.only(left: 8, right: 2),
-                            color: headerBg,
-                            child: Row(
-                              children: <Widget>[
-                                if (widget.tabManager.groupById(tab.groupId)
-                                    case final TabGroup grp) ...<Widget>[
-                                  Container(
-                                    width: 8,
-                                    height: 8,
-                                    decoration: BoxDecoration(
-                                      color: grp.color,
-                                      shape: BoxShape.circle,
-                                    ),
-                                  ),
-                                  const SizedBox(width: 5),
-                                ],
-                                SiteLogo(
-                                  urlOrDomain: tab.engine.currentUrl,
-                                  fallbackLabel: tab.displayTitle,
-                                  size: 18,
-                                  borderRadius: 5,
-                                ),
-                                const SizedBox(width: 6),
-                                Expanded(
-                                  child: Text(
-                                    tab.displayTitle,
-                                    maxLines: 1,
-                                    overflow: TextOverflow.ellipsis,
-                                    style: const TextStyle(
-                                      fontSize: 11.5,
-                                      fontWeight: FontWeight.w700,
-                                    ),
-                                  ),
-                                ),
-                                if (isPlayingAudio)
-                                  Padding(
-                                    padding: const EdgeInsets.only(right: 2),
-                                    child: Icon(
-                                      Icons.volume_up_rounded,
-                                      size: 14,
-                                      color: AppTheme.shieldEmerald,
-                                    ),
-                                  ),
-                                IconButton(
-                                  icon: const Icon(
-                                    Icons.close_rounded,
-                                    size: 16,
-                                  ),
-                                  visualDensity: VisualDensity.compact,
-                                  padding: EdgeInsets.zero,
-                                  constraints: const BoxConstraints(
-                                    minWidth: 28,
-                                    minHeight: 28,
-                                  ),
-                                  tooltip: 'Close tab',
-                                  onPressed: () => _animateAndCloseTab(tab.id),
-                                ),
-                              ],
-                            ),
-                          ),
-                          Expanded(
-                            child: Stack(
-                              fit: StackFit.expand,
-                              children: <Widget>[
-                                if (tab.previewBytes != null &&
-                                    tab.previewBytes!.isNotEmpty)
-                                  Image.memory(
-                                    tab.previewBytes!,
-                                    cacheWidth: 320,
-                                    filterQuality: FilterQuality.low,
-                                    fit: BoxFit.cover,
-                                    alignment: Alignment.topCenter,
-                                    gaplessPlayback: true,
-                                  )
-                                else
-                                  _buildSimulatedFullPageFrame(
-                                    colors,
-                                    isDark,
-                                    tab,
-                                  ),
-                                Positioned(
-                                  left: 0,
-                                  right: 0,
-                                  bottom: 0,
-                                  child: Container(
-                                    padding: const EdgeInsets.fromLTRB(
-                                      8,
-                                      18,
-                                      8,
-                                      6,
-                                    ),
-                                    decoration: BoxDecoration(
-                                      gradient: LinearGradient(
-                                        begin: Alignment.topCenter,
-                                        end: Alignment.bottomCenter,
-                                        colors: <Color>[
-                                          Colors.transparent,
-                                          Colors.black.withValues(alpha: 0.72),
-                                        ],
-                                      ),
-                                    ),
-                                    child: Row(
-                                      children: <Widget>[
-                                        Expanded(
-                                          child: Text(
-                                            tab.displaySubtitle,
-                                            maxLines: 1,
-                                            overflow: TextOverflow.ellipsis,
-                                            style: const TextStyle(
-                                              fontSize: 10,
-                                              fontWeight: FontWeight.w600,
-                                              color: Colors.white70,
-                                            ),
-                                          ),
-                                        ),
-                                        if (isActive)
-                                          Container(
-                                            padding: const EdgeInsets.symmetric(
-                                              horizontal: 5,
-                                              vertical: 1.5,
-                                            ),
-                                            decoration: BoxDecoration(
-                                              color: colors.primary,
-                                              borderRadius:
-                                                  BorderRadius.circular(5),
-                                            ),
-                                            child: Text(
-                                              'ACTIVE',
-                                              style: TextStyle(
-                                                fontSize: 8.5,
-                                                fontWeight: FontWeight.w900,
-                                                color: colors.onPrimary,
-                                              ),
-                                            ),
-                                          ),
-                                      ],
-                                    ),
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ),
-                        ],
+    return Padding(
+      padding: const EdgeInsets.all(2),
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 150),
+        curve: Curves.easeOutCubic,
+        decoration: BoxDecoration(
+          color: cardBg,
+          borderRadius: BorderRadius.circular(18),
+        ),
+        // Paint rounded border in foregroundDecoration ON TOP OF clipped child
+        // so all 4 rounded corners of the blue active border stay 100% uncut!
+        foregroundDecoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(18),
+          border: Border.all(color: borderColor, width: borderWidth),
+        ),
+        child: Material(
+          color: Colors.transparent,
+          borderRadius: BorderRadius.circular(18),
+          clipBehavior: Clip.antiAlias,
+          child: InkWell(
+            borderRadius: BorderRadius.circular(18),
+            onTap: isDragFeedback
+                ? null
+                : () {
+                    HapticFeedback.selectionClick();
+                    widget.tabManager.switchToTab(tab.id);
+                    Navigator.pop(context);
+                  },
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: <Widget>[
+                Container(
+                  height: 36,
+                  padding: const EdgeInsets.only(left: 7, right: 1),
+                  color: headerBg,
+                  child: Row(
+                    children: <Widget>[
+                      SiteLogo(
+                        urlOrDomain: tab.engine.currentUrl,
+                        fallbackLabel: tab.displayTitle,
+                        size: 17,
+                        borderRadius: 5,
                       ),
-                    ),
+                      const SizedBox(width: 5),
+                      Expanded(
+                        child: Text(
+                          tab.displayTitle,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
+                            fontSize: 11.5,
+                            fontWeight: FontWeight.w700,
+                          ),
+                        ),
+                      ),
+                      if (isPlayingAudio)
+                        const Padding(
+                          padding: EdgeInsets.only(right: 1),
+                          child: Icon(
+                            Icons.volume_up_rounded,
+                            size: 13,
+                            color: AppTheme.shieldEmerald,
+                          ),
+                        ),
+                      if (!tab.isIncognito && !isDragFeedback)
+                        IconButton(
+                          key: ValueKey<String>('tab_more_button_${tab.id}'),
+                          icon: const Icon(Icons.more_vert_rounded, size: 15.5),
+                          visualDensity: VisualDensity.compact,
+                          padding: EdgeInsets.zero,
+                          constraints: const BoxConstraints(
+                            minWidth: 24,
+                            minHeight: 28,
+                          ),
+                          tooltip: 'Tab options',
+                          onPressed: () => _showGroupSheetForTab(context, tab),
+                        ),
+                      if (!isDragFeedback)
+                        IconButton(
+                          icon: const Icon(Icons.close_rounded, size: 15.5),
+                          visualDensity: VisualDensity.compact,
+                          padding: EdgeInsets.zero,
+                          constraints: const BoxConstraints(
+                            minWidth: 24,
+                            minHeight: 28,
+                          ),
+                          tooltip: 'Close tab',
+                          onPressed: () {
+                            HapticFeedback.selectionClick();
+                            unawaited(widget.tabManager.closeTab(tab.id));
+                          },
+                        ),
+                    ],
                   ),
                 ),
-              ),
+                Expanded(
+                  child: Stack(
+                    fit: StackFit.expand,
+                    children: <Widget>[
+                      if (tab.previewBytes != null &&
+                          tab.previewBytes!.isNotEmpty)
+                        Image.memory(
+                          tab.previewBytes!,
+                          cacheWidth: 320,
+                          filterQuality: FilterQuality.low,
+                          fit: BoxFit.cover,
+                          alignment: Alignment.topCenter,
+                          gaplessPlayback: true,
+                        )
+                      else
+                        _buildSimulatedFullPageFrame(colors, isDark, tab),
+                      Positioned(
+                        left: 0,
+                        right: 0,
+                        bottom: 0,
+                        child: Container(
+                          padding: const EdgeInsets.fromLTRB(8, 18, 8, 6),
+                          decoration: BoxDecoration(
+                            gradient: LinearGradient(
+                              begin: Alignment.topCenter,
+                              end: Alignment.bottomCenter,
+                              colors: <Color>[
+                                Colors.transparent,
+                                Colors.black.withValues(alpha: 0.72),
+                              ],
+                            ),
+                          ),
+                          child: Row(
+                            children: <Widget>[
+                              Expanded(
+                                child: Text(
+                                  tab.displaySubtitle,
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: const TextStyle(
+                                    fontSize: 10,
+                                    fontWeight: FontWeight.w600,
+                                    color: Colors.white70,
+                                  ),
+                                ),
+                              ),
+                              if (isActive)
+                                Container(
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 5,
+                                    vertical: 1.5,
+                                  ),
+                                  decoration: BoxDecoration(
+                                    color: colors.primary,
+                                    borderRadius: BorderRadius.circular(5),
+                                  ),
+                                  child: Text(
+                                    'ACTIVE',
+                                    style: TextStyle(
+                                      fontSize: 8.5,
+                                      fontWeight: FontWeight.w900,
+                                      color: colors.onPrimary,
+                                    ),
+                                  ),
+                                ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
             ),
           ),
         ),
@@ -972,65 +1052,100 @@ class _TabsScreenState extends State<TabsScreen> {
   ) async {
     await showModalBottomSheet<void>(
       context: context,
+      isScrollControlled: true,
       showDragHandle: true,
       builder: (BuildContext sheetContext) {
+        final double maxSheetH = MediaQuery.sizeOf(sheetContext).height * 0.80;
         return SafeArea(
-          child: Padding(
-            padding: const EdgeInsets.fromLTRB(16, 4, 16, 20),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: <Widget>[
-                Text(
-                  'Tab Group • ${tab.displayTitle}',
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(
-                    fontSize: 16,
-                    fontWeight: FontWeight.w800,
-                  ),
-                ),
-                const SizedBox(height: 10),
-                for (final TabGroup grp in widget.tabManager.groups)
-                  ListTile(
-                    dense: true,
-                    leading: CircleAvatar(
-                      backgroundColor: grp.color,
-                      radius: 8,
+          child: ConstrainedBox(
+            constraints: BoxConstraints(maxHeight: maxSheetH),
+            child: SingleChildScrollView(
+              padding: const EdgeInsets.fromLTRB(16, 4, 16, 20),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: <Widget>[
+                  Text(
+                    'Tab Options • ${tab.displayTitle}',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      fontSize: 16,
+                      fontWeight: FontWeight.w800,
                     ),
-                    title: Text(grp.name),
-                    trailing: tab.groupId == grp.id
-                        ? const Icon(Icons.check_circle_rounded)
-                        : null,
-                    onTap: () {
-                      widget.tabManager.assignTabToGroup(tab.id, grp.id);
-                      Navigator.pop(sheetContext);
-                    },
                   ),
-                if (tab.groupId != null)
-                  ListTile(
-                    dense: true,
-                    leading: const Icon(Icons.remove_circle_outline_rounded),
-                    title: const Text('Remove from group'),
-                    onTap: () {
-                      widget.tabManager.assignTabToGroup(tab.id, null);
+                  const SizedBox(height: 12),
+                  FilledButton.icon(
+                    key: const Key('add_tab_to_new_group_button'),
+                    onPressed: () async {
                       Navigator.pop(sheetContext);
+                      await TabsScreen.showCreateGroupDialog(
+                        context,
+                        tabManager: widget.tabManager,
+                        tabId: tab.id,
+                      );
                     },
+                    icon: const Icon(Icons.workspaces_outline, size: 18),
+                    label: const Text('Add tab to new group'),
                   ),
-                const SizedBox(height: 8),
-                FilledButton.icon(
-                  onPressed: () async {
-                    Navigator.pop(sheetContext);
-                    await TabsScreen.showCreateGroupDialog(
-                      context,
-                      tabManager: widget.tabManager,
-                      tabId: tab.id,
-                    );
-                  },
-                  icon: const Icon(Icons.add_rounded),
-                  label: const Text('Add tab to new group'),
-                ),
-              ],
+                  if (widget.tabManager.groups.isNotEmpty) ...<Widget>[
+                    const SizedBox(height: 12),
+                    const Text(
+                      'Move to existing group',
+                      style: TextStyle(
+                        fontSize: 12,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                    const SizedBox(height: 4),
+                    Material(
+                      color: Colors.transparent,
+                      child: Column(
+                        children: <Widget>[
+                          for (final TabGroup grp in widget.tabManager.groups)
+                            ListTile(
+                              dense: true,
+                              contentPadding: const EdgeInsets.symmetric(
+                                horizontal: 4,
+                              ),
+                              leading: CircleAvatar(
+                                backgroundColor: grp.color,
+                                radius: 8,
+                              ),
+                              title: Text(grp.name),
+                              trailing: tab.groupId == grp.id
+                                  ? const Icon(Icons.check_circle_rounded)
+                                  : null,
+                              onTap: () {
+                                widget.tabManager.assignTabToGroup(
+                                  tab.id,
+                                  grp.id,
+                                );
+                                Navigator.pop(sheetContext);
+                              },
+                            ),
+                        ],
+                      ),
+                    ),
+                  ],
+                  if (tab.groupId != null)
+                    Material(
+                      color: Colors.transparent,
+                      child: ListTile(
+                        dense: true,
+                        contentPadding: const EdgeInsets.symmetric(
+                          horizontal: 4,
+                        ),
+                        leading: const Icon(Icons.remove_circle_outline_rounded),
+                        title: const Text('Remove from group'),
+                        onTap: () {
+                          widget.tabManager.assignTabToGroup(tab.id, null);
+                          Navigator.pop(sheetContext);
+                        },
+                      ),
+                    ),
+                ],
+              ),
             ),
           ),
         );
@@ -1097,6 +1212,111 @@ class _ModeTabButton extends StatelessWidget {
           ),
         ),
       ),
+    );
+  }
+}
+
+class _CreateTabGroupDialog extends StatefulWidget {
+  const _CreateTabGroupDialog({
+    required this.tabManager,
+    required this.tabId,
+  });
+
+  final TabManagerController tabManager;
+  final String tabId;
+
+  @override
+  State<_CreateTabGroupDialog> createState() => _CreateTabGroupDialogState();
+}
+
+class _CreateTabGroupDialogState extends State<_CreateTabGroupDialog> {
+  late final TextEditingController _nameCtrl;
+  int _selectedColor = TabGroup.palette.first;
+
+  @override
+  void initState() {
+    super.initState();
+    _nameCtrl = TextEditingController(text: 'Research');
+  }
+
+  @override
+  void dispose() {
+    _nameCtrl.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      scrollable: true,
+      title: const Text('Add Tab to New Group'),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: <Widget>[
+          TextField(
+            controller: _nameCtrl,
+            autofocus: true,
+            decoration: const InputDecoration(
+              labelText: 'Group Name',
+              border: OutlineInputBorder(),
+              isDense: true,
+            ),
+          ),
+          const SizedBox(height: 14),
+          const Text(
+            'Group Color',
+            style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700),
+          ),
+          const SizedBox(height: 8),
+          Wrap(
+            spacing: 10,
+            runSpacing: 8,
+            children: <Widget>[
+              for (final int c in TabGroup.palette)
+                GestureDetector(
+                  onTap: () => setState(() => _selectedColor = c),
+                  child: Container(
+                    width: 30,
+                    height: 30,
+                    decoration: BoxDecoration(
+                      color: Color(c),
+                      shape: BoxShape.circle,
+                      border: _selectedColor == c
+                          ? Border.all(color: Colors.white, width: 2.5)
+                          : null,
+                    ),
+                    child: _selectedColor == c
+                        ? const Icon(
+                            Icons.check_rounded,
+                            size: 16,
+                            color: Colors.white,
+                          )
+                        : null,
+                  ),
+                ),
+            ],
+          ),
+        ],
+      ),
+      actions: <Widget>[
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('Cancel'),
+        ),
+        FilledButton(
+          key: const Key('confirm_create_tab_group_button'),
+          onPressed: () {
+            final TabGroup g = widget.tabManager.createGroupAndAddTab(
+              name: _nameCtrl.text,
+              tabId: widget.tabId,
+              colorValue: _selectedColor,
+            );
+            Navigator.pop(context, g);
+          },
+          child: const Text('Create Group'),
+        ),
+      ],
     );
   }
 }

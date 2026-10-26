@@ -820,37 +820,24 @@ void main() {
       final Rect viewportBefore = tester.getRect(viewportBox);
       final double pillTopBefore = tester.getTopLeft(pillFinder).dy;
 
-      // Search bar sits cleanly ABOVE websites (never overlaying website content)!
+      // Search bar sits cleanly ABOVE websites (never overlaying website content)
+      // AND stays permanently visible without disappearing or jittering on scroll!
       expect(
         viewportBefore.top,
         greaterThanOrEqualTo(barRectBefore.bottom - 0.5),
       );
 
-      // Trigger downward scroll -> search bar smoothly glides & fades upward out of view,
-      // while mid-animation viewport height stays constant (zero WebView resize jitter)!
       tabManager.activeEngine.handleWebScrollDelta(140, 60);
-      expect(tabManager.activeEngine.isNavBarVisible, isFalse);
-      await tester.pump();
-      await tester.pump(const Duration(milliseconds: 80));
-      final Rect midHideRect = tester.getRect(viewportBox);
-      expect(midHideRect.top, lessThan(viewportBefore.top - 4.0));
-      final double pillTopMidHide = tester.getTopLeft(pillFinder).dy;
-      expect(pillTopMidHide, lessThan(pillTopBefore - 4.0));
-      await tester.pump(const Duration(milliseconds: 60));
-      // Mid-glide height stays constant with zero per-frame layout resize!
-      expect(tester.getRect(viewportBox).height, closeTo(midHideRect.height, 0.01));
+      expect(tabManager.activeEngine.isNavBarVisible, isTrue);
       await tester.pumpAndSettle();
-      final Rect hiddenViewportRect = tester.getRect(viewportBox);
-      expect(hiddenViewportRect.top, closeTo(barRectBefore.top, 0.5));
-      expect(tester.getTopLeft(pillFinder).dy, lessThan(-20.0));
+      expect(tester.getRect(topBarWrapper), equals(barRectBefore));
+      expect(tester.getRect(viewportBox), equals(viewportBefore));
+      expect(tester.getTopLeft(pillFinder).dy, closeTo(pillTopBefore, 0.1));
 
-      // Trigger upward scroll -> search bar smoothly glides back into view above website!
       tabManager.activeEngine.handleWebScrollDelta(80, -35);
       expect(tabManager.activeEngine.isNavBarVisible, isTrue);
-      await tester.pump();
-      await tester.pump(const Duration(milliseconds: 100));
-      expect(tester.getRect(viewportBox).top, greaterThan(barRectBefore.top + 4.0));
       await tester.pumpAndSettle();
+      expect(tester.getRect(topBarWrapper), equals(barRectBefore));
       expect(tester.getRect(viewportBox), equals(viewportBefore));
       expect(tester.getTopLeft(pillFinder).dy, closeTo(pillTopBefore, 0.1));
 
@@ -1520,6 +1507,17 @@ void main() {
         ).readAsStringSync();
         expect(appGradle.contains('proguard-rules.pro'), isTrue);
         expect(appGradle.contains('useLegacyPackaging = true'), isTrue);
+        expect(appGradle.contains('key.properties'), isTrue);
+        expect(appGradle.contains('create("release")'), isTrue);
+
+        final String workflowYml = File(
+          '.github/workflows/build.yml',
+        ).readAsStringSync();
+        expect(workflowYml.contains('ANDROID_KEYSTORE_BASE64'), isTrue);
+        expect(workflowYml.contains('ANDROID_KEYSTORE_PASSWORD'), isTrue);
+        expect(workflowYml.contains('ANDROID_KEY_ALIAS'), isTrue);
+        expect(workflowYml.contains('ANDROID_KEY_PASSWORD'), isTrue);
+        expect(File('tool/generate_playstore_key.sh').existsSync(), isTrue);
 
         final String mediaServiceJava = File(
           'android/app/src/main/java/com/hypertechlabs/heavenbrowser/HeavenMediaService.java',
@@ -1537,6 +1535,10 @@ void main() {
         expect(manifestXml.contains('android:hardwareAccelerated="true"'), isTrue);
         expect(manifestXml.contains('android:extractNativeLibs="true"'), isTrue);
         expect(
+          manifestXml.contains('io.flutter.embedding.android.EnableImpeller'),
+          isTrue,
+        );
+        expect(
           manifestXml.contains('com.wireguard.android.backend.GoBackend\$VpnService'),
           isTrue,
         );
@@ -1546,8 +1548,15 @@ void main() {
     );
 
     testWidgets(
-      'Step 22: Animated tab open/switch/close, swipe-to-close in TabsScreen, & YouTube watch bar visibility',
+      'Step 23: Tap-and-hold tab drag anywhere, 3-dots Add tab to new group, & single-pass loading bar',
       (WidgetTester tester) async {
+        tester.view.physicalSize = const Size(412, 915);
+        tester.view.devicePixelRatio = 1.0;
+        addTearDown(() {
+          tester.view.resetPhysicalSize();
+          tester.view.resetDevicePixelRatio();
+        });
+
         SharedPreferences.setMockInitialValues(<String, Object>{});
         final SharedPreferences prefs = await SharedPreferences.getInstance();
         final BrowserSettingsController settings = BrowserSettingsController(
@@ -1558,48 +1567,82 @@ void main() {
           enablePlatformWebView: false,
         );
 
-        final int epoch0 = tabManager.tabTransitionEpoch;
-        await tabManager.openNewTab(
-          initialInput: 'https://m.youtube.com/watch?v=abc123',
+        final String firstTabId = tabManager.normalTabs.first.id;
+        final BrowserTab secondTab = await tabManager.openNewTab(
+          initialInput: 'https://m.youtube.com/shorts/abc123',
         );
-        expect(tabManager.tabTransitionEpoch, greaterThan(epoch0));
-        expect(tabManager.lastTransitionDirection, 1);
-        // YouTube /watch keeps search bar visible until user scrolls down (Shorts still auto-hides)
-        expect(tabManager.activeEngine.isNavBarVisible, isTrue);
-
         final BrowserTab thirdTab = await tabManager.openNewTab(
           initialInput: 'https://example.org',
         );
-        final int epochBeforeSwitch = tabManager.tabTransitionEpoch;
-        expect(tabManager.switchAdjacentTab(-1), isTrue);
-        expect(tabManager.tabTransitionEpoch, greaterThan(epochBeforeSwitch));
-        expect(tabManager.lastTransitionDirection, -1);
+        // Search bar NEVER disappears even on Shorts or scrolling!
+        expect(tabManager.activeEngine.isNavBarVisible, isTrue);
 
         await tester.pumpWidget(
           MaterialApp(home: TabsScreen(tabManager: tabManager)),
         );
         await tester.pumpAndSettle();
-        expect(tabManager.normalTabs.length, 3);
+        expect(
+          tabManager.normalTabs.map((BrowserTab t) => t.id).toList(),
+          equals(<String>[firstTabId, secondTab.id, thirdTab.id]),
+        );
 
-        // Horizontal swipe-to-close on Dismissible card in TabsScreen!
-        await tester.drag(
-          find.byKey(Key('tab_dismiss_${thirdTab.id}')),
-          const Offset(-420, 0),
+        // 1. Tap-and-hold thirdTab and drag it onto firstTabId's slot to reorder!
+        final Offset fromCenter = tester.getCenter(
+          find.byKey(ValueKey<String>('tab_draggable_${thirdTab.id}')),
+        );
+        final Offset toCenter = tester.getCenter(
+          find.byKey(ValueKey<String>('tab_drop_target_$firstTabId')),
+        );
+        final TestGesture dragGesture = await tester.startGesture(fromCenter);
+        await tester.pump(const Duration(milliseconds: 260));
+        await dragGesture.moveTo(toCenter);
+        await tester.pump(const Duration(milliseconds: 80));
+        await dragGesture.up();
+        await tester.pumpAndSettle();
+
+        expect(
+          tabManager.normalTabs.map((BrowserTab t) => t.id).toList(),
+          equals(<String>[thirdTab.id, firstTabId, secondTab.id]),
+        );
+
+        // 2. Tap 3-dots menu button on tab card -> 'Add tab to new group' -> Create Group!
+        expect(
+          find.byKey(const Key('tabs_appbar_more_button')),
+          findsOneWidget,
+        );
+        await tester.tap(
+          find.byKey(ValueKey<String>('tab_more_button_${thirdTab.id}')),
+        );
+        await tester.pumpAndSettle();
+        expect(
+          find.byKey(const Key('add_tab_to_new_group_button')),
+          findsOneWidget,
+        );
+        await tester.tap(find.byKey(const Key('add_tab_to_new_group_button')));
+        await tester.pumpAndSettle();
+        await tester.tap(
+          find.byKey(const Key('confirm_create_tab_group_button')),
+        );
+        await tester.pumpAndSettle();
+        expect(tabManager.groups.length, 1);
+        expect(thirdTab.groupId, tabManager.groups.first.id);
+
+        // 3. Close a visible row-1 tab via Close button cleanly!
+        await tester.tap(
+          find.descendant(
+            of: find.byKey(ValueKey<String>('tab_card_$firstTabId')),
+            matching: find.byTooltip('Close tab'),
+          ),
         );
         await tester.pumpAndSettle();
         expect(tabManager.normalTabs.length, 2);
 
-        // Animated shrink+fade X close button in TabsScreen!
-        final String secondId = tabManager.normalTabs.last.id;
-        await tester.tap(
-          find.descendant(
-            of: find.byKey(Key('tab_card_$secondId')),
-            matching: find.byTooltip('Close tab'),
-          ),
-        );
-        await tester.pump(const Duration(milliseconds: 80));
-        await tester.pumpAndSettle();
-        expect(tabManager.normalTabs.length, 1);
+        // 4. Verify single-pass loading bar invariants in source
+        final String engineSrc = File(
+          'lib/features/browser/engine/browser_engine.dart',
+        ).readAsStringSync();
+        expect(engineSrc.contains('_finishLoadingDebounceTimer'), isTrue);
+        expect(engineSrc.contains('isFastRedirect'), isTrue);
 
         tabManager.dispose();
         settings.dispose();

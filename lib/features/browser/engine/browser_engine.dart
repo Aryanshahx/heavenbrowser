@@ -94,15 +94,14 @@ class BrowserEngine extends ChangeNotifier {
   String _pageTitle = 'New Tab';
   double _progress = 0;
   double _pullProgress = 0;
-  double _scrollDeltaAccumulator = 0;
-  int _lastNavBarToggleEpochMs = 0;
   bool _isLoading = false;
-  bool _isNavBarVisible = true;
   bool _webViewCanGoBack = false;
   bool _webViewCanGoForward = false;
   String? _errorMessage;
   String? _lastCompletedWebUrl;
   int _lastDownloadInterceptMs = 0;
+  int _lastPageFinishedMs = 0;
+  Timer? _finishLoadingDebounceTimer;
 
   // Live Background Audio state
   bool _isMediaPlaying = false;
@@ -130,15 +129,6 @@ class BrowserEngine extends ChangeNotifier {
   bool _pageDesignMode = false;
   bool _devToolsEnabled = false;
 
-  static bool _isYoutubeShortsUrl(String? rawUrl) {
-    if (rawUrl == null || rawUrl.isEmpty) return false;
-    final Uri? u = Uri.tryParse(rawUrl);
-    if (u == null) return false;
-    final String h = u.host.toLowerCase();
-    final bool isYt = h == 'youtube.com' || h.endsWith('.youtube.com');
-    return isYt && u.path.toLowerCase().startsWith('/shorts');
-  }
-
   bool get hasLiveWebView => _controller != null;
 
   WebViewController? get controller => _controller;
@@ -148,7 +138,7 @@ class BrowserEngine extends ChangeNotifier {
   bool get isShowingStartPage => _currentUrl == null || _currentUrl!.isEmpty;
   bool get isShowingDownloadsPage => OmniboxParser.isDownloadsUrl(_currentUrl);
   bool get isShowingWebPage => !isShowingStartPage && !isShowingDownloadsPage;
-  bool get isNavBarVisible => _isNavBarVisible || isShowingDownloadsPage;
+  bool get isNavBarVisible => true;
   bool get isMediaPlaying => _isMediaPlaying;
   String get playingMediaTitle => _playingMediaTitle;
   bool get isPageTranslated => _isPageTranslated;
@@ -226,46 +216,11 @@ class BrowserEngine extends ChangeNotifier {
   }
 
   void setNavBarVisible(bool visible, {bool respectCooldown = false}) {
-    final bool next = (isShowingDownloadsPage || _isLoading) ? true : visible;
-    if (_isNavBarVisible == next) {
-      return;
-    }
-    if (respectCooldown && !next) {
-      final int now = DateTime.now().millisecondsSinceEpoch;
-      if (now - _lastNavBarToggleEpochMs < 280) {
-        return;
-      }
-      _lastNavBarToggleEpochMs = now;
-    } else {
-      _lastNavBarToggleEpochMs = DateTime.now().millisecondsSinceEpoch;
-    }
-    _scrollDeltaAccumulator = 0;
-    _isNavBarVisible = next;
-    notifyListeners();
+    // Search bar remains permanently visible above websites (no auto-hide).
   }
 
-  /// Updates top navigation bar visibility from scroll position & vertical delta:
-  /// scrolling down smoothly hides the bar; scrolling up (or near top) smoothly reveals it.
   void handleWebScrollDelta(double scrollY, double deltaY) {
-    if (isShowingDownloadsPage || _isLoading) {
-      setNavBarVisible(true);
-      return;
-    }
-    if (scrollY <= 18) {
-      setNavBarVisible(true);
-      return;
-    }
-    if ((_scrollDeltaAccumulator > 0 && deltaY < 0) ||
-        (_scrollDeltaAccumulator < 0 && deltaY > 0)) {
-      _scrollDeltaAccumulator = deltaY;
-    } else {
-      _scrollDeltaAccumulator += deltaY;
-    }
-    if (_scrollDeltaAccumulator <= -26) {
-      setNavBarVisible(true);
-    } else if (_scrollDeltaAccumulator >= 44 && scrollY > 80) {
-      setNavBarVisible(false);
-    }
+    // Search bar remains permanently visible above websites (zero scroll rebuild churn).
   }
 
   Future<void> focusNativeWebView() async {
@@ -291,6 +246,8 @@ class BrowserEngine extends ChangeNotifier {
     if (_controller == null || _isMediaPlaying) {
       return;
     }
+    _finishLoadingDebounceTimer?.cancel();
+    _finishLoadingDebounceTimer = null;
     if (_androidWebViewId != null) {
       NativeShieldBridge.instance.detachWebView(_androidWebViewId!);
     }
@@ -366,16 +323,30 @@ class BrowserEngine extends ChangeNotifier {
             if (url == 'about:blank' && !isShowingWebPage) {
               return;
             }
+            _finishLoadingDebounceTimer?.cancel();
+            _finishLoadingDebounceTimer = null;
+            final int nowMs = DateTime.now().millisecondsSinceEpoch;
+            final bool isFastRedirect =
+                _isLoading || (nowMs - _lastPageFinishedMs) < 420;
             final String? nextHost = Uri.tryParse(url)?.host;
             _currentUrl = url;
-            _isNavBarVisible = true;
             _pageIconUrl = null;
             _elementPickerActive = false;
             _pageDesignMode = false;
             _networkEntries.clear();
             _isLoading = true;
-            _progress = 0.1;
-            _lastNotifiedProgress = 0.1;
+            if (isFastRedirect) {
+              // Keep progress moving forward monotonically across search/HTTP redirects
+              // so the blue loading bar NEVER resets back to 0 and restarts a second time!
+              if (_progress < 0.18) {
+                _progress = 0.18;
+              } else if (_progress > 0.82) {
+                _progress = 0.82;
+              }
+            } else {
+              _progress = 0.12;
+            }
+            _lastNotifiedProgress = _progress;
             _pullProgress = 0;
             _errorMessage = null;
             _syncVirtualEntryWithWebUrl(url);
@@ -390,24 +361,24 @@ class BrowserEngine extends ChangeNotifier {
             notifyListeners();
           },
           onProgress: (int value) {
-            if (!isShowingWebPage) {
+            if (!isShowingWebPage || !_isLoading) {
               return;
             }
-            final double nextProgress = (value.clamp(0, 100)) / 100.0;
-            final bool nextLoading = value < 100;
-            final bool loadingChanged = _isLoading != nextLoading;
-            final bool significantStep =
-                (nextProgress - _lastNotifiedProgress).abs() >= 0.10 ||
-                value >= 100;
-            _progress = nextProgress;
-            _isLoading = nextLoading;
-            if (loadingChanged || significantStep) {
-              _lastNotifiedProgress = nextProgress;
+            // Do NOT flip _isLoading=false on onProgress(100): Chromium emits 100%
+            // on intermediate search redirects before onPageStarted of the target page!
+            final double capped = (value.clamp(12, 94)) / 100.0;
+            if (capped <= _progress) {
+              return;
+            }
+            _progress = capped;
+            if ((_progress - _lastNotifiedProgress).abs() >= 0.08) {
+              _lastNotifiedProgress = _progress;
               notifyListeners();
             }
           },
           onPageFinished: (String url) async {
             if (url == 'about:blank' && !isShowingWebPage) {
+              _finishLoadingDebounceTimer?.cancel();
               _isLoading = false;
               _progress = 0;
               notifyListeners();
@@ -415,13 +386,29 @@ class BrowserEngine extends ChangeNotifier {
             }
             _currentUrl = url;
             _lastCompletedWebUrl = url;
-            _isLoading = false;
+            _lastPageFinishedMs = DateTime.now().millisecondsSinceEpoch;
             _progress = 1.0;
+            _lastNotifiedProgress = 1.0;
             _pullProgress = 0;
-            if (_isYoutubeShortsUrl(url)) {
-              _isNavBarVisible = false;
-            }
             _syncVirtualEntryWithWebUrl(url);
+            notifyListeners();
+
+            // Settle guard: if an immediate client/HTTP redirect starts within 180ms
+            // (e.g. Google Search sei= handshake), onPageStarted cancels this timer
+            // so the user sees ONE seamless single-pass blue loading bar!
+            _finishLoadingDebounceTimer?.cancel();
+            _finishLoadingDebounceTimer = Timer(
+              const Duration(milliseconds: 180),
+              () {
+                _finishLoadingDebounceTimer = null;
+                if (_isLoading) {
+                  _isLoading = false;
+                  _progress = 0;
+                  notifyListeners();
+                }
+              },
+            );
+
             await _injectProtectionAndZoom(url);
             await _refreshNavigationState();
 
@@ -437,15 +424,8 @@ class BrowserEngine extends ChangeNotifier {
                 nextUrl.isNotEmpty &&
                 nextUrl != 'about:blank' &&
                 !isShowingDownloadsPage) {
-              final String? prevUrl = _currentUrl;
               _currentUrl = nextUrl;
               _syncVirtualEntryWithWebUrl(nextUrl);
-              if (_isYoutubeShortsUrl(nextUrl) && nextUrl != prevUrl) {
-                setNavBarVisible(false);
-              } else if (_isYoutubeShortsUrl(prevUrl) &&
-                  !_isYoutubeShortsUrl(nextUrl)) {
-                setNavBarVisible(true);
-              }
               unawaited(_refreshNavigationState());
             }
           },
@@ -457,6 +437,7 @@ class BrowserEngine extends ChangeNotifier {
                       _lastDownloadInterceptMs) <
                   3500;
               if (recentlyInterceptedDownload) {
+                _finishLoadingDebounceTimer?.cancel();
                 _isLoading = false;
                 _progress = 0;
                 _errorMessage = null;
@@ -472,7 +453,9 @@ class BrowserEngine extends ChangeNotifier {
                   error.errorCode == -999) {
                 return;
               }
+              _finishLoadingDebounceTimer?.cancel();
               _isLoading = false;
+              _progress = 0;
               _errorMessage = error.description;
               notifyListeners();
             }
@@ -993,11 +976,12 @@ class BrowserEngine extends ChangeNotifier {
   }
 
   void openDownloadsPage() {
+    _finishLoadingDebounceTimer?.cancel();
+    _finishLoadingDebounceTimer = null;
     _pushVirtualLocation(AppConstants.downloadsTabUrl);
     _currentUrl = AppConstants.downloadsTabUrl;
     _pageTitle = 'Downloads';
     _isLoading = false;
-    _isNavBarVisible = true;
     _isPageTranslated = false;
     _translatedLangCode = null;
     _progress = 0;
@@ -1035,9 +1019,10 @@ class BrowserEngine extends ChangeNotifier {
       openDownloadsPage();
       return;
     }
+    _finishLoadingDebounceTimer?.cancel();
+    _finishLoadingDebounceTimer = null;
     _errorMessage = null;
     _pullProgress = 0;
-    _isNavBarVisible = true;
     _isPageTranslated = false;
     _translatedLangCode = null;
 
@@ -1081,8 +1066,8 @@ class BrowserEngine extends ChangeNotifier {
     _currentUrl = targetUrl;
     _pageTitle = OmniboxParser.formatDisplayUrl(_currentUrl);
     _isLoading = true;
-    _progress = 0.08;
-    _lastNotifiedProgress = 0.08;
+    _progress = 0.12;
+    _lastNotifiedProgress = 0.12;
     notifyListeners();
 
     if (_androidWebViewId != null) {
@@ -1098,6 +1083,7 @@ class BrowserEngine extends ChangeNotifier {
     await _controller?.loadRequest(finalUri, headers: _headersForTarget());
     if (_controller == null) {
       _isLoading = false;
+      _progress = 0;
       if (!isIncognito &&
           (_currentUrl!.startsWith('http://') ||
               _currentUrl!.startsWith('https://'))) {
@@ -1108,11 +1094,12 @@ class BrowserEngine extends ChangeNotifier {
   }
 
   Future<void> goHome() async {
+    _finishLoadingDebounceTimer?.cancel();
+    _finishLoadingDebounceTimer = null;
     _pushVirtualLocation('');
     _currentUrl = null;
     _pageTitle = isIncognito ? 'Incognito Tab' : 'New Tab';
     _isLoading = false;
-    _isNavBarVisible = true;
     _progress = 0;
     _pullProgress = 0;
     _errorMessage = null;
@@ -1124,7 +1111,6 @@ class BrowserEngine extends ChangeNotifier {
   }
 
   Future<void> goBack() async {
-    _isNavBarVisible = true;
     if (isShowingWebPage &&
         _controller != null &&
         await _controller!.canGoBack()) {
@@ -1140,7 +1126,6 @@ class BrowserEngine extends ChangeNotifier {
   }
 
   Future<void> goForward() async {
-    _isNavBarVisible = true;
     if (isShowingWebPage &&
         _controller != null &&
         await _controller!.canGoForward()) {
@@ -1197,8 +1182,9 @@ class BrowserEngine extends ChangeNotifier {
   }
 
   Future<void> reloadFullPage() async {
+    _finishLoadingDebounceTimer?.cancel();
+    _finishLoadingDebounceTimer = null;
     _errorMessage = null;
-    _isNavBarVisible = true;
     if (!isShowingWebPage) {
       notifyListeners();
       return;
@@ -1229,13 +1215,15 @@ class BrowserEngine extends ChangeNotifier {
   }
 
   Future<void> reloadOrStop() async {
-    _isNavBarVisible = true;
     if (!isShowingWebPage || _controller == null) {
       return;
     }
     if (_isLoading) {
+      _finishLoadingDebounceTimer?.cancel();
+      _finishLoadingDebounceTimer = null;
       await _controller!.runJavaScript('window.stop();');
       _isLoading = false;
+      _progress = 0;
       notifyListeners();
     } else {
       _errorMessage = null;
@@ -2024,6 +2012,8 @@ class BrowserEngine extends ChangeNotifier {
 
   @override
   void dispose() {
+    _finishLoadingDebounceTimer?.cancel();
+    _finishLoadingDebounceTimer = null;
     settings.removeListener(_onSettingsChanged);
     if (_androidWebViewId != null) {
       NativeShieldBridge.instance.detachWebView(_androidWebViewId!);

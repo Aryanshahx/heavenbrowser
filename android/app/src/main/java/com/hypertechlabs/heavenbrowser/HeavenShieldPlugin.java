@@ -175,28 +175,25 @@ public class HeavenShieldPlugin
           + "    setInterval(function(){if(window.__hbInBg){try{window._lact=Date.now();}catch(e){}}},5000);"
           + "  }catch(e){}"
           + "}"
-          + "var lastAtTop=true;var lastInnerEmitMs=0;"
+          + "var lastAtTop=true;"
           + "window.addEventListener('scroll',function(ev){"
           + "  try{"
-          + "    var t=ev&&ev.target;"
-          + "    var winSy=window.pageYOffset||document.documentElement.scrollTop||0;"
-          + "    var isVertInner=(t&&t!==document&&t!==window&&typeof t.scrollTop==='number'"
-          + "      &&t.clientHeight>=180&&t.scrollHeight>(t.clientHeight+64));"
+          + "    var winSy=window.pageYOffset||0;"
           + "    var sy=winSy;"
-          + "    if(isVertInner&&t.scrollTop>sy){sy=t.scrollTop;}"
+          + "    var t=ev&&ev.target;"
+          + "    if(winSy<=6&&t&&t!==document&&t!==window&&typeof t.scrollTop==='number'){"
+          + "      var st=t.scrollTop;"
+          + "      t.__hbLastSy=st;"
+          + "      if(st>sy)sy=st;"
+          + "    }"
           + "    var nowTop=(sy<=6);"
           + "    if(nowTop!==lastAtTop){"
           + "      lastAtTop=nowTop;"
-          + "      if(window.HeavenMediaBridge&&window.HeavenMediaBridge.onPageAtTop){window.HeavenMediaBridge.onPageAtTop(nowTop);}"
-          + "    }"
-          + "    if(isVertInner&&winSy<=4&&window.HeavenMediaBridge&&window.HeavenMediaBridge.onInnerScroll){"
-          + "      var prevSy=(typeof t.__hbLastSy==='number')?t.__hbLastSy:t.scrollTop;"
-          + "      var dy=t.scrollTop-prevSy;"
-          + "      t.__hbLastSy=t.scrollTop;"
-          + "      var nowMs=Date.now();"
-          + "      if(Math.abs(dy)>=8&&(nowMs-lastInnerEmitMs)>=65){"
-          + "        lastInnerEmitMs=nowMs;"
-          + "        window.HeavenMediaBridge.onInnerScroll(Math.round(t.scrollTop),Math.round(dy));"
+          + "      if(window.HeavenMediaBridge){"
+          + "        if(window.HeavenMediaBridge.onPageAtTop)window.HeavenMediaBridge.onPageAtTop(nowTop);"
+          + "        if(t&&t!==document&&t!==window&&window.HeavenMediaBridge.onInnerScroll){"
+          + "          window.HeavenMediaBridge.onInnerScroll(Math.round(sy),nowTop?-1:1);"
+          + "        }"
           + "      }"
           + "    }"
           + "  }catch(e){}"
@@ -931,6 +928,31 @@ public class HeavenShieldPlugin
         }
         break;
 
+      case "setActiveWebViewCovered":
+        Boolean coveredArg = call.argument("covered");
+        boolean covered = coveredArg != null && coveredArg;
+        if (pluginBinding != null && this.activeFocusedWebViewId >= 0) {
+          try {
+            WebView activeWv =
+                WebViewFlutterAndroidExternalApi.getWebView(
+                    pluginBinding, this.activeFocusedWebViewId);
+            if (activeWv != null) {
+              if (covered) {
+                if (!activeAudioOrVideoPlaying
+                    || this.activeFocusedWebViewId != this.activeMediaWebViewId) {
+                  activeWv.onPause();
+                }
+              } else {
+                activeWv.onResume();
+                activeWv.resumeTimers();
+              }
+            }
+          } catch (Throwable ignored) {
+          }
+        }
+        result.success(true);
+        break;
+
       case "applyDesktopViewport":
         Object dvId = call.argument("webViewId");
         Boolean enabledArg = call.argument("desktopMode");
@@ -1499,39 +1521,12 @@ public class HeavenShieldPlugin
   }
 
   private void processScrollDeltaForNavBar(final long webViewId, int scrollY, int dy) {
-    if (dy == 0) {
-      return;
-    }
+    // Search bar stays permanently visible above websites; never emit scroll hide/show churn.
     if (scrollY <= 8 && dy < 0) {
-      accumulatedScrollDyByWv.put(webViewId, 0);
-      emitNavBarVisibility(webViewId, true);
-      return;
-    }
-    long nowMs = SystemClock.elapsedRealtime();
-    Long loadingLockUntil = pageLoadingUntilMsByWv.get(webViewId);
-    if (loadingLockUntil != null && nowMs < loadingLockUntil) {
-      return;
-    }
-    Long lastToggle = lastNavToggleMsByWv.get(webViewId);
-    if (lastToggle != null && (nowMs - lastToggle) < 340L) {
-      accumulatedScrollDyByWv.put(webViewId, 0);
-      return;
-    }
-    if (Math.abs(dy) > 480) {
-      return;
-    }
-    Integer prevAcc = accumulatedScrollDyByWv.get(webViewId);
-    int acc = prevAcc != null ? prevAcc : 0;
-    if ((acc > 0 && dy < 0) || (acc < 0 && dy > 0)) {
-      acc = dy;
-    } else {
-      acc += dy;
-    }
-    accumulatedScrollDyByWv.put(webViewId, acc);
-    if (acc <= -32) {
-      emitNavBarVisibility(webViewId, true);
-    } else if (acc >= 52 && scrollY > 84) {
-      emitNavBarVisibility(webViewId, false);
+      Boolean prev = lastNavBarVisibleByWv.get(webViewId);
+      if (prev != null && !prev) {
+        emitNavBarVisibility(webViewId, true);
+      }
     }
   }
 
@@ -1629,8 +1624,7 @@ public class HeavenShieldPlugin
       if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
         webView.setOnScrollChangeListener(
             (v, scrollX, scrollY, oldScrollX, oldScrollY) -> {
-              int dy = scrollY - oldScrollY;
-              if (dy == 0) {
+              if (scrollY == oldScrollY) {
                 return;
               }
               Long innerMs = lastInnerScrollMsByWv.get(webViewId);
@@ -1640,7 +1634,6 @@ public class HeavenShieldPlugin
                 return;
               }
               pageAtTopByWv.put(webViewId, scrollY <= 6);
-              processScrollDeltaForNavBar(webViewId, scrollY, dy);
             });
       }
 

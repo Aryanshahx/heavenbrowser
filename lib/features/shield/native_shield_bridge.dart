@@ -266,6 +266,19 @@ class NativeShieldBridge {
     }
   }
 
+  Future<void> setActiveWebViewCovered(bool covered) async {
+    try {
+      await _channel.invokeMethod<bool>(
+        'setActiveWebViewCovered',
+        <String, Object>{'covered': covered},
+      );
+    } on MissingPluginException {
+      // Expected in widget tests.
+    } on PlatformException {
+      // Ignore platform channel errors.
+    }
+  }
+
   Future<void> applyDesktopViewport({
     required int webViewId,
     required bool desktopMode,

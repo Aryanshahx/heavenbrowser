@@ -361,6 +361,29 @@ class TabManagerController extends ChangeNotifier {
     }
   }
 
+  /// Moves [fromTabId] to the grid slot of [toTabId] and persists the new order.
+  bool moveTab(String fromTabId, String toTabId) {
+    if (fromTabId == toTabId) {
+      return false;
+    }
+    final int fromIndex = _tabs.indexWhere(
+      (BrowserTab t) => t.id == fromTabId,
+    );
+    final int toIndex = _tabs.indexWhere((BrowserTab t) => t.id == toTabId);
+    if (fromIndex < 0 || toIndex < 0 || fromIndex == toIndex) {
+      return false;
+    }
+    if (_tabs[fromIndex].isIncognito != _tabs[toIndex].isIncognito) {
+      return false;
+    }
+    final BrowserTab moving = _tabs.removeAt(fromIndex);
+    _tabs.insert(toIndex, moving);
+    _bumpViewport();
+    _persistSessionSnapshot(force: true);
+    notifyListeners();
+    return true;
+  }
+
   void deleteGroup(String groupId) {
     _groups.removeWhere((TabGroup g) => g.id == groupId);
     for (final BrowserTab t in _tabs) {
