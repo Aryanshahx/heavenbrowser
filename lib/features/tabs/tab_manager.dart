@@ -121,6 +121,12 @@ class TabManagerController extends ChangeNotifier {
   bool _incognitoSessionUnlocked = false;
   int _lastPersistMs = 0;
 
+  /// Direction hint for smooth viewport animations (+1 = forward/new, -1 = back/close, 0 = initial).
+  int lastTransitionDirection = 0;
+  int tabTransitionEpoch = 0;
+
+  static const int _maxLiveBackgroundWebViews = 2;
+
   void _bumpViewport() {
     viewportRevision.value += 1;
   }
@@ -234,6 +240,7 @@ class TabManagerController extends ChangeNotifier {
                 settings: settings,
                 isIncognito: false,
                 enablePlatformWebView: enablePlatformWebView,
+                deferWebViewInit: id != targetActive,
                 initialPersistedUrl: (url != null && url.isNotEmpty)
                     ? url
                     : null,
@@ -518,6 +525,28 @@ class TabManagerController extends ChangeNotifier {
     );
   }
 
+  void _hibernateExcessBackgroundTabs() {
+    if (!enablePlatformWebView) return;
+    final List<BrowserTab> candidates = _tabs
+        .where(
+          (BrowserTab t) =>
+              t.id != _activeTabId &&
+              t.engine.hasLiveWebView &&
+              !t.engine.isMediaPlaying,
+        )
+        .toList();
+    if (candidates.length <= _maxLiveBackgroundWebViews) {
+      return;
+    }
+    candidates.sort(
+      (BrowserTab a, BrowserTab b) => a.lastActiveAt.compareTo(b.lastActiveAt),
+    );
+    final int toHibernate = candidates.length - _maxLiveBackgroundWebViews;
+    for (int i = 0; i < toHibernate; i++) {
+      candidates[i].engine.hibernateWebView();
+    }
+  }
+
   Future<BrowserTab> openNewTab({
     bool incognito = false,
     String? initialInput,
@@ -526,11 +555,14 @@ class TabManagerController extends ChangeNotifier {
     if (switchTo && _tabs.isNotEmpty) {
       activeTab.lastActiveAt = DateTime.now();
       unawaited(captureTabPreview(activeTab));
+      lastTransitionDirection = 1;
+      tabTransitionEpoch += 1;
     }
     final BrowserTab tab = _spawnTab(incognito: incognito, switchTo: switchTo);
+    _hibernateExcessBackgroundTabs();
     _persistSessionSnapshot(force: true);
     notifyListeners();
-    if (initialInput != null && initialInput.trim().isNotEmpty) {
+    if (initialInput != null && initialInput.trim().isEmpty == false) {
       await tab.engine.loadUserEntry(initialInput.trim());
       _persistSessionSnapshot(force: true);
     }
@@ -543,10 +575,13 @@ class TabManagerController extends ChangeNotifier {
       unawaited(activeTab.engine.focusNativeWebView());
       return;
     }
+    final int oldIndex = activeTabIndex;
     BrowserTab? target;
-    for (final BrowserTab t in _tabs) {
-      if (t.id == tabId) {
-        target = t;
+    int newIndex = 0;
+    for (int i = 0; i < _tabs.length; i++) {
+      if (_tabs[i].id == tabId) {
+        target = _tabs[i];
+        newIndex = i;
         break;
       }
     }
@@ -555,9 +590,12 @@ class TabManagerController extends ChangeNotifier {
     }
     activeTab.lastActiveAt = DateTime.now();
     unawaited(captureTabPreview(activeTab));
+    lastTransitionDirection = newIndex >= oldIndex ? 1 : -1;
+    tabTransitionEpoch += 1;
     _activeTabId = tabId;
     target.lastActiveAt = DateTime.now();
     unawaited(target.engine.focusNativeWebView());
+    _hibernateExcessBackgroundTabs();
     _syncPrivateScreenshotSecurity();
     _bumpViewport();
     _persistSessionSnapshot(force: true);
@@ -608,8 +646,12 @@ class TabManagerController extends ChangeNotifier {
     removed.engine.dispose();
 
     if (_tabs.isEmpty) {
+      lastTransitionDirection = -1;
+      tabTransitionEpoch += 1;
       _spawnTab(incognito: false, switchTo: true);
     } else if (_activeTabId == tabId) {
+      lastTransitionDirection = -1;
+      tabTransitionEpoch += 1;
       final List<BrowserTab> sameMode = _tabs
           .where((BrowserTab t) => t.isIncognito == removed.isIncognito)
           .toList();
@@ -619,6 +661,7 @@ class TabManagerController extends ChangeNotifier {
         final int nextIdx = (idx - 1).clamp(0, _tabs.length - 1);
         _activeTabId = _tabs[nextIdx].id;
       }
+      unawaited(activeTab.engine.focusNativeWebView());
     }
     _syncPrivateScreenshotSecurity();
     _bumpViewport();

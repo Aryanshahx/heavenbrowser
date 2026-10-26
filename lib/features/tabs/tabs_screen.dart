@@ -1,4 +1,7 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../../core/theme/app_theme.dart';
 import '../../core/utils/omnibox_parser.dart';
@@ -109,11 +112,23 @@ class _TabsScreenState extends State<TabsScreen> {
   late bool _viewingIncognito;
   String? _selectedGroupId;
   bool _authenticatingIncognito = false;
+  final Set<String> _closingTabIds = <String>{};
 
   @override
   void initState() {
     super.initState();
     _viewingIncognito = widget.tabManager.isActiveIncognito;
+  }
+
+  Future<void> _animateAndCloseTab(String tabId) async {
+    if (_closingTabIds.contains(tabId)) return;
+    HapticFeedback.selectionClick();
+    setState(() => _closingTabIds.add(tabId));
+    await Future<void>.delayed(const Duration(milliseconds: 170));
+    if (mounted) {
+      _closingTabIds.remove(tabId);
+    }
+    await widget.tabManager.closeTab(tabId);
   }
 
   Future<void> _unlockIncognitoWithBiometrics() async {
@@ -223,48 +238,70 @@ class _TabsScreenState extends State<TabsScreen> {
                       ),
                     ),
                   Expanded(
-                    child: incognitoLocked
-                        ? _buildBiometricLockState(colors)
-                        : (tabs.isEmpty
-                              ? _buildEmptyState(context, colors)
-                              : LayoutBuilder(
-                                  builder:
-                                      (
-                                        BuildContext context,
-                                        BoxConstraints constraints,
-                                      ) {
-                                        final int columns =
-                                            constraints.maxWidth >= 620 ? 3 : 2;
-                                        return GridView.builder(
-                                          padding: const EdgeInsets.fromLTRB(
-                                            12,
-                                            8,
-                                            12,
-                                            18,
-                                          ),
-                                          gridDelegate:
-                                              SliverGridDelegateWithFixedCrossAxisCount(
-                                                crossAxisCount: columns,
-                                                mainAxisSpacing: 12,
-                                                crossAxisSpacing: 12,
-                                                childAspectRatio: 0.58,
-                                              ),
-                                          itemCount: tabs.length,
-                                          itemBuilder:
-                                              (
-                                                BuildContext context,
-                                                int index,
-                                              ) {
-                                                return _buildFullTabWindowCard(
-                                                  context,
-                                                  colors,
-                                                  isDark,
-                                                  tabs[index],
-                                                );
-                                              },
-                                        );
-                                      },
-                                )),
+                    child: AnimatedSwitcher(
+                      duration: const Duration(milliseconds: 200),
+                      switchInCurve: Curves.easeOutCubic,
+                      switchOutCurve: Curves.easeInCubic,
+                      child: incognitoLocked
+                          ? KeyedSubtree(
+                              key: const ValueKey<String>('tabs_locked'),
+                              child: _buildBiometricLockState(colors),
+                            )
+                          : (tabs.isEmpty
+                                ? KeyedSubtree(
+                                    key: ValueKey<String>(
+                                      'tabs_empty_$_viewingIncognito',
+                                    ),
+                                    child: _buildEmptyState(context, colors),
+                                  )
+                                : KeyedSubtree(
+                                    key: ValueKey<String>(
+                                      'tabs_grid_${_viewingIncognito}_${_selectedGroupId ?? 'all'}',
+                                    ),
+                                    child: LayoutBuilder(
+                                      builder:
+                                          (
+                                            BuildContext context,
+                                            BoxConstraints constraints,
+                                          ) {
+                                            final int columns =
+                                                constraints.maxWidth >= 620
+                                                ? 3
+                                                : 2;
+                                            return GridView.builder(
+                                              padding:
+                                                  const EdgeInsets.fromLTRB(
+                                                    12,
+                                                    8,
+                                                    12,
+                                                    18,
+                                                  ),
+                                              gridDelegate:
+                                                  SliverGridDelegateWithFixedCrossAxisCount(
+                                                    crossAxisCount: columns,
+                                                    mainAxisSpacing: 12,
+                                                    crossAxisSpacing: 12,
+                                                    childAspectRatio: 0.58,
+                                                  ),
+                                              itemCount: tabs.length,
+                                              itemBuilder:
+                                                  (
+                                                    BuildContext context,
+                                                    int index,
+                                                  ) {
+                                                    return _buildFullTabWindowCard(
+                                                      context,
+                                                      colors,
+                                                      isDark,
+                                                      tabs[index],
+                                                      index,
+                                                    );
+                                                  },
+                                            );
+                                          },
+                                    ),
+                                  )),
+                    ),
                   ),
                   if (!incognitoLocked) _buildBottomBar(context, colors, tabs),
                 ],
@@ -420,8 +457,10 @@ class _TabsScreenState extends State<TabsScreen> {
     ColorScheme colors,
     bool isDark,
     BrowserTab tab,
+    int index,
   ) {
     final bool isActive = widget.tabManager.activeTab.id == tab.id;
+    final bool isClosing = _closingTabIds.contains(tab.id);
     final bool isPlayingAudio = tab.engine.isMediaPlaying;
     final Color cardBg = tab.isIncognito
         ? const Color(0xFF0D1B22)
@@ -440,189 +479,230 @@ class _TabsScreenState extends State<TabsScreen> {
         ? 2.6
         : (tab.groupId != null ? 1.8 : 1.1);
 
-    return AnimatedScale(
+    return RepaintBoundary(
       key: ValueKey<String>('tab_card_${tab.id}'),
-      scale: isActive ? 1.0 : 0.988,
-      duration: const Duration(milliseconds: 210),
-      curve: Curves.easeOutCubic,
-      child: Padding(
-        padding: const EdgeInsets.all(2),
-        child: AnimatedContainer(
-          duration: const Duration(milliseconds: 210),
+      child: Dismissible(
+        key: ValueKey<String>('tab_dismiss_${tab.id}'),
+        direction: DismissDirection.horizontal,
+        movementDuration: const Duration(milliseconds: 180),
+        resizeDuration: const Duration(milliseconds: 140),
+        onDismissed: (_) {
+          HapticFeedback.lightImpact();
+          unawaited(widget.tabManager.closeTab(tab.id));
+        },
+        child: TweenAnimationBuilder<double>(
+          tween: Tween<double>(begin: 0.92, end: 1.0),
+          duration: Duration(milliseconds: 180 + ((index % 6) * 22)),
           curve: Curves.easeOutCubic,
-          decoration: BoxDecoration(
-            color: cardBg,
-            borderRadius: BorderRadius.circular(18),
-            boxShadow: isActive
-                ? <BoxShadow>[
-                    BoxShadow(
-                      color: colors.primary.withValues(alpha: 0.28),
-                      blurRadius: 10,
-                      spreadRadius: 0.5,
-                    ),
-                  ]
-                : <BoxShadow>[
-                    BoxShadow(
-                      color: Colors.black.withValues(
-                        alpha: isDark ? 0.24 : 0.08,
-                      ),
-                      blurRadius: 4,
-                      offset: const Offset(0, 2),
-                    ),
-                  ],
-          ),
-          // Paint rounded border in foregroundDecoration ON TOP OF clipped child
-          // so all 4 rounded corners of the blue active border stay 100% uncut!
-          foregroundDecoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(18),
-            border: Border.all(color: borderColor, width: borderWidth),
-          ),
-          child: Material(
-            color: Colors.transparent,
-            borderRadius: BorderRadius.circular(18),
-            clipBehavior: Clip.antiAlias,
-            child: InkWell(
-              borderRadius: BorderRadius.circular(18),
-              onTap: () {
-                widget.tabManager.switchToTab(tab.id);
-                Navigator.pop(context);
-              },
-              onLongPress: tab.isIncognito
-                  ? null
-                  : () => _showGroupSheetForTab(context, tab),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: <Widget>[
-                  Container(
-                    height: 36,
-                    padding: const EdgeInsets.only(left: 8, right: 2),
-                    color: headerBg,
-                    child: Row(
-                      children: <Widget>[
-                        if (widget.tabManager.groupById(tab.groupId)
-                            case final TabGroup grp) ...<Widget>[
-                          Container(
-                            width: 8,
-                            height: 8,
-                            decoration: BoxDecoration(
-                              color: grp.color,
-                              shape: BoxShape.circle,
+          builder: (BuildContext context, double entranceScale, Widget? child) {
+            return Transform.scale(scale: entranceScale, child: child);
+          },
+          child: AnimatedOpacity(
+            opacity: isClosing ? 0.0 : 1.0,
+            duration: const Duration(milliseconds: 155),
+            curve: Curves.easeInOut,
+            child: AnimatedScale(
+              scale: isClosing ? 0.76 : (isActive ? 1.0 : 0.988),
+              duration: const Duration(milliseconds: 170),
+              curve: isClosing ? Curves.easeInCubic : Curves.easeOutCubic,
+              child: Padding(
+                padding: const EdgeInsets.all(2),
+                child: AnimatedContainer(
+                  duration: const Duration(milliseconds: 200),
+                  curve: Curves.easeOutCubic,
+                  decoration: BoxDecoration(
+                    color: cardBg,
+                    borderRadius: BorderRadius.circular(18),
+                    boxShadow: isActive
+                        ? <BoxShadow>[
+                            BoxShadow(
+                              color: colors.primary.withValues(alpha: 0.28),
+                              blurRadius: 10,
+                              spreadRadius: 0.5,
                             ),
-                          ),
-                          const SizedBox(width: 5),
-                        ],
-                        SiteLogo(
-                          urlOrDomain: tab.engine.currentUrl,
-                          fallbackLabel: tab.displayTitle,
-                          size: 18,
-                          borderRadius: 5,
-                        ),
-                        const SizedBox(width: 6),
-                        Expanded(
-                          child: Text(
-                            tab.displayTitle,
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            style: const TextStyle(
-                              fontSize: 11.5,
-                              fontWeight: FontWeight.w700,
-                            ),
-                          ),
-                        ),
-                        if (isPlayingAudio)
-                          Padding(
-                            padding: const EdgeInsets.only(right: 2),
-                            child: Icon(
-                              Icons.volume_up_rounded,
-                              size: 14,
-                              color: AppTheme.shieldEmerald,
-                            ),
-                          ),
-                        IconButton(
-                          icon: const Icon(Icons.close_rounded, size: 16),
-                          visualDensity: VisualDensity.compact,
-                          padding: EdgeInsets.zero,
-                          constraints: const BoxConstraints(
-                            minWidth: 28,
-                            minHeight: 28,
-                          ),
-                          tooltip: 'Close tab',
-                          onPressed: () => widget.tabManager.closeTab(tab.id),
-                        ),
-                      ],
-                    ),
-                  ),
-                  Expanded(
-                    child: Stack(
-                      fit: StackFit.expand,
-                      children: <Widget>[
-                        if (tab.previewBytes != null &&
-                            tab.previewBytes!.isNotEmpty)
-                          Image.memory(
-                            tab.previewBytes!,
-                            fit: BoxFit.cover,
-                            alignment: Alignment.topCenter,
-                            gaplessPlayback: true,
-                          )
-                        else
-                          _buildSimulatedFullPageFrame(colors, isDark, tab),
-                        Positioned(
-                          left: 0,
-                          right: 0,
-                          bottom: 0,
-                          child: Container(
-                            padding: const EdgeInsets.fromLTRB(8, 18, 8, 6),
-                            decoration: BoxDecoration(
-                              gradient: LinearGradient(
-                                begin: Alignment.topCenter,
-                                end: Alignment.bottomCenter,
-                                colors: <Color>[
-                                  Colors.transparent,
-                                  Colors.black.withValues(alpha: 0.72),
-                                ],
+                          ]
+                        : <BoxShadow>[
+                            BoxShadow(
+                              color: Colors.black.withValues(
+                                alpha: isDark ? 0.24 : 0.08,
                               ),
+                              blurRadius: 4,
+                              offset: const Offset(0, 2),
                             ),
+                          ],
+                  ),
+                  // Paint rounded border in foregroundDecoration ON TOP OF clipped child
+                  // so all 4 rounded corners of the blue active border stay 100% uncut!
+                  foregroundDecoration: BoxDecoration(
+                    borderRadius: BorderRadius.circular(18),
+                    border: Border.all(color: borderColor, width: borderWidth),
+                  ),
+                  child: Material(
+                    color: Colors.transparent,
+                    borderRadius: BorderRadius.circular(18),
+                    clipBehavior: Clip.antiAlias,
+                    child: InkWell(
+                      borderRadius: BorderRadius.circular(18),
+                      onTap: () {
+                        HapticFeedback.selectionClick();
+                        widget.tabManager.switchToTab(tab.id);
+                        Navigator.pop(context);
+                      },
+                      onLongPress: tab.isIncognito
+                          ? null
+                          : () => _showGroupSheetForTab(context, tab),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: <Widget>[
+                          Container(
+                            height: 36,
+                            padding: const EdgeInsets.only(left: 8, right: 2),
+                            color: headerBg,
                             child: Row(
                               children: <Widget>[
+                                if (widget.tabManager.groupById(tab.groupId)
+                                    case final TabGroup grp) ...<Widget>[
+                                  Container(
+                                    width: 8,
+                                    height: 8,
+                                    decoration: BoxDecoration(
+                                      color: grp.color,
+                                      shape: BoxShape.circle,
+                                    ),
+                                  ),
+                                  const SizedBox(width: 5),
+                                ],
+                                SiteLogo(
+                                  urlOrDomain: tab.engine.currentUrl,
+                                  fallbackLabel: tab.displayTitle,
+                                  size: 18,
+                                  borderRadius: 5,
+                                ),
+                                const SizedBox(width: 6),
                                 Expanded(
                                   child: Text(
-                                    tab.displaySubtitle,
+                                    tab.displayTitle,
                                     maxLines: 1,
                                     overflow: TextOverflow.ellipsis,
                                     style: const TextStyle(
-                                      fontSize: 10,
-                                      fontWeight: FontWeight.w600,
-                                      color: Colors.white70,
+                                      fontSize: 11.5,
+                                      fontWeight: FontWeight.w700,
                                     ),
                                   ),
                                 ),
-                                if (isActive)
-                                  Container(
-                                    padding: const EdgeInsets.symmetric(
-                                      horizontal: 5,
-                                      vertical: 1.5,
-                                    ),
-                                    decoration: BoxDecoration(
-                                      color: colors.primary,
-                                      borderRadius: BorderRadius.circular(5),
-                                    ),
-                                    child: Text(
-                                      'ACTIVE',
-                                      style: TextStyle(
-                                        fontSize: 8.5,
-                                        fontWeight: FontWeight.w900,
-                                        color: colors.onPrimary,
-                                      ),
+                                if (isPlayingAudio)
+                                  Padding(
+                                    padding: const EdgeInsets.only(right: 2),
+                                    child: Icon(
+                                      Icons.volume_up_rounded,
+                                      size: 14,
+                                      color: AppTheme.shieldEmerald,
                                     ),
                                   ),
+                                IconButton(
+                                  icon: const Icon(
+                                    Icons.close_rounded,
+                                    size: 16,
+                                  ),
+                                  visualDensity: VisualDensity.compact,
+                                  padding: EdgeInsets.zero,
+                                  constraints: const BoxConstraints(
+                                    minWidth: 28,
+                                    minHeight: 28,
+                                  ),
+                                  tooltip: 'Close tab',
+                                  onPressed: () => _animateAndCloseTab(tab.id),
+                                ),
                               ],
                             ),
                           ),
-                        ),
-                      ],
+                          Expanded(
+                            child: Stack(
+                              fit: StackFit.expand,
+                              children: <Widget>[
+                                if (tab.previewBytes != null &&
+                                    tab.previewBytes!.isNotEmpty)
+                                  Image.memory(
+                                    tab.previewBytes!,
+                                    cacheWidth: 320,
+                                    filterQuality: FilterQuality.low,
+                                    fit: BoxFit.cover,
+                                    alignment: Alignment.topCenter,
+                                    gaplessPlayback: true,
+                                  )
+                                else
+                                  _buildSimulatedFullPageFrame(
+                                    colors,
+                                    isDark,
+                                    tab,
+                                  ),
+                                Positioned(
+                                  left: 0,
+                                  right: 0,
+                                  bottom: 0,
+                                  child: Container(
+                                    padding: const EdgeInsets.fromLTRB(
+                                      8,
+                                      18,
+                                      8,
+                                      6,
+                                    ),
+                                    decoration: BoxDecoration(
+                                      gradient: LinearGradient(
+                                        begin: Alignment.topCenter,
+                                        end: Alignment.bottomCenter,
+                                        colors: <Color>[
+                                          Colors.transparent,
+                                          Colors.black.withValues(alpha: 0.72),
+                                        ],
+                                      ),
+                                    ),
+                                    child: Row(
+                                      children: <Widget>[
+                                        Expanded(
+                                          child: Text(
+                                            tab.displaySubtitle,
+                                            maxLines: 1,
+                                            overflow: TextOverflow.ellipsis,
+                                            style: const TextStyle(
+                                              fontSize: 10,
+                                              fontWeight: FontWeight.w600,
+                                              color: Colors.white70,
+                                            ),
+                                          ),
+                                        ),
+                                        if (isActive)
+                                          Container(
+                                            padding: const EdgeInsets.symmetric(
+                                              horizontal: 5,
+                                              vertical: 1.5,
+                                            ),
+                                            decoration: BoxDecoration(
+                                              color: colors.primary,
+                                              borderRadius:
+                                                  BorderRadius.circular(5),
+                                            ),
+                                            child: Text(
+                                              'ACTIVE',
+                                              style: TextStyle(
+                                                fontSize: 8.5,
+                                                fontWeight: FontWeight.w900,
+                                                color: colors.onPrimary,
+                                              ),
+                                            ),
+                                          ),
+                                      ],
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ],
+                      ),
                     ),
                   ),
-                ],
+                ),
               ),
             ),
           ),

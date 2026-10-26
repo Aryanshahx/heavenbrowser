@@ -36,6 +36,11 @@ class MainActivity : FlutterActivity() {
         shieldPlugin?.onActivityResumed()
     }
 
+    override fun onTrimMemory(level: Int) {
+        super.onTrimMemory(level)
+        shieldPlugin?.onTrimMemory(level)
+    }
+
     private fun enableHighestRefreshRate() {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) return
         try {

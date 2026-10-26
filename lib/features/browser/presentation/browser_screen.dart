@@ -301,7 +301,7 @@ class _BrowserScreenState extends State<BrowserScreen>
   void _handleTopBarHorizontalEnd(DragEndDetails details) {
     final double vx = details.primaryVelocity ?? 0.0;
     final double dx = _topBarSwipeDx;
-    _topBarSwipeDx = 0.0;
+    setState(() => _topBarSwipeDx = 0.0);
     if (dx <= -42 || vx <= -260) {
       if (widget.tabManager.switchAdjacentTab(1)) {
         HapticFeedback.selectionClick();
@@ -311,6 +311,51 @@ class _BrowserScreenState extends State<BrowserScreen>
         HapticFeedback.selectionClick();
       }
     }
+  }
+
+  PageRoute<T> _smoothRoute<T>(Widget page, {bool zoomStyle = false}) {
+    return PageRouteBuilder<T>(
+      transitionDuration: const Duration(milliseconds: 210),
+      reverseTransitionDuration: const Duration(milliseconds: 185),
+      pageBuilder:
+          (
+            BuildContext context,
+            Animation<double> animation,
+            Animation<double> secondaryAnimation,
+          ) => page,
+      transitionsBuilder:
+          (
+            BuildContext context,
+            Animation<double> animation,
+            Animation<double> secondaryAnimation,
+            Widget child,
+          ) {
+            final Animation<double> curved = CurvedAnimation(
+              parent: animation,
+              curve: Curves.easeOutCubic,
+              reverseCurve: Curves.easeInCubic,
+            );
+            if (zoomStyle) {
+              return FadeTransition(
+                opacity: curved,
+                child: ScaleTransition(
+                  scale: Tween<double>(begin: 0.94, end: 1.0).animate(curved),
+                  child: child,
+                ),
+              );
+            }
+            return FadeTransition(
+              opacity: curved,
+              child: SlideTransition(
+                position: Tween<Offset>(
+                  begin: const Offset(0.04, 0.0),
+                  end: Offset.zero,
+                ).animate(curved),
+                child: child,
+              ),
+            );
+          },
+    );
   }
 
   @override
@@ -352,6 +397,8 @@ class _BrowserScreenState extends State<BrowserScreen>
                   _isEditingOmnibox ||
                   engine.isShowingDownloadsPage ||
                   engine.isNavBarVisible;
+              final double topBarHeight = _isEditingOmnibox ? 59.0 : 55.0;
+              final double findBarHeight = _showFindBar ? 48.0 : 0.0;
 
               return PopScope<void>(
                 canPop:
@@ -387,23 +434,57 @@ class _BrowserScreenState extends State<BrowserScreen>
                     child: Column(
                       children: <Widget>[
                         Expanded(
-                          child: Stack(
-                            children: <Widget>[
-                              Positioned.fill(
-                                child: RepaintBoundary(
-                                  child: ValueListenableBuilder<int>(
-                                    valueListenable:
-                                        widget.tabManager.viewportRevision,
-                                    builder: (BuildContext context, int _, _) {
-                                      return _buildTabsViewport(colors);
-                                    },
-                                  ),
-                                ),
+                          child: _NonOverlayCollapsibleBrowserViewport(
+                            barVisible: showTopNavBar,
+                            barHeight: topBarHeight,
+                            findBarHeight: findBarHeight,
+                            topBar: ColoredBox(
+                              key: const Key('top_navigation_bar_wrapper'),
+                              color: effectiveTheme.scaffoldBackgroundColor,
+                              child: _buildCommandCapsuleBar(
+                                context,
+                                colors,
+                                engine,
                               ),
+                            ),
+                            findBar: _showFindBar
+                                ? _buildFindBar(colors)
+                                : null,
+                            progressBar: engine.isLoading
+                                ? RepaintBoundary(
+                                    child: IgnorePointer(
+                                      child: LinearProgressIndicator(
+                                        value:
+                                            engine.progress > 0 &&
+                                                engine.progress < 1
+                                            ? engine.progress
+                                            : null,
+                                        minHeight: 2.5,
+                                        backgroundColor: Colors.transparent,
+                                      ),
+                                    ),
+                                  )
+                                : null,
+                            viewport: RepaintBoundary(
+                              child: ValueListenableBuilder<int>(
+                                valueListenable:
+                                    widget.tabManager.viewportRevision,
+                                builder: (BuildContext context, int _, _) {
+                                  return _AnimatedTabSwitchViewport(
+                                    epoch: widget.tabManager.tabTransitionEpoch,
+                                    direction: widget
+                                        .tabManager
+                                        .lastTransitionDirection,
+                                    child: _buildTabsViewport(colors),
+                                  );
+                                },
+                              ),
+                            ),
+                            overlays: <Widget>[
                               if (engine.pullProgress > 0.02)
                                 Positioned(
                                   top:
-                                      (showTopNavBar ? 62 : 12) +
+                                      (showTopNavBar ? topBarHeight + 8 : 12) +
                                       (engine.pullProgress * 46),
                                   left: 0,
                                   right: 0,
@@ -445,47 +526,6 @@ class _BrowserScreenState extends State<BrowserScreen>
                                     ),
                                   ),
                                 ),
-                              Positioned(
-                                top: 0,
-                                left: 0,
-                                right: 0,
-                                child: Column(
-                                  mainAxisSize: MainAxisSize.min,
-                                  children: <Widget>[
-                                    _SmoothAutoHideTopBar(
-                                      key: const Key(
-                                        'top_navigation_bar_wrapper',
-                                      ),
-                                      visible: showTopNavBar,
-                                      child: ColoredBox(
-                                        color: effectiveTheme
-                                            .scaffoldBackgroundColor
-                                            .withValues(alpha: 0.96),
-                                        child: _buildCommandCapsuleBar(
-                                          context,
-                                          colors,
-                                          engine,
-                                        ),
-                                      ),
-                                    ),
-                                    if (_showFindBar) _buildFindBar(colors),
-                                    if (engine.isLoading)
-                                      RepaintBoundary(
-                                        child: IgnorePointer(
-                                          child: LinearProgressIndicator(
-                                            value:
-                                                engine.progress > 0 &&
-                                                    engine.progress < 1
-                                                ? engine.progress
-                                                : null,
-                                            minHeight: 2.5,
-                                            backgroundColor: Colors.transparent,
-                                          ),
-                                        ),
-                                      ),
-                                  ],
-                                ),
-                              ),
                               if (!showTopNavBar)
                                 Positioned(
                                   top: 0,
@@ -506,7 +546,7 @@ class _BrowserScreenState extends State<BrowserScreen>
                                 Positioned(
                                   left: 10,
                                   right: 10,
-                                  top: 56,
+                                  top: topBarHeight + 4,
                                   child: _buildOmniboxOverlayPanel(
                                     context,
                                     colors,
@@ -618,71 +658,114 @@ class _BrowserScreenState extends State<BrowserScreen>
             },
           ),
         ),
-      if (leftProgress > 0.04)
-        Positioned(
-          left: -28 + (leftProgress * 44),
-          top: 0,
-          bottom: 0,
-          child: Center(
-            child: IgnorePointer(
-              child: Material(
-                elevation: 6,
-                shape: const CircleBorder(),
-                color: leftProgress >= 0.88
-                    ? colors.primary
-                    : colors.surfaceContainerHighest,
-                child: SizedBox(
-                  width: 38,
-                  height: 38,
-                  child: Icon(
-                    Icons.arrow_back_ios_new_rounded,
-                    size: 17,
-                    color: leftProgress >= 0.88
-                        ? colors.onPrimary
-                        : colors.primary,
+      AnimatedPositioned(
+        duration: _leftEdgeDragPx > 0
+            ? Duration.zero
+            : const Duration(milliseconds: 190),
+        curve: Curves.easeOutCubic,
+        left: leftProgress > 0.02 ? (-28 + (leftProgress * 46)) : -48,
+        top: 0,
+        bottom: 0,
+        child: Center(
+          child: IgnorePointer(
+            child: AnimatedScale(
+              duration: const Duration(milliseconds: 140),
+              curve: Curves.easeOutBack,
+              scale: leftProgress > 0.02
+                  ? (leftProgress >= 0.88 ? 1.08 : (0.76 + leftProgress * 0.24))
+                  : 0.5,
+              child: AnimatedOpacity(
+                duration: const Duration(milliseconds: 130),
+                opacity: leftProgress > 0.02 ? 1.0 : 0.0,
+                child: Material(
+                  elevation: 6,
+                  shape: const CircleBorder(),
+                  color: leftProgress >= 0.88
+                      ? colors.primary
+                      : colors.surfaceContainerHighest,
+                  child: SizedBox(
+                    width: 40,
+                    height: 40,
+                    child: Icon(
+                      Icons.arrow_back_ios_new_rounded,
+                      size: 17,
+                      color: leftProgress >= 0.88
+                          ? colors.onPrimary
+                          : colors.primary,
+                    ),
                   ),
                 ),
               ),
             ),
           ),
         ),
-      if (rightProgress > 0.04)
-        Positioned(
-          right: -28 + (rightProgress * 44),
-          top: 0,
-          bottom: 0,
-          child: Center(
-            child: IgnorePointer(
-              child: Material(
-                elevation: 6,
-                shape: const CircleBorder(),
-                color: rightProgress >= 0.88
-                    ? colors.primary
-                    : colors.surfaceContainerHighest,
-                child: SizedBox(
-                  width: 38,
-                  height: 38,
-                  child: Icon(
-                    Icons.arrow_forward_ios_rounded,
-                    size: 17,
-                    color: rightProgress >= 0.88
-                        ? colors.onPrimary
-                        : colors.primary,
+      ),
+      AnimatedPositioned(
+        duration: _rightEdgeDragPx > 0
+            ? Duration.zero
+            : const Duration(milliseconds: 190),
+        curve: Curves.easeOutCubic,
+        right: rightProgress > 0.02 ? (-28 + (rightProgress * 46)) : -48,
+        top: 0,
+        bottom: 0,
+        child: Center(
+          child: IgnorePointer(
+            child: AnimatedScale(
+              duration: const Duration(milliseconds: 140),
+              curve: Curves.easeOutBack,
+              scale: rightProgress > 0.02
+                  ? (rightProgress >= 0.88
+                        ? 1.08
+                        : (0.76 + rightProgress * 0.24))
+                  : 0.5,
+              child: AnimatedOpacity(
+                duration: const Duration(milliseconds: 130),
+                opacity: rightProgress > 0.02 ? 1.0 : 0.0,
+                child: Material(
+                  elevation: 6,
+                  shape: const CircleBorder(),
+                  color: rightProgress >= 0.88
+                      ? colors.primary
+                      : colors.surfaceContainerHighest,
+                  child: SizedBox(
+                    width: 40,
+                    height: 40,
+                    child: Icon(
+                      Icons.arrow_forward_ios_rounded,
+                      size: 17,
+                      color: rightProgress >= 0.88
+                          ? colors.onPrimary
+                          : colors.primary,
+                    ),
                   ),
                 ),
               ),
             ),
           ),
         ),
+      ),
     ];
   }
 
   Widget _buildDownloadStartedPopupCard(ColorScheme colors) {
     final bool isDark = Theme.of(context).brightness == Brightness.dark;
-    return Material(
-      elevation: 8,
-      color: isDark ? AppTheme.navySurface : Colors.white,
-      borderRadius: BorderRadius.circular(16),
+    return TweenAnimationBuilder<double>(
+      tween: Tween<double>(begin: 0.0, end: 1.0),
+      duration: const Duration(milliseconds: 220),
+      curve: Curves.easeOutCubic,
+      builder: (BuildContext context, double t, Widget? child) {
+        return Opacity(
+          opacity: t,
+          child: Transform.translate(
+            offset: Offset(0, (1.0 - t) * 18.0),
+            child: child,
+          ),
+        );
+      },
+      child: Material(
+        elevation: 8,
+        color: isDark ? AppTheme.navySurface : Colors.white,
+        borderRadius: BorderRadius.circular(16),
       child: InkWell(
         key: const Key('download_started_popup_banner'),
         borderRadius: BorderRadius.circular(16),
@@ -753,6 +836,7 @@ class _BrowserScreenState extends State<BrowserScreen>
           ),
         ),
       ),
+      ),
     );
   }
 
@@ -817,19 +901,23 @@ class _BrowserScreenState extends State<BrowserScreen>
 
   Widget _buildPullRefreshBadge(ColorScheme colors, double pullProgress) {
     final bool armed = pullProgress >= 0.96;
-    return Material(
-      elevation: 6,
-      shape: const CircleBorder(),
-      color: armed ? colors.primary : colors.surfaceContainerHighest,
-      child: SizedBox(
-        width: 40,
-        height: 40,
-        child: Transform.rotate(
-          angle: pullProgress * math.pi * 1.8,
-          child: Icon(
-            Icons.refresh_rounded,
-            size: 22,
-            color: armed ? colors.onPrimary : colors.primary,
+    final double scale = (0.72 + (pullProgress * 0.34)).clamp(0.72, 1.08);
+    return Transform.scale(
+      scale: scale,
+      child: Material(
+        elevation: 6,
+        shape: const CircleBorder(),
+        color: armed ? colors.primary : colors.surfaceContainerHighest,
+        child: SizedBox(
+          width: 40,
+          height: 40,
+          child: Transform.rotate(
+            angle: pullProgress * math.pi * 1.8,
+            child: Icon(
+              Icons.refresh_rounded,
+              size: 22,
+              color: armed ? colors.onPrimary : colors.primary,
+            ),
           ),
         ),
       ),
@@ -850,7 +938,11 @@ class _BrowserScreenState extends State<BrowserScreen>
               enabled: i == activeIndex,
               child: RepaintBoundary(
                 key: tabs[i].repaintKey,
-                child: _buildSingleTabBody(tabs[i], colors),
+                child: _buildSingleTabBody(
+                  tabs[i],
+                  colors,
+                  isActiveTab: i == activeIndex,
+                ),
               ),
             ),
           ),
@@ -861,35 +953,47 @@ class _BrowserScreenState extends State<BrowserScreen>
   Widget _buildHardwareWebView(BrowserTab tab, BrowserEngine engine) {
     final WebViewController ctrl = engine.controller!;
     if (ctrl.platform is AndroidWebViewController) {
+      // Texture Layer Hybrid Composition (displayWithHybridComposition: false)
+      // renders WebView via hardware GPU texture without locking Flutter's UI
+      // thread on every frame — eliminating screen jitter on weak & old phones!
       return WebViewWidget.fromPlatformCreationParams(
         params: AndroidWebViewWidgetCreationParams(
-          key: ValueKey<String>('wv_${tab.id}'),
+          key: ValueKey<Object>(ctrl),
           controller: ctrl.platform,
-          displayWithHybridComposition: true,
+          displayWithHybridComposition: false,
         ),
       );
     }
     return WebViewWidget(
-      key: ValueKey<String>('wv_${tab.id}'),
+      key: ValueKey<Object>(ctrl),
       controller: ctrl,
     );
   }
 
-  Widget _buildSingleTabBody(BrowserTab tab, ColorScheme colors) {
+  Widget _buildSingleTabBody(
+    BrowserTab tab,
+    ColorScheme colors, {
+    required bool isActiveTab,
+  }) {
     final BrowserEngine engine = tab.engine;
 
     return ListenableBuilder(
       listenable: engine,
-      child: engine.controller != null
-          ? _buildHardwareWebView(tab, engine)
-          : null,
-      builder: (BuildContext context, Widget? cachedWebView) {
+      builder: (BuildContext context, _) {
+        final bool shouldMountWebView =
+            engine.controller != null &&
+            (engine.isShowingWebPage || engine.isLoading) &&
+            (isActiveTab || engine.isMediaPlaying);
+        final Widget? liveWebView = shouldMountWebView
+            ? _buildHardwareWebView(tab, engine)
+            : null;
+
         Widget? overlayChild;
         if (engine.isShowingDownloadsPage) {
           overlayChild = DownloadsScreen(
             downloads: widget.downloads,
             embeddedInTab: true,
-            topOverlayInset: 54,
+            topOverlayInset: 0,
           );
         } else if (engine.isShowingStartPage) {
           overlayChild = NotificationListener<ScrollUpdateNotification>(
@@ -911,7 +1015,7 @@ class _BrowserScreenState extends State<BrowserScreen>
               searchService: widget.searchService,
               newsService: widget.newsService,
               interests: widget.interests,
-              topOverlayInset: 54,
+              topOverlayInset: 0,
               onSelectUrl: (String input) => engine.loadUserEntry(input),
               onOpenInNewTab: (String url) => widget.tabManager.openNewTab(
                 incognito: false,
@@ -968,7 +1072,7 @@ class _BrowserScreenState extends State<BrowserScreen>
           );
         }
 
-        if (cachedWebView == null) {
+        if (liveWebView == null) {
           return overlayChild ??
               Center(
                 child: Text(
@@ -978,13 +1082,12 @@ class _BrowserScreenState extends State<BrowserScreen>
               );
         }
 
-        // Keep WebViewWidget onstage (never Offstage) so Android's SurfaceTexture &
-        // MediaCodec pipeline are already attached and initialized on FIRST load —
-        // ensuring YouTube and HTML5 videos play immediately without needing refresh!
+        // Keep active WebViewWidget onstage so Android's GPU SurfaceTexture &
+        // MediaCodec pipeline are immediately ready on first load!
         return Stack(
           fit: StackFit.expand,
           children: <Widget>[
-            IgnorePointer(ignoring: overlayChild != null, child: cachedWebView),
+            IgnorePointer(ignoring: overlayChild != null, child: liveWebView),
             if (overlayChild != null)
               ColoredBox(
                 color: Theme.of(context).scaffoldBackgroundColor,
@@ -1314,13 +1417,32 @@ class _BrowserScreenState extends State<BrowserScreen>
               key: const Key('top_bar_tab_swipe_detector'),
               behavior: HitTestBehavior.translucent,
               onHorizontalDragStart: (_) {
-                _topBarSwipeDx = 0.0;
+                setState(() => _topBarSwipeDx = 0.0);
               },
               onHorizontalDragUpdate: (DragUpdateDetails d) {
-                _topBarSwipeDx += d.delta.dx;
+                setState(() {
+                  _topBarSwipeDx = (_topBarSwipeDx + d.delta.dx).clamp(
+                    -96.0,
+                    96.0,
+                  );
+                });
+              },
+              onHorizontalDragCancel: () {
+                if (_topBarSwipeDx != 0.0) {
+                  setState(() => _topBarSwipeDx = 0.0);
+                }
               },
               onHorizontalDragEnd: _handleTopBarHorizontalEnd,
-              child: Container(
+              child: AnimatedContainer(
+                duration: _topBarSwipeDx != 0.0
+                    ? Duration.zero
+                    : const Duration(milliseconds: 190),
+                curve: Curves.easeOutCubic,
+                transform: Matrix4.translationValues(
+                  (_topBarSwipeDx * 0.34).clamp(-26.0, 26.0),
+                  0.0,
+                  0.0,
+                ),
                 height: 42,
                 decoration: BoxDecoration(
                   color: incognito
@@ -1332,7 +1454,9 @@ class _BrowserScreenState extends State<BrowserScreen>
                               )),
                   borderRadius: BorderRadius.circular(21),
                   border: Border.all(
-                    color: colors.outlineVariant.withValues(alpha: 0.4),
+                    color: _topBarSwipeDx.abs() >= 42
+                        ? colors.primary.withValues(alpha: 0.75)
+                        : colors.outlineVariant.withValues(alpha: 0.4),
                   ),
                 ),
                 child: _buildDisplayPill(context, colors, engine, incognito),
@@ -1344,8 +1468,10 @@ class _BrowserScreenState extends State<BrowserScreen>
             onLongPress: () => widget.tabManager.openNewTab(incognito: true),
             child: IconButton(
               key: const Key('bar_new_tab_button'),
-              onPressed: () =>
-                  widget.tabManager.openNewTab(incognito: incognito),
+              onPressed: () {
+                HapticFeedback.selectionClick();
+                widget.tabManager.openNewTab(incognito: incognito);
+              },
               icon: const Icon(Icons.add_rounded, size: 21),
               tooltip: 'New Tab',
               visualDensity: VisualDensity.compact,
@@ -1360,7 +1486,9 @@ class _BrowserScreenState extends State<BrowserScreen>
                 widget.tabManager.openNewTab(incognito: incognito),
             child: Tooltip(
               message: 'Switch Tabs',
-              child: Container(
+              child: AnimatedContainer(
+                duration: const Duration(milliseconds: 190),
+                curve: Curves.easeOutCubic,
                 width: 28,
                 height: 28,
                 alignment: Alignment.center,
@@ -1373,18 +1501,35 @@ class _BrowserScreenState extends State<BrowserScreen>
                     width: 1.8,
                   ),
                 ),
-                child: FittedBox(
-                  fit: BoxFit.scaleDown,
-                  child: Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 3),
-                    child: Text(
-                      '${widget.tabManager.totalTabCount}',
-                      style: TextStyle(
-                        fontSize: 11.5,
-                        fontWeight: FontWeight.w900,
-                        color: incognito
-                            ? AppTheme.incognitoCyan
-                            : colors.primary,
+                child: AnimatedSwitcher(
+                  duration: const Duration(milliseconds: 190),
+                  transitionBuilder:
+                      (Widget child, Animation<double> animation) {
+                        return ScaleTransition(
+                          scale: Tween<double>(
+                            begin: 0.65,
+                            end: 1.0,
+                          ).animate(animation),
+                          child: FadeTransition(
+                            opacity: animation,
+                            child: child,
+                          ),
+                        );
+                      },
+                  child: FittedBox(
+                    key: ValueKey<int>(widget.tabManager.totalTabCount),
+                    fit: BoxFit.scaleDown,
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 3),
+                      child: Text(
+                        '${widget.tabManager.totalTabCount}',
+                        style: TextStyle(
+                          fontSize: 11.5,
+                          fontWeight: FontWeight.w900,
+                          color: incognito
+                              ? AppTheme.incognitoCyan
+                              : colors.primary,
+                        ),
                       ),
                     ),
                   ),
@@ -1663,16 +1808,17 @@ class _BrowserScreenState extends State<BrowserScreen>
     await widget.tabManager.captureTabPreview(widget.tabManager.activeTab);
     if (!mounted) return;
     await Navigator.of(context).push(
-      MaterialPageRoute<void>(
-        builder: (_) => TabsScreen(tabManager: widget.tabManager),
+      _smoothRoute<void>(
+        TabsScreen(tabManager: widget.tabManager),
+        zoomStyle: true,
       ),
     );
   }
 
   void _openLibraryScreen({required int initialTabIndex}) {
     Navigator.of(context).push(
-      MaterialPageRoute<void>(
-        builder: (_) => LibraryScreen(
+      _smoothRoute<void>(
+        LibraryScreen(
           settings: widget.settings,
           initialTabIndex: initialTabIndex,
           onSelectUrl: (String url) => _activeEngine.loadUserEntry(url),
@@ -1687,15 +1833,15 @@ class _BrowserScreenState extends State<BrowserScreen>
 
   void _openVpnScreen() {
     Navigator.of(context).push(
-      MaterialPageRoute<void>(builder: (_) => HeavenVpnScreen(vpn: widget.vpn)),
+      _smoothRoute<void>(HeavenVpnScreen(vpn: widget.vpn)),
     );
   }
 
   void _openHeavenShieldScreen() {
     final BrowserEngine engine = _activeEngine;
     Navigator.of(context).push(
-      MaterialPageRoute<void>(
-        builder: (_) => HeavenShieldScreen(
+      _smoothRoute<void>(
+        HeavenShieldScreen(
           settings: widget.settings,
           tabManager: widget.tabManager,
           currentHost: engine.currentHost,
@@ -1746,17 +1892,6 @@ class _BrowserScreenState extends State<BrowserScreen>
         return TranslateReaderSheet(
           engine: engine,
           settings: widget.settings,
-          onOpenCleanReader: _triggerReaderMode,
-          onClearSiteData: () async {
-            await engine.burnBrowsingData();
-            if (!mounted) return;
-            ScaffoldMessenger.of(this.context).showSnackBar(
-              const SnackBar(
-                content: Text('Site cookies & storage cleared'),
-                behavior: SnackBarBehavior.floating,
-              ),
-            );
-          },
         );
       },
     );
@@ -2005,8 +2140,8 @@ class _BrowserScreenState extends State<BrowserScreen>
                           icon: Icons.translate_rounded,
                           label: engine.isPageTranslated &&
                                   engine.translatedLangCode != null
-                              ? 'Lang: ${engine.translatedLangCode!.toUpperCase()}'
-                              : 'Language',
+                              ? 'Translate (${engine.translatedLangCode!.toUpperCase()})'
+                              : 'Translate',
                           accent: engine.isPageTranslated
                               ? AppTheme.heavenAccent
                               : colors.primary,
@@ -2033,8 +2168,8 @@ class _BrowserScreenState extends State<BrowserScreen>
                           onTap: () {
                             Navigator.pop(sheetContext);
                             Navigator.of(context).push(
-                              MaterialPageRoute<void>(
-                                builder: (_) => SettingsScreen(
+                              _smoothRoute<void>(
+                                SettingsScreen(
                                   settings: widget.settings,
                                   tabManager: widget.tabManager,
                                   downloads: widget.downloads,
@@ -2571,62 +2706,70 @@ class _CreateShortcutDialogState extends State<_CreateShortcutDialog> {
   }
 }
 
-/// Smoothly glides and fades the floating top search/navigation bar upward
-/// out of view when scrolling down and glides it back down when scrolling up,
-/// using pure GPU compositor transforms (`SlideTransition` + `FadeTransition`
-/// inside `RepaintBoundary`) over a constant-size viewport — zero website pull
-/// and zero `WebView` platform-view resize events.
-class _SmoothAutoHideTopBar extends StatefulWidget {
-  const _SmoothAutoHideTopBar({
-    super.key,
-    required this.visible,
-    required this.child,
+/// Positions the search bar area cleanly ABOVE the website viewport (never
+/// overlaying website content when visible), and smoothly slides + fades the
+/// search bar upward out of view when scrolling down.
+///
+/// Anti-jitter optimization for old & weak Android phones:
+/// While the 220ms collapse/expand animation is in flight, the website
+/// viewport's layout height stays constant (`totalHeight - findBarHeight`) and
+/// only its GPU Y-offset moves (`barHeight * factor`), preventing Chromium
+/// `WebView.onSizeChanged` 60fps relayout thrashing. Once fully expanded at
+/// rest (`factor >= 0.999`), the viewport settles cleanly to
+/// `totalHeight - barHeight - findBarHeight`.
+class _NonOverlayCollapsibleBrowserViewport extends StatefulWidget {
+  const _NonOverlayCollapsibleBrowserViewport({
+    required this.barVisible,
+    required this.barHeight,
+    required this.findBarHeight,
+    required this.topBar,
+    required this.viewport,
+    required this.overlays,
+    this.findBar,
+    this.progressBar,
   });
 
-  final bool visible;
-  final Widget child;
+  final bool barVisible;
+  final double barHeight;
+  final double findBarHeight;
+  final Widget topBar;
+  final Widget? findBar;
+  final Widget? progressBar;
+  final Widget viewport;
+  final List<Widget> overlays;
 
   @override
-  State<_SmoothAutoHideTopBar> createState() => _SmoothAutoHideTopBarState();
+  State<_NonOverlayCollapsibleBrowserViewport> createState() =>
+      _NonOverlayCollapsibleBrowserViewportState();
 }
 
-class _SmoothAutoHideTopBarState extends State<_SmoothAutoHideTopBar>
+class _NonOverlayCollapsibleBrowserViewportState
+    extends State<_NonOverlayCollapsibleBrowserViewport>
     with SingleTickerProviderStateMixin {
   late final AnimationController _controller;
-  late final Animation<Offset> _slideOffset;
-  late final Animation<double> _opacityFactor;
+  late final Animation<double> _factor;
 
   @override
   void initState() {
     super.initState();
     _controller = AnimationController(
       vsync: this,
-      value: widget.visible ? 1.0 : 0.0,
+      value: widget.barVisible ? 1.0 : 0.0,
       duration: const Duration(milliseconds: 220),
-      reverseDuration: const Duration(milliseconds: 250),
+      reverseDuration: const Duration(milliseconds: 235),
     );
-    _slideOffset = Tween<Offset>(
-      begin: const Offset(0.0, -1.12),
-      end: Offset.zero,
-    ).animate(
-      CurvedAnimation(
-        parent: _controller,
-        curve: Curves.easeOutCubic,
-        reverseCurve: Curves.fastOutSlowIn,
-      ),
-    );
-    _opacityFactor = CurvedAnimation(
+    _factor = CurvedAnimation(
       parent: _controller,
-      curve: const Interval(0.12, 1.0, curve: Curves.easeOut),
-      reverseCurve: const Interval(0.0, 0.88, curve: Curves.easeIn),
+      curve: Curves.easeOutCubic,
+      reverseCurve: Curves.easeInCubic,
     );
   }
 
   @override
-  void didUpdateWidget(covariant _SmoothAutoHideTopBar oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    if (widget.visible != oldWidget.visible) {
-      if (widget.visible) {
+  void didUpdateWidget(covariant _NonOverlayCollapsibleBrowserViewport old) {
+    super.didUpdateWidget(old);
+    if (widget.barVisible != old.barVisible) {
+      if (widget.barVisible) {
         _controller.forward();
       } else {
         _controller.reverse();
@@ -2642,19 +2785,154 @@ class _SmoothAutoHideTopBarState extends State<_SmoothAutoHideTopBar>
 
   @override
   Widget build(BuildContext context) {
-    return RepaintBoundary(
-      child: ClipRect(
-        child: SlideTransition(
-          position: _slideOffset,
-          child: FadeTransition(
-            opacity: _opacityFactor,
-            child: IgnorePointer(
-              ignoring: !widget.visible,
-              child: widget.child,
-            ),
+    return LayoutBuilder(
+      builder: (BuildContext context, BoxConstraints constraints) {
+        final double totalH = constraints.maxHeight;
+        final double totalW = constraints.maxWidth;
+        return ClipRect(
+          child: AnimatedBuilder(
+            animation: _controller,
+            child: widget.viewport,
+            builder: (BuildContext context, Widget? cachedViewport) {
+              final double t = _factor.value.clamp(0.0, 1.0);
+              final double visibleBarOffset = widget.barHeight * t;
+              final double contentTop = visibleBarOffset + widget.findBarHeight;
+              final bool settledVisible =
+                  !_controller.isAnimating && t >= 0.999;
+              final double viewportHeight = math.max(
+                0.0,
+                settledVisible
+                    ? (totalH - contentTop)
+                    : (totalH - widget.findBarHeight),
+              );
+
+              return Stack(
+                clipBehavior: Clip.hardEdge,
+                children: <Widget>[
+                  Positioned(
+                    key: const Key('browser_website_viewport_box'),
+                    top: contentTop,
+                    left: 0,
+                    width: totalW,
+                    height: viewportHeight,
+                    child: cachedViewport!,
+                  ),
+                  if (widget.findBar != null)
+                    Positioned(
+                      top: visibleBarOffset,
+                      left: 0,
+                      right: 0,
+                      height: widget.findBarHeight,
+                      child: widget.findBar!,
+                    ),
+                  Positioned(
+                    top: -widget.barHeight * (1.0 - t),
+                    left: 0,
+                    right: 0,
+                    height: widget.barHeight,
+                    child: RepaintBoundary(
+                      child: Opacity(
+                        opacity: t,
+                        child: IgnorePointer(
+                          ignoring: t < 0.05,
+                          child: SizedBox(
+                            height: widget.barHeight,
+                            child: widget.topBar,
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                  if (widget.progressBar != null)
+                    Positioned(
+                      top: contentTop,
+                      left: 0,
+                      right: 0,
+                      child: widget.progressBar!,
+                    ),
+                  ...widget.overlays,
+                ],
+              );
+            },
           ),
-        ),
-      ),
+        );
+      },
+    );
+  }
+}
+
+/// Lightweight GPU-only slide + scale + fade animation whenever the user opens,
+/// closes, or switches tabs (`epoch` increments). Keeps `IndexedStack` alive as
+/// a single cached `child` so `WebViewWidget` state is never recreated!
+class _AnimatedTabSwitchViewport extends StatefulWidget {
+  const _AnimatedTabSwitchViewport({
+    required this.epoch,
+    required this.direction,
+    required this.child,
+  });
+
+  final int epoch;
+  final int direction;
+  final Widget child;
+
+  @override
+  State<_AnimatedTabSwitchViewport> createState() =>
+      _AnimatedTabSwitchViewportState();
+}
+
+class _AnimatedTabSwitchViewportState extends State<_AnimatedTabSwitchViewport>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _controller;
+  late final Animation<double> _curved;
+  int _activeDirection = 1;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = AnimationController(
+      vsync: this,
+      value: 1.0,
+      duration: const Duration(milliseconds: 190),
+    );
+    _curved = CurvedAnimation(parent: _controller, curve: Curves.easeOutCubic);
+  }
+
+  @override
+  void didUpdateWidget(covariant _AnimatedTabSwitchViewport oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.epoch != oldWidget.epoch) {
+      _activeDirection = widget.direction == 0 ? 1 : widget.direction;
+      _controller.forward(from: 0.0);
+    }
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedBuilder(
+      animation: _curved,
+      child: widget.child,
+      builder: (BuildContext context, Widget? child) {
+        final double t = _curved.value;
+        if (t >= 0.999) {
+          return child!;
+        }
+        final double dx = (1.0 - t) * 20.0 * _activeDirection;
+        final double scale = 0.985 + (0.015 * t);
+        final double opacity = (0.76 + (0.24 * t)).clamp(0.0, 1.0);
+        return Opacity(
+          opacity: opacity,
+          child: Transform.translate(
+            offset: Offset(dx, 0.0),
+            child: Transform.scale(scale: scale, child: child),
+          ),
+        );
+      },
     );
   }
 }

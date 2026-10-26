@@ -1566,79 +1566,190 @@ class _HeavenShieldQuickSheetState extends State<HeavenShieldQuickSheet> {
     final String host = OmniboxParser.cleanDomain(widget.currentHost);
 
     return SafeArea(
-      child: ListenableBuilder(
-        listenable: widget.settings,
-        builder: (BuildContext context, _) {
-          final bool activeOnSite = widget.settings.isShieldActiveForHost(host);
-          return SingleChildScrollView(
-            padding: const EdgeInsets.fromLTRB(16, 4, 16, 20),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: <Widget>[
-                Material(
-                  color: colors.surfaceContainerHigh,
-                  borderRadius: BorderRadius.circular(16),
-                  child: SwitchListTile.adaptive(
-                    key: const Key('quick_shield_site_switch'),
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(16),
-                    ),
-                    secondary: Icon(
-                      activeOnSite
-                          ? Icons.verified_user_rounded
-                          : Icons.shield_outlined,
-                      color: activeOnSite
-                          ? AppTheme.shieldEmerald
-                          : colors.onSurfaceVariant,
-                    ),
-                    title: Text(
-                      host.isEmpty ? 'Heaven Shield' : host,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(fontWeight: FontWeight.w800),
-                    ),
-                    subtitle: Text(
-                      activeOnSite
-                          ? '${_stats.pageBlocked} trackers & ads blocked on page'
-                          : 'Shields DOWN on this site',
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(fontSize: 12),
-                    ),
-                    value: activeOnSite,
-                    onChanged: (bool value) async {
-                      if (host.isEmpty) {
-                        await widget.settings.setShieldEnabled(value);
-                      } else {
-                        if (value && !widget.settings.shieldEnabled) {
-                          await widget.settings.setShieldEnabled(true);
+      child: ConstrainedBox(
+        constraints: BoxConstraints(
+          maxHeight: MediaQuery.sizeOf(context).height * 0.82,
+        ),
+        child: ListenableBuilder(
+          listenable: widget.settings,
+          builder: (BuildContext context, _) {
+            final bool activeOnSite = widget.settings.isShieldActiveForHost(
+              host,
+            );
+            final HeavenTrackersAdsLevel currentLevel =
+                widget.settings.trackersAdsLevel;
+
+            return SingleChildScrollView(
+              padding: const EdgeInsets.fromLTRB(16, 4, 16, 20),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: <Widget>[
+                  Material(
+                    color: colors.surfaceContainerHigh,
+                    borderRadius: BorderRadius.circular(16),
+                    child: SwitchListTile.adaptive(
+                      key: const Key('quick_shield_site_switch'),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(16),
+                      ),
+                      secondary: Icon(
+                        activeOnSite
+                            ? Icons.verified_user_rounded
+                            : Icons.shield_outlined,
+                        color: activeOnSite
+                            ? AppTheme.shieldEmerald
+                            : colors.onSurfaceVariant,
+                      ),
+                      title: Text(
+                        host.isEmpty ? 'Heaven Shield' : host,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(fontWeight: FontWeight.w800),
+                      ),
+                      subtitle: Text(
+                        activeOnSite
+                            ? '${_stats.pageBlocked} trackers & ads blocked on page'
+                            : 'Shields DOWN on this site',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(fontSize: 12),
+                      ),
+                      value: activeOnSite,
+                      onChanged: (bool value) async {
+                        if (host.isEmpty) {
+                          await widget.settings.setShieldEnabled(value);
+                        } else {
+                          if (value && !widget.settings.shieldEnabled) {
+                            await widget.settings.setShieldEnabled(true);
+                          }
+                          await widget.settings.setShieldProtectionForHost(
+                            host,
+                            value,
+                          );
                         }
-                        await widget.settings.setShieldProtectionForHost(
-                          host,
-                          value,
-                        );
-                      }
-                      widget.onReloadActivePage();
-                    },
+                        widget.onReloadActivePage();
+                      },
+                    ),
                   ),
-                ),
-                const SizedBox(height: 12),
-                SizedBox(
-                  width: double.infinity,
-                  child: FilledButton.tonalIcon(
-                    key: const Key('quick_shield_customize_button'),
-                    onPressed: () {
-                      Navigator.pop(context);
-                      widget.onOpenFullShieldSettings();
-                    },
-                    icon: const Icon(Icons.tune_rounded, size: 18),
-                    label: const Text('Heaven Shield & privacy settings'),
+                  const SizedBox(height: 12),
+                  Padding(
+                    padding: const EdgeInsets.only(left: 4, bottom: 6),
+                    child: Text(
+                      'Block trackers & ads',
+                      style: TextStyle(
+                        fontSize: 12.5,
+                        fontWeight: FontWeight.w800,
+                        color: colors.primary,
+                      ),
+                    ),
                   ),
-                ),
-              ],
-            ),
-          );
-        },
+                  Material(
+                    color: colors.surfaceContainerHigh,
+                    borderRadius: BorderRadius.circular(16),
+                    clipBehavior: Clip.antiAlias,
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: <Widget>[
+                        for (int i = 0;
+                            i < HeavenTrackersAdsLevel.values.length;
+                            i++) ...<Widget>[
+                          if (i > 0)
+                            Divider(
+                              height: 1,
+                              color: colors.outlineVariant.withValues(
+                                alpha: 0.28,
+                              ),
+                            ),
+                          Builder(
+                            builder: (BuildContext _) {
+                              final HeavenTrackersAdsLevel level =
+                                  HeavenTrackersAdsLevel.values[i];
+                              final bool selected = currentLevel == level;
+                              return InkWell(
+                                key: Key('quick_shield_mode_${level.name}'),
+                                onTap: () async {
+                                  if (currentLevel == level) return;
+                                  await widget.settings.setTrackersAdsLevel(
+                                    level,
+                                  );
+                                  if (host.isNotEmpty &&
+                                      level !=
+                                          HeavenTrackersAdsLevel.disabled &&
+                                      !widget.settings.isShieldActiveForHost(
+                                        host,
+                                      )) {
+                                    await widget.settings
+                                        .setShieldProtectionForHost(host, true);
+                                  }
+                                  widget.onReloadActivePage();
+                                },
+                                child: AnimatedContainer(
+                                  duration: const Duration(milliseconds: 180),
+                                  curve: Curves.easeOutCubic,
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 14,
+                                    vertical: 10,
+                                  ),
+                                  color: selected
+                                      ? colors.primary.withValues(alpha: 0.11)
+                                      : Colors.transparent,
+                                  child: Row(
+                                    children: <Widget>[
+                                      Icon(
+                                        selected
+                                            ? Icons.radio_button_checked_rounded
+                                            : Icons.radio_button_off_rounded,
+                                        size: 19,
+                                        color: selected
+                                            ? colors.primary
+                                            : colors.onSurfaceVariant,
+                                      ),
+                                      const SizedBox(width: 10),
+                                      Expanded(
+                                        child: Text(
+                                          level.subtitle,
+                                          maxLines: 1,
+                                          overflow: TextOverflow.ellipsis,
+                                          style: TextStyle(
+                                            fontSize: 13,
+                                            fontWeight: selected
+                                                ? FontWeight.w800
+                                                : FontWeight.w600,
+                                            color: selected
+                                                ? colors.primary
+                                                : colors.onSurface,
+                                          ),
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              );
+                            },
+                          ),
+                        ],
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  SizedBox(
+                    width: double.infinity,
+                    child: FilledButton.tonalIcon(
+                      key: const Key('quick_shield_customize_button'),
+                      onPressed: () {
+                        Navigator.pop(context);
+                        widget.onOpenFullShieldSettings();
+                      },
+                      icon: const Icon(Icons.tune_rounded, size: 18),
+                      label: const Text('Heaven Shield & privacy settings'),
+                    ),
+                  ),
+                ],
+              ),
+            );
+          },
+        ),
       ),
     );
   }

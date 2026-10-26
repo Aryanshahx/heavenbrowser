@@ -35,6 +35,7 @@ class BrowserEngine extends ChangeNotifier {
     required this.settings,
     required this.isIncognito,
     this.enablePlatformWebView = true,
+    bool deferWebViewInit = false,
     String? initialPersistedUrl,
     String? initialPersistedTitle,
   }) {
@@ -63,18 +64,18 @@ class BrowserEngine extends ChangeNotifier {
       }
     }
 
-    if (enablePlatformWebView) {
+    // Lazy WebView allocation for weak/old phones: only create a Chromium
+    // WebView immediately when actively restoring a visible web page!
+    if (enablePlatformWebView && !deferWebViewInit && isShowingWebPage) {
       _initializeController();
-      if (_currentUrl != null &&
-          _currentUrl!.isNotEmpty &&
-          !isShowingDownloadsPage) {
-        final Uri? restoredUri = Uri.tryParse(_currentUrl!);
-        if (restoredUri != null) {
-          unawaited(_loadRestoredUri(restoredUri));
-        }
+      final Uri? restoredUri = Uri.tryParse(_currentUrl!);
+      if (restoredUri != null) {
+        unawaited(_loadRestoredUri(restoredUri));
       }
     }
   }
+
+  static bool _didPrewarmSearch = false;
 
   final BrowserSettingsController settings;
   SitePermissionPromptCallback? onSitePermissionPrompt;
@@ -129,18 +130,16 @@ class BrowserEngine extends ChangeNotifier {
   bool _pageDesignMode = false;
   bool _devToolsEnabled = false;
 
-  static bool _isYoutubeWatchOrShortsUrl(String? rawUrl) {
+  static bool _isYoutubeShortsUrl(String? rawUrl) {
     if (rawUrl == null || rawUrl.isEmpty) return false;
     final Uri? u = Uri.tryParse(rawUrl);
     if (u == null) return false;
     final String h = u.host.toLowerCase();
-    final bool isYt =
-        h == 'youtube.com' || h.endsWith('.youtube.com') || h == 'youtu.be';
-    if (!isYt) return false;
-    if (h == 'youtu.be' && u.pathSegments.isNotEmpty) return true;
-    final String p = u.path.toLowerCase();
-    return p.startsWith('/watch') || p.startsWith('/shorts');
+    final bool isYt = h == 'youtube.com' || h.endsWith('.youtube.com');
+    return isYt && u.path.toLowerCase().startsWith('/shorts');
   }
+
+  bool get hasLiveWebView => _controller != null;
 
   WebViewController? get controller => _controller;
   int? get androidWebViewId => _androidWebViewId;
@@ -270,9 +269,39 @@ class BrowserEngine extends ChangeNotifier {
   }
 
   Future<void> focusNativeWebView() async {
+    if (enablePlatformWebView && isShowingWebPage && _controller == null) {
+      _initializeController();
+      final Uri? restoredUri = Uri.tryParse(_currentUrl!);
+      if (restoredUri != null) {
+        await _loadRestoredUri(restoredUri);
+      }
+      if (_androidWebViewId != null) {
+        await NativeShieldBridge.instance.focusWebView(_androidWebViewId!);
+      }
+      return;
+    }
     if (_androidWebViewId != null && isShowingWebPage) {
       await NativeShieldBridge.instance.focusWebView(_androidWebViewId!);
     }
+  }
+
+  /// Releases native Chromium WebView memory on idle background tabs so weak/old
+  /// phones can keep dozens of tabs open without RAM pressure.
+  void hibernateWebView() {
+    if (_controller == null || _isMediaPlaying) {
+      return;
+    }
+    if (_androidWebViewId != null) {
+      NativeShieldBridge.instance.detachWebView(_androidWebViewId!);
+    }
+    _controller = null;
+    _androidWebViewId = null;
+    _isLoading = false;
+    _progress = 0;
+    _pullProgress = 0;
+    _webViewCanGoBack = false;
+    _webViewCanGoForward = false;
+    _resetCachedControllerFlags();
   }
 
   Future<void> _loadRestoredUri(Uri uri) async {
@@ -389,7 +418,7 @@ class BrowserEngine extends ChangeNotifier {
             _isLoading = false;
             _progress = 1.0;
             _pullProgress = 0;
-            if (_isYoutubeWatchOrShortsUrl(url)) {
+            if (_isYoutubeShortsUrl(url)) {
               _isNavBarVisible = false;
             }
             _syncVirtualEntryWithWebUrl(url);
@@ -411,11 +440,10 @@ class BrowserEngine extends ChangeNotifier {
               final String? prevUrl = _currentUrl;
               _currentUrl = nextUrl;
               _syncVirtualEntryWithWebUrl(nextUrl);
-              if (_isYoutubeWatchOrShortsUrl(nextUrl) &&
-                  nextUrl != prevUrl) {
+              if (_isYoutubeShortsUrl(nextUrl) && nextUrl != prevUrl) {
                 setNavBarVisible(false);
-              } else if (_isYoutubeWatchOrShortsUrl(prevUrl) &&
-                  !_isYoutubeWatchOrShortsUrl(nextUrl)) {
+              } else if (_isYoutubeShortsUrl(prevUrl) &&
+                  !_isYoutubeShortsUrl(nextUrl)) {
                 setNavBarVisible(true);
               }
               unawaited(_refreshNavigationState());
@@ -802,6 +830,8 @@ class BrowserEngine extends ChangeNotifier {
   }
 
   Future<void> _prewarmGoogleSearchConnection() async {
+    if (_didPrewarmSearch) return;
+    _didPrewarmSearch = true;
     final HttpClient client = HttpClient()
       ..connectionTimeout = const Duration(seconds: 3);
     try {
@@ -1044,6 +1074,10 @@ class BrowserEngine extends ChangeNotifier {
     final String targetUrl = finalUri.toString();
     _pushVirtualLocation(targetUrl);
 
+    if (enablePlatformWebView && _controller == null) {
+      _initializeController();
+    }
+
     _currentUrl = targetUrl;
     _pageTitle = OmniboxParser.formatDisplayUrl(_currentUrl);
     _isLoading = true;
@@ -1147,6 +1181,9 @@ class BrowserEngine extends ChangeNotifier {
       return;
     }
 
+    if (enablePlatformWebView && _controller == null) {
+      _initializeController();
+    }
     _currentUrl = target;
     _pageTitle = OmniboxParser.formatDisplayUrl(target);
     _isLoading = _controller != null;
@@ -1164,6 +1201,19 @@ class BrowserEngine extends ChangeNotifier {
     _isNavBarVisible = true;
     if (!isShowingWebPage) {
       notifyListeners();
+      return;
+    }
+    if (enablePlatformWebView && _controller == null && _currentUrl != null) {
+      _initializeController();
+      notifyListeners();
+      final Uri? target = Uri.tryParse(_currentUrl!);
+      if (target != null) {
+        await _applyControllerSettings(forHost: target.host);
+        await _controller?.loadRequest(
+          target,
+          headers: _headersForTarget(host: target.host, fullUrl: _currentUrl),
+        );
+      }
       return;
     }
     await _controller?.reload();
@@ -1418,11 +1468,15 @@ class BrowserEngine extends ChangeNotifier {
   // ---------------------------------------------------------------------------
 
   void _appendConsoleEntry(DevToolsConsoleEntry entry) {
-    if (_consoleEntries.length >= 250) {
+    if (_consoleEntries.length >= 80) {
       _consoleEntries.removeAt(0);
     }
     _consoleEntries.add(entry);
-    notifyListeners();
+    // Only notify UI when DevTools is open — prevents console spam from
+    // rebuilding BrowserScreen dozens of times during webpage/YouTube loads!
+    if (_devToolsEnabled) {
+      notifyListeners();
+    }
   }
 
   void clearConsoleLogs() {

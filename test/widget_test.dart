@@ -809,31 +809,49 @@ void main() {
       await tester.pumpAndSettle();
       expect(find.textContaining('google.com'), findsWidgets);
 
-      final Finder viewportStack = find.byType(IndexedStack);
+      final Finder viewportBox = find.byKey(
+        const Key('browser_website_viewport_box'),
+      );
+      final Finder topBarWrapper = find.byKey(
+        const Key('top_navigation_bar_wrapper'),
+      );
       final Finder pillFinder = find.byKey(const Key('omnibox_display_pill'));
-      final Rect viewportBefore = tester.getRect(viewportStack);
+      final Rect barRectBefore = tester.getRect(topBarWrapper);
+      final Rect viewportBefore = tester.getRect(viewportBox);
       final double pillTopBefore = tester.getTopLeft(pillFinder).dy;
 
-      // Trigger downward scroll -> bar glides upward via SlideTransition while viewport Rect NEVER shifts or resizes!
+      // Search bar sits cleanly ABOVE websites (never overlaying website content)!
+      expect(
+        viewportBefore.top,
+        greaterThanOrEqualTo(barRectBefore.bottom - 0.5),
+      );
+
+      // Trigger downward scroll -> search bar smoothly glides & fades upward out of view,
+      // while mid-animation viewport height stays constant (zero WebView resize jitter)!
       tabManager.activeEngine.handleWebScrollDelta(140, 60);
       expect(tabManager.activeEngine.isNavBarVisible, isFalse);
       await tester.pump();
-      await tester.pump(const Duration(milliseconds: 110));
-      expect(tester.getRect(viewportStack), equals(viewportBefore));
+      await tester.pump(const Duration(milliseconds: 80));
+      final Rect midHideRect = tester.getRect(viewportBox);
+      expect(midHideRect.top, lessThan(viewportBefore.top - 4.0));
       final double pillTopMidHide = tester.getTopLeft(pillFinder).dy;
       expect(pillTopMidHide, lessThan(pillTopBefore - 4.0));
+      await tester.pump(const Duration(milliseconds: 60));
+      // Mid-glide height stays constant with zero per-frame layout resize!
+      expect(tester.getRect(viewportBox).height, closeTo(midHideRect.height, 0.01));
       await tester.pumpAndSettle();
-      expect(tester.getRect(viewportStack), equals(viewportBefore));
+      final Rect hiddenViewportRect = tester.getRect(viewportBox);
+      expect(hiddenViewportRect.top, closeTo(barRectBefore.top, 0.5));
       expect(tester.getTopLeft(pillFinder).dy, lessThan(-20.0));
 
-      // Trigger upward scroll -> bar glides smoothly back down while viewport Rect remains 100% stationary!
+      // Trigger upward scroll -> search bar smoothly glides back into view above website!
       tabManager.activeEngine.handleWebScrollDelta(80, -35);
       expect(tabManager.activeEngine.isNavBarVisible, isTrue);
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 100));
-      expect(tester.getRect(viewportStack), equals(viewportBefore));
+      expect(tester.getRect(viewportBox).top, greaterThan(barRectBefore.top + 4.0));
       await tester.pumpAndSettle();
-      expect(tester.getRect(viewportStack), equals(viewportBefore));
+      expect(tester.getRect(viewportBox), equals(viewportBefore));
       expect(tester.getTopLeft(pillFinder).dy, closeTo(pillTopBefore, 0.1));
 
       // 3. Left-Edge Swipe Gesture navigates Back to Home, and Right-Edge Swipe Gesture navigates Forward!
@@ -851,7 +869,8 @@ void main() {
       await tester.pumpAndSettle();
       expect(tabManager.activeEngine.currentUrl, contains('google.com'));
 
-      // 4. Verify Languages button is REMOVED from Search Bar, and Shield button in 3-dots Menu is REPLACED by Language button!
+      // 4. Verify Translate button is out of Search Bar, renamed from 'Language' to 'Translate' in 3-dots Menu,
+      //    and opens a clean Translate-only sheet with ALL extra unrelated controls removed!
       expect(find.byKey(const Key('translate_reader_button')), findsNothing);
       await tester.tap(find.byTooltip('Browser Menu'));
       await tester.pumpAndSettle();
@@ -868,15 +887,20 @@ void main() {
         find.byKey(const Key('browser_menu_language_tile')),
         findsOneWidget,
       );
+      expect(find.text('Translate'), findsOneWidget);
+      expect(find.text('Language'), findsNothing);
 
-      // Tap Language button in 3-dots menu -> opens Instant Page Translate & App Language sheet!
+      // Tap Translate button in 3-dots menu -> opens pure Translate Page sheet!
       await tester.tap(find.byKey(const Key('browser_menu_language_tile')));
       await tester.pumpAndSettle();
       expect(find.byType(TranslateReaderSheet), findsOneWidget);
       expect(
         find.byKey(const Key('language_sheet_app_language_tile')),
-        findsOneWidget,
+        findsNothing,
       );
+      expect(find.byKey(const Key('open_clean_reader_button')), findsNothing);
+      expect(find.text('Clear Site Cookies & Storage'), findsNothing);
+      expect(find.text('Desktop Site'), findsNothing);
       expect(find.byKey(const Key('site_brave_shields_switch')), findsNothing);
       expect(find.byKey(const Key('revoke_perm_camera')), findsNothing);
 
@@ -900,19 +924,50 @@ void main() {
       await tester.pumpAndSettle();
       expect(tabManager.activeEngine.isPageTranslated, isFalse);
 
-      // Open Clean Reader Mode directly from Language & Reader sheet!
-      await tester.tap(find.byKey(const Key('open_clean_reader_button')));
+      // Dismiss pure Translate sheet, then open Clean Reader Mode from its dedicated 3-dots menu tile!
+      Navigator.of(tester.element(find.byType(TranslateReaderSheet))).pop();
+      await tester.pumpAndSettle();
+      await tester.tap(find.byTooltip('Browser Menu'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('browser_menu_clean_reader_tile')));
       await tester.pumpAndSettle();
       expect(find.byKey(const Key('clean_reader_view_modal')), findsOneWidget);
       await tester.tap(find.byIcon(Icons.close_rounded));
       await tester.pumpAndSettle();
 
-      // 4b. Tap top-bar Heaven Shield icon -> Quick Sheet -> open full Heaven Shield & privacy settings!
+      // 4b. Tap top-bar Heaven Shield icon -> Quick Sheet -> verify 'Block trackers & ads' mode selector
+      //     (Aggressive / Standard / Allow all) right inside the search-bar Shield sheet!
       expect(find.byKey(const Key('top_bar_shield_button')), findsOneWidget);
       await tester.tap(find.byKey(const Key('top_bar_shield_button')));
       await tester.pumpAndSettle();
       expect(find.byType(HeavenShieldQuickSheet), findsOneWidget);
       expect(find.byKey(const Key('quick_shield_site_switch')), findsOneWidget);
+      expect(
+        find.byKey(const Key('quick_shield_mode_aggressive')),
+        findsOneWidget,
+      );
+      expect(
+        find.byKey(const Key('quick_shield_mode_standard')),
+        findsOneWidget,
+      );
+      expect(
+        find.byKey(const Key('quick_shield_mode_disabled')),
+        findsOneWidget,
+      );
+      await tester.tap(find.byKey(const Key('quick_shield_mode_aggressive')));
+      await tester.pumpAndSettle();
+      expect(settings.shieldMode, HeavenShieldMode.strict);
+      expect(settings.shieldBlockAds, isTrue);
+
+      await tester.tap(find.byKey(const Key('quick_shield_mode_disabled')));
+      await tester.pumpAndSettle();
+      expect(settings.shieldBlockAds, isFalse);
+
+      await tester.tap(find.byKey(const Key('quick_shield_mode_standard')));
+      await tester.pumpAndSettle();
+      expect(settings.shieldMode, HeavenShieldMode.standard);
+      expect(settings.shieldBlockAds, isTrue);
+
       expect(
         find.byKey(const Key('quick_shield_block_element_button')),
         findsNothing,
@@ -928,6 +983,10 @@ void main() {
       expect(find.text('Block element'), findsNothing);
       expect(find.text('Shred data'), findsNothing);
       expect(find.text('Report a broken site'), findsNothing);
+      await tester.ensureVisible(
+        find.byKey(const Key('quick_shield_customize_button')),
+      );
+      await tester.pumpAndSettle();
       await tester.tap(find.byKey(const Key('quick_shield_customize_button')));
       await tester.pumpAndSettle();
 
@@ -1380,7 +1439,10 @@ void main() {
         expect(shieldJava.contains('getHeavenShieldStats'), isTrue);
         expect(shieldJava.contains('resetHeavenShieldStats'), isTrue);
         expect(shieldJava.contains('FLAG_DEBUGGABLE'), isTrue);
-        expect(shieldJava.contains('setOffscreenPreRaster(true)'), isTrue);
+        expect(shieldJava.contains('setOffscreenPreRaster(false)'), isTrue);
+        expect(shieldJava.contains('Bitmap.Config.RGB_565'), isTrue);
+        expect(shieldJava.contains('isLowRamDevice'), isTrue);
+        expect(shieldJava.contains('onTrimMemory'), isTrue);
         expect(shieldJava.contains('LAYER_TYPE_HARDWARE'), isFalse);
         expect(shieldJava.contains('isVideoPlayerTouchZone'), isTrue);
         expect(shieldJava.contains('lastInnerScrollMsByWv'), isTrue);
@@ -1396,6 +1458,9 @@ void main() {
         ).readAsStringSync();
         expect(shieldEngineJava.contains('interceptSubresource'), isTrue);
         expect(shieldEngineJava.contains('shouldBlockDomain'), isTrue);
+        expect(shieldEngineJava.contains('imasdk.googleapis.com'), isTrue);
+        expect(shieldEngineJava.contains('403, "Blocked"'), isTrue);
+        expect(shieldEngineJava.contains('padding-top:50px'), isFalse);
         expect(
           shieldEngineJava.contains('isFirstPartyYoutubeAdPath'),
           isTrue,
@@ -1417,11 +1482,24 @@ void main() {
           isFalse,
         );
 
+        final String browserScreenDart = File(
+          'lib/features/browser/presentation/browser_screen.dart',
+        ).readAsStringSync();
+        expect(
+          browserScreenDart.contains('displayWithHybridComposition: false'),
+          isTrue,
+        );
+        expect(
+          browserScreenDart.contains('displayWithHybridComposition: true'),
+          isFalse,
+        );
+
         final String mainKt = File(
           'android/app/src/main/kotlin/com/hypertechlabs/heavenbrowser/MainActivity.kt',
         ).readAsStringSync();
         expect(mainKt.contains('enableHighestRefreshRate'), isTrue);
         expect(mainKt.contains('preferredDisplayModeId'), isTrue);
+        expect(mainKt.contains('onTrimMemory'), isTrue);
 
         final String vpnJava = File(
           'android/app/src/main/java/com/hypertechlabs/heavenbrowser/HeavenVpnManager.java',
@@ -1464,6 +1542,67 @@ void main() {
         );
         expect(manifestXml.contains('systemExempted'), isTrue);
         expect(manifestXml.contains('android.permission.USE_BIOMETRIC'), isTrue);
+      },
+    );
+
+    testWidgets(
+      'Step 22: Animated tab open/switch/close, swipe-to-close in TabsScreen, & YouTube watch bar visibility',
+      (WidgetTester tester) async {
+        SharedPreferences.setMockInitialValues(<String, Object>{});
+        final SharedPreferences prefs = await SharedPreferences.getInstance();
+        final BrowserSettingsController settings = BrowserSettingsController(
+          prefs,
+        );
+        final TabManagerController tabManager = TabManagerController(
+          settings: settings,
+          enablePlatformWebView: false,
+        );
+
+        final int epoch0 = tabManager.tabTransitionEpoch;
+        await tabManager.openNewTab(
+          initialInput: 'https://m.youtube.com/watch?v=abc123',
+        );
+        expect(tabManager.tabTransitionEpoch, greaterThan(epoch0));
+        expect(tabManager.lastTransitionDirection, 1);
+        // YouTube /watch keeps search bar visible until user scrolls down (Shorts still auto-hides)
+        expect(tabManager.activeEngine.isNavBarVisible, isTrue);
+
+        final BrowserTab thirdTab = await tabManager.openNewTab(
+          initialInput: 'https://example.org',
+        );
+        final int epochBeforeSwitch = tabManager.tabTransitionEpoch;
+        expect(tabManager.switchAdjacentTab(-1), isTrue);
+        expect(tabManager.tabTransitionEpoch, greaterThan(epochBeforeSwitch));
+        expect(tabManager.lastTransitionDirection, -1);
+
+        await tester.pumpWidget(
+          MaterialApp(home: TabsScreen(tabManager: tabManager)),
+        );
+        await tester.pumpAndSettle();
+        expect(tabManager.normalTabs.length, 3);
+
+        // Horizontal swipe-to-close on Dismissible card in TabsScreen!
+        await tester.drag(
+          find.byKey(Key('tab_dismiss_${thirdTab.id}')),
+          const Offset(-420, 0),
+        );
+        await tester.pumpAndSettle();
+        expect(tabManager.normalTabs.length, 2);
+
+        // Animated shrink+fade X close button in TabsScreen!
+        final String secondId = tabManager.normalTabs.last.id;
+        await tester.tap(
+          find.descendant(
+            of: find.byKey(Key('tab_card_$secondId')),
+            matching: find.byTooltip('Close tab'),
+          ),
+        );
+        await tester.pump(const Duration(milliseconds: 80));
+        await tester.pumpAndSettle();
+        expect(tabManager.normalTabs.length, 1);
+
+        tabManager.dispose();
+        settings.dispose();
       },
     );
   });

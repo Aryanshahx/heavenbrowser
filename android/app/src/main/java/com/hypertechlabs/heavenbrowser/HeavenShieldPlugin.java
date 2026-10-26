@@ -3,6 +3,7 @@ package com.hypertechlabs.heavenbrowser;
 import android.Manifest;
 import android.annotation.SuppressLint;
 import android.app.Activity;
+import android.app.ActivityManager;
 import android.app.KeyguardManager;
 import android.app.Notification;
 import android.app.NotificationChannel;
@@ -74,7 +75,9 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
+import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 
 public class HeavenShieldPlugin
@@ -300,7 +303,9 @@ public class HeavenShieldPlugin
   private HeavenShieldEngine shieldEngine;
   private volatile long activeFocusedWebViewId = -1L;
 
-  private final ExecutorService downloadPool = Executors.newCachedThreadPool();
+  private final ExecutorService downloadPool =
+      new ThreadPoolExecutor(
+          1, 4, 30L, TimeUnit.SECONDS, new LinkedBlockingQueue<Runnable>());
   private final Map<Long, DownloadJob> downloadJobs = new ConcurrentHashMap<>();
   private final AtomicLong idGenerator = new AtomicLong(System.currentTimeMillis());
   private BroadcastReceiver controlReceiver;
@@ -461,6 +466,33 @@ public class HeavenShieldPlugin
     if (!this.activeAudioOrVideoPlaying) {
       stopBackgroundMediaService();
     }
+  }
+
+  public void onTrimMemory(int level) {
+    if (level < 10 || pluginBinding == null) {
+      return;
+    }
+    mainHandler.post(
+        () -> {
+          try {
+            boolean clearedRamCache = false;
+            for (Long id : new ArrayList<>(docStartHandlers.keySet())) {
+              if (id == null) continue;
+              WebView wv = WebViewFlutterAndroidExternalApi.getWebView(pluginBinding, id);
+              if (wv == null) continue;
+              if (!clearedRamCache) {
+                // false = trim in-memory RAM cache only; preserve disk HTTP cache!
+                wv.clearCache(false);
+                clearedRamCache = true;
+              }
+              if (id != activeFocusedWebViewId
+                  && (!activeAudioOrVideoPlaying || id != activeMediaWebViewId)) {
+                wv.onPause();
+              }
+            }
+          } catch (Throwable ignored) {
+          }
+        });
   }
 
   private void broadcastBgFlagToWebViews(final boolean inBg) {
@@ -883,6 +915,14 @@ public class HeavenShieldPlugin
               wv.onResume();
               wv.resumeTimers();
             }
+            for (Long otherId : new ArrayList<>(docStartHandlers.keySet())) {
+              if (otherId == null || otherId == fWvId) continue;
+              if (activeAudioOrVideoPlaying && otherId == activeMediaWebViewId) continue;
+              WebView bgWv = WebViewFlutterAndroidExternalApi.getWebView(pluginBinding, otherId);
+              if (bgWv != null) {
+                bgWv.onPause();
+              }
+            }
           } catch (Throwable ignored) {
           }
           result.success(true);
@@ -1109,6 +1149,25 @@ public class HeavenShieldPlugin
     }
   }
 
+  private boolean isLowRamDevice() {
+    try {
+      Context ctx = pluginBinding != null ? pluginBinding.getApplicationContext() : null;
+      if (ctx != null) {
+        ActivityManager am = (ActivityManager) ctx.getSystemService(Context.ACTIVITY_SERVICE);
+        if (am != null) {
+          if (am.isLowRamDevice()) return true;
+          ActivityManager.MemoryInfo mi = new ActivityManager.MemoryInfo();
+          am.getMemoryInfo(mi);
+          if (mi.totalMem > 0L && mi.totalMem <= 3_500_000_000L) {
+            return true;
+          }
+        }
+      }
+    } catch (Throwable ignored) {
+    }
+    return false;
+  }
+
   private void captureWebViewPreview(long webViewId, MethodChannel.Result result) {
     WebView webView = WebViewFlutterAndroidExternalApi.getWebView(pluginBinding, webViewId);
     if (webView == null || webView.getWidth() <= 0 || webView.getHeight() <= 0) {
@@ -1118,11 +1177,11 @@ public class HeavenShieldPlugin
     try {
       int srcW = webView.getWidth();
       int srcH = webView.getHeight();
-    int targetW = 270;
+      int targetW = isLowRamDevice() ? 192 : 240;
       float scale = (float) targetW / (float) srcW;
-      int targetH = Math.max(180, Math.min(540, Math.round(srcH * scale)));
+      int targetH = Math.max(150, Math.min(440, Math.round(srcH * scale)));
 
-      Bitmap bitmap = Bitmap.createBitmap(targetW, targetH, Bitmap.Config.ARGB_8888);
+      Bitmap bitmap = Bitmap.createBitmap(targetW, targetH, Bitmap.Config.RGB_565);
       Canvas canvas = new Canvas(bitmap);
       canvas.drawColor(Color.WHITE);
       canvas.scale(scale, scale);
@@ -1137,8 +1196,8 @@ public class HeavenShieldPlugin
                 mainHandler.post(() -> result.success(null));
                 return;
               }
-              ByteArrayOutputStream out = new ByteArrayOutputStream(20 * 1024);
-              bitmap.compress(Bitmap.CompressFormat.JPEG, 76, out);
+              ByteArrayOutputStream out = new ByteArrayOutputStream(16 * 1024);
+              bitmap.compress(Bitmap.CompressFormat.JPEG, 70, out);
               bitmap.recycle();
               byte[] bytes = out.toByteArray();
               mainHandler.post(() -> result.success(bytes));
@@ -1555,7 +1614,8 @@ public class HeavenShieldPlugin
       ws.setMixedContentMode(WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE);
       ws.setBlockNetworkImage(false);
       if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-        ws.setOffscreenPreRaster(true);
+        // Disable offscreen tile pre-rasterizing to save 40-90MB GPU tile RAM & CPU on weak/old phones!
+        ws.setOffscreenPreRaster(false);
       }
       webView.setOverScrollMode(View.OVER_SCROLL_NEVER);
       webView.onResume();
