@@ -1,5 +1,3 @@
-import 'dart:async';
-
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
@@ -20,17 +18,16 @@ class _HeavenVpnScreenState extends State<HeavenVpnScreen> {
   String _searchQuery = '';
 
   @override
-  void initState() {
-    super.initState();
-    if (widget.vpn.enableNativePolling) {
-      unawaited(widget.vpn.refreshLiveForeignServers());
-    }
-  }
-
-  @override
   void dispose() {
     _searchController.dispose();
     super.dispose();
+  }
+
+  static String _cleanStatusLabel(String? raw) {
+    final String cleaned = (raw ?? '')
+        .replaceAll(RegExp(r'\.{2,}|…'), '')
+        .trim();
+    return cleaned.isEmpty ? 'Connecting' : cleaned;
   }
 
   @override
@@ -70,6 +67,7 @@ class _HeavenVpnScreenState extends State<HeavenVpnScreen> {
             ),
             actions: <Widget>[
               IconButton(
+                key: const Key('vpn_refresh_button'),
                 tooltip: 'Refresh Live Countries',
                 icon: vpn.isRefreshingServers
                     ? const SizedBox(
@@ -90,120 +88,174 @@ class _HeavenVpnScreenState extends State<HeavenVpnScreen> {
             ],
           ),
           body: SafeArea(
-            child: Column(
-              children: <Widget>[
-                Padding(
-                  padding: const EdgeInsets.fromLTRB(16, 6, 16, 8),
-                  child: _buildMinimalConnectionCard(
-                    context,
-                    colors,
-                    isDark,
-                    activeColor,
-                  ),
-                ),
-                if (vpn.errorMessage != null)
-                  Padding(
-                    padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
-                    child: Container(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 12,
-                        vertical: 8,
-                      ),
-                      decoration: BoxDecoration(
-                        color: AppTheme.fireCrimson.withValues(alpha: 0.12),
-                        borderRadius: BorderRadius.circular(12),
-                      ),
-                      child: Row(
-                        children: <Widget>[
-                          const Icon(
-                            Icons.error_outline_rounded,
-                            color: AppTheme.fireCrimson,
-                            size: 17,
-                          ),
-                          const SizedBox(width: 8),
-                          Expanded(
-                            child: Text(
-                              vpn.errorMessage!,
-                              maxLines: 2,
-                              overflow: TextOverflow.ellipsis,
-                              style: const TextStyle(fontSize: 12),
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ),
-                Padding(
-                  padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
-                  child: Container(
-                    height: 40,
-                    padding: const EdgeInsets.symmetric(horizontal: 12),
-                    decoration: BoxDecoration(
-                      color: isDark
-                          ? AppTheme.navySurface
-                          : colors.surfaceContainerHighest.withValues(
-                              alpha: 0.55,
-                            ),
-                      borderRadius: BorderRadius.circular(12),
-                      border: Border.all(
-                        color: colors.outlineVariant.withValues(alpha: 0.32),
-                      ),
-                    ),
-                    child: Row(
+            child: LayoutBuilder(
+              builder: (BuildContext context, BoxConstraints constraints) {
+                final bool isTablet = constraints.maxWidth >= 680;
+                final double maxContentWidth = isTablet
+                    ? 920.0
+                    : double.infinity;
+
+                return Align(
+                  alignment: Alignment.topCenter,
+                  child: ConstrainedBox(
+                    constraints: BoxConstraints(maxWidth: maxContentWidth),
+                    child: Column(
                       children: <Widget>[
-                        Icon(
-                          Icons.search_rounded,
-                          size: 18,
-                          color: colors.onSurfaceVariant,
+                        Padding(
+                          padding: const EdgeInsets.fromLTRB(16, 6, 16, 8),
+                          child: _buildMinimalConnectionCard(
+                            context,
+                            colors,
+                            isDark,
+                            activeColor,
+                          ),
                         ),
-                        const SizedBox(width: 8),
+                        if (vpn.errorMessage != null)
+                          Padding(
+                            padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+                            child: Container(
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 12,
+                                vertical: 8,
+                              ),
+                              decoration: BoxDecoration(
+                                color: AppTheme.fireCrimson.withValues(
+                                  alpha: 0.12,
+                                ),
+                                borderRadius: BorderRadius.circular(12),
+                              ),
+                              child: Row(
+                                children: <Widget>[
+                                  const Icon(
+                                    Icons.error_outline_rounded,
+                                    color: AppTheme.fireCrimson,
+                                    size: 17,
+                                  ),
+                                  const SizedBox(width: 8),
+                                  Expanded(
+                                    child: Text(
+                                      vpn.errorMessage!,
+                                      maxLines: 2,
+                                      overflow: TextOverflow.ellipsis,
+                                      style: const TextStyle(fontSize: 12),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ),
+                        Padding(
+                          padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+                          child: Container(
+                            height: 40,
+                            padding: const EdgeInsets.symmetric(horizontal: 12),
+                            decoration: BoxDecoration(
+                              color: isDark
+                                  ? AppTheme.navySurface
+                                  : colors.surfaceContainerHighest.withValues(
+                                      alpha: 0.55,
+                                    ),
+                              borderRadius: BorderRadius.circular(12),
+                              border: Border.all(
+                                color: colors.outlineVariant.withValues(
+                                  alpha: 0.32,
+                                ),
+                              ),
+                            ),
+                            child: Row(
+                              children: <Widget>[
+                                Icon(
+                                  Icons.search_rounded,
+                                  size: 18,
+                                  color: colors.onSurfaceVariant,
+                                ),
+                                const SizedBox(width: 8),
+                                Expanded(
+                                  child: TextField(
+                                    key: const Key('vpn_country_search_field'),
+                                    controller: _searchController,
+                                    onChanged: (String val) {
+                                      setState(() => _searchQuery = val);
+                                    },
+                                    style: const TextStyle(fontSize: 13.5),
+                                    decoration: InputDecoration(
+                                      hintText:
+                                          'Search ${all.length} countries',
+                                      border: InputBorder.none,
+                                      isDense: true,
+                                    ),
+                                  ),
+                                ),
+                                if (_searchQuery.isNotEmpty)
+                                  GestureDetector(
+                                    onTap: () {
+                                      _searchController.clear();
+                                      setState(() => _searchQuery = '');
+                                    },
+                                    child: Icon(
+                                      Icons.close_rounded,
+                                      size: 17,
+                                      color: colors.onSurfaceVariant,
+                                    ),
+                                  ),
+                              ],
+                            ),
+                          ),
+                        ),
                         Expanded(
-                          child: TextField(
-                            key: const Key('vpn_country_search_field'),
-                            controller: _searchController,
-                            onChanged: (String val) {
-                              setState(() => _searchQuery = val);
-                            },
-                            style: const TextStyle(fontSize: 13.5),
-                            decoration: InputDecoration(
-                              hintText: 'Search ${all.length} countries...',
-                              border: InputBorder.none,
-                              isDense: true,
-                            ),
-                          ),
+                          child: isTablet
+                              ? GridView.builder(
+                                  key: const Key('vpn_tablet_country_grid'),
+                                  padding: const EdgeInsets.fromLTRB(
+                                    16,
+                                    2,
+                                    16,
+                                    24,
+                                  ),
+                                  gridDelegate:
+                                      const SliverGridDelegateWithFixedCrossAxisCount(
+                                        crossAxisCount: 2,
+                                        mainAxisSpacing: 8,
+                                        crossAxisSpacing: 10,
+                                        mainAxisExtent: 50,
+                                      ),
+                                  itemCount: filtered.length,
+                                  itemBuilder:
+                                      (BuildContext context, int index) {
+                                        return _buildMinimalCountryTile(
+                                          context,
+                                          colors,
+                                          isDark,
+                                          filtered[index],
+                                        );
+                                      },
+                                )
+                              : ListView.separated(
+                                  padding: const EdgeInsets.fromLTRB(
+                                    16,
+                                    2,
+                                    16,
+                                    24,
+                                  ),
+                                  itemCount: filtered.length,
+                                  separatorBuilder: (_, _) =>
+                                      const SizedBox(height: 6),
+                                  itemBuilder:
+                                      (BuildContext context, int index) {
+                                        return _buildMinimalCountryTile(
+                                          context,
+                                          colors,
+                                          isDark,
+                                          filtered[index],
+                                        );
+                                      },
+                                ),
                         ),
-                        if (_searchQuery.isNotEmpty)
-                          GestureDetector(
-                            onTap: () {
-                              _searchController.clear();
-                              setState(() => _searchQuery = '');
-                            },
-                            child: Icon(
-                              Icons.close_rounded,
-                              size: 17,
-                              color: colors.onSurfaceVariant,
-                            ),
-                          ),
                       ],
                     ),
                   ),
-                ),
-                Expanded(
-                  child: ListView.separated(
-                    padding: const EdgeInsets.fromLTRB(16, 2, 16, 24),
-                    itemCount: filtered.length,
-                    separatorBuilder: (_, _) => const SizedBox(height: 6),
-                    itemBuilder: (BuildContext context, int index) {
-                      return _buildMinimalCountryTile(
-                        context,
-                        colors,
-                        isDark,
-                        filtered[index],
-                      );
-                    },
-                  ),
-                ),
-              ],
+                );
+              },
             ),
           ),
         );
@@ -256,10 +308,8 @@ class _HeavenVpnScreenState extends State<HeavenVpnScreen> {
                               color: Colors.white,
                             ),
                           )
-                        : Icon(
-                            connected
-                                ? Icons.power_settings_new_rounded
-                                : Icons.power_settings_new_rounded,
+                        : const Icon(
+                            Icons.power_settings_new_rounded,
                             size: 26,
                             color: Colors.white,
                           ),
@@ -273,7 +323,7 @@ class _HeavenVpnScreenState extends State<HeavenVpnScreen> {
                   children: <Widget>[
                     Text(
                       vpn.isBusy
-                          ? (vpn.statusMessage ?? 'Connecting...')
+                          ? _cleanStatusLabel(vpn.statusMessage)
                           : (connected ? 'Connected' : 'Disconnected'),
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
@@ -414,9 +464,7 @@ class _HeavenVpnScreenState extends State<HeavenVpnScreen> {
               ],
               const SizedBox(width: 8),
               Icon(
-                selected
-                    ? Icons.check_circle_rounded
-                    : Icons.circle_outlined,
+                selected ? Icons.check_circle_rounded : Icons.circle_outlined,
                 size: 18,
                 color: selected
                     ? colors.primary
@@ -430,115 +478,130 @@ class _HeavenVpnScreenState extends State<HeavenVpnScreen> {
   }
 
   Future<void> _showAddProfileSheet(BuildContext context) async {
-    final TextEditingController nameCtrl = TextEditingController();
-    final TextEditingController countryCtrl = TextEditingController();
-    final TextEditingController confCtrl = TextEditingController();
-    String? validationError;
-
     await showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,
       showDragHandle: true,
-      builder: (BuildContext sheetContext) {
-        return StatefulBuilder(
-          builder:
-              (BuildContext ctx, void Function(void Function()) setModalState) {
-                final double bottomInset = MediaQuery.viewInsetsOf(ctx).bottom;
-                return SafeArea(
-                  child: SingleChildScrollView(
-                    padding: EdgeInsets.fromLTRB(16, 4, 16, 16 + bottomInset),
-                    child: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      crossAxisAlignment: CrossAxisAlignment.stretch,
-                      children: <Widget>[
-                        Row(
-                          children: <Widget>[
-                            const Expanded(
-                              child: Text(
-                                'Import WireGuard / OpenVPN',
-                                style: TextStyle(
-                                  fontSize: 15.5,
-                                  fontWeight: FontWeight.w800,
-                                ),
-                              ),
-                            ),
-                            TextButton.icon(
-                              onPressed: () async {
-                                final ClipboardData? clip =
-                                    await Clipboard.getData('text/plain');
-                                if (clip?.text != null &&
-                                    clip!.text!.trim().isNotEmpty) {
-                                  confCtrl.text = clip.text!.trim();
-                                  setModalState(() => validationError = null);
-                                }
-                              },
-                              icon: const Icon(
-                                Icons.content_paste_rounded,
-                                size: 16,
-                              ),
-                              label: const Text('Paste'),
-                            ),
-                          ],
-                        ),
-                        const SizedBox(height: 8),
-                        TextField(
-                          controller: nameCtrl,
-                          decoration: const InputDecoration(
-                            labelText: 'Country / Name',
-                            border: OutlineInputBorder(),
-                            isDense: true,
-                          ),
-                        ),
-                        const SizedBox(height: 10),
-                        TextField(
-                          controller: confCtrl,
-                          minLines: 4,
-                          maxLines: 7,
-                          style: const TextStyle(
-                            fontSize: 12,
-                            fontFamily: 'monospace',
-                          ),
-                          decoration: const InputDecoration(
-                            labelText: '.conf or .ovpn configuration',
-                            border: OutlineInputBorder(),
-                          ),
-                        ),
-                        if (validationError != null) ...<Widget>[
-                          const SizedBox(height: 8),
-                          Text(
-                            validationError!,
-                            style: const TextStyle(
-                              color: AppTheme.fireCrimson,
-                              fontSize: 12,
-                            ),
-                          ),
-                        ],
-                        const SizedBox(height: 12),
-                        FilledButton(
-                          onPressed: () async {
-                            final String? err = await widget.vpn
-                                .addCustomProfile(
-                                  name: nameCtrl.text,
-                                  countryLabel: countryCtrl.text,
-                                  configText: confCtrl.text,
-                                );
-                            if (err != null) {
-                              setModalState(() => validationError = err);
-                              return;
-                            }
-                            if (sheetContext.mounted) {
-                              Navigator.pop(sheetContext);
-                            }
-                          },
-                          child: const Text('Save Country'),
-                        ),
-                      ],
+      constraints: const BoxConstraints(maxWidth: 620),
+      builder: (BuildContext _) => _ImportVpnProfileSheet(vpn: widget.vpn),
+    );
+  }
+}
+
+class _ImportVpnProfileSheet extends StatefulWidget {
+  const _ImportVpnProfileSheet({required this.vpn});
+
+  final VpnController vpn;
+
+  @override
+  State<_ImportVpnProfileSheet> createState() => _ImportVpnProfileSheetState();
+}
+
+class _ImportVpnProfileSheetState extends State<_ImportVpnProfileSheet> {
+  final TextEditingController _nameCtrl = TextEditingController();
+  final TextEditingController _countryCtrl = TextEditingController();
+  final TextEditingController _confCtrl = TextEditingController();
+  String? _validationError;
+
+  @override
+  void dispose() {
+    _nameCtrl.dispose();
+    _countryCtrl.dispose();
+    _confCtrl.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final double bottomInset = MediaQuery.viewInsetsOf(context).bottom;
+    return SafeArea(
+      child: SingleChildScrollView(
+        padding: EdgeInsets.fromLTRB(16, 4, 16, 16 + bottomInset),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: <Widget>[
+            Row(
+              children: <Widget>[
+                const Expanded(
+                  child: Text(
+                    'Import WireGuard / OpenVPN',
+                    style: TextStyle(
+                      fontSize: 15.5,
+                      fontWeight: FontWeight.w800,
                     ),
                   ),
+                ),
+                TextButton.icon(
+                  onPressed: () async {
+                    final ClipboardData? clip = await Clipboard.getData(
+                      'text/plain',
+                    );
+                    if (clip?.text != null && clip!.text!.trim().isNotEmpty) {
+                      _confCtrl.text = clip.text!.trim();
+                      if (mounted) {
+                        setState(() => _validationError = null);
+                      }
+                    }
+                  },
+                  icon: const Icon(Icons.content_paste_rounded, size: 16),
+                  label: const Text('Paste'),
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            TextField(
+              controller: _nameCtrl,
+              decoration: const InputDecoration(
+                labelText: 'Country / Name',
+                border: OutlineInputBorder(),
+                isDense: true,
+              ),
+            ),
+            const SizedBox(height: 10),
+            TextField(
+              controller: _confCtrl,
+              minLines: 4,
+              maxLines: 7,
+              style: const TextStyle(fontSize: 12, fontFamily: 'monospace'),
+              decoration: const InputDecoration(
+                labelText: '.conf or .ovpn configuration',
+                border: OutlineInputBorder(),
+              ),
+            ),
+            if (_validationError != null) ...<Widget>[
+              const SizedBox(height: 8),
+              Text(
+                _validationError!,
+                style: const TextStyle(
+                  color: AppTheme.fireCrimson,
+                  fontSize: 12,
+                ),
+              ),
+            ],
+            const SizedBox(height: 12),
+            FilledButton(
+              onPressed: () async {
+                final String? err = await widget.vpn.addCustomProfile(
+                  name: _nameCtrl.text,
+                  countryLabel: _countryCtrl.text,
+                  configText: _confCtrl.text,
                 );
+                if (err != null) {
+                  if (mounted) {
+                    setState(() => _validationError = err);
+                  }
+                  return;
+                }
+                if (context.mounted) {
+                  Navigator.pop(context);
+                }
               },
-        );
-      },
+              child: const Text('Save Country'),
+            ),
+          ],
+        ),
+      ),
     );
   }
 }

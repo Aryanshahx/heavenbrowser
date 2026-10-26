@@ -141,7 +141,13 @@ class _TabsScreenState extends State<TabsScreen> {
                 titleSpacing: 0,
                 title: Padding(
                   padding: const EdgeInsets.only(right: 4),
-                  child: _buildModeToggleBar(colors, isDark),
+                  child: Align(
+                    alignment: Alignment.centerLeft,
+                    child: ConstrainedBox(
+                      constraints: const BoxConstraints(maxWidth: 420),
+                      child: _buildModeToggleBar(colors, isDark),
+                    ),
+                  ),
                 ),
                 actions: <Widget>[
                   if (!incognitoLocked)
@@ -294,15 +300,38 @@ class _TabsScreenState extends State<TabsScreen> {
                                           BuildContext context,
                                           BoxConstraints constraints,
                                         ) {
-                                          final int columns =
-                                              constraints.maxWidth >= 620
-                                              ? 3
-                                              : 2;
-                                          const double hPad = 12.0;
-                                          const double crossSpacing = 12.0;
-                                          const double aspectRatio = 0.58;
+                                          final double maxW =
+                                              constraints.maxWidth;
+                                          final int columns;
+                                          final double aspectRatio;
+                                          final double basePad;
+                                          if (maxW >= 1140) {
+                                            columns = 5;
+                                            aspectRatio = 0.88;
+                                            basePad = 22.0;
+                                          } else if (maxW >= 840) {
+                                            columns = 4;
+                                            aspectRatio = 0.84;
+                                            basePad = 18.0;
+                                          } else if (maxW >= 600) {
+                                            columns = 3;
+                                            aspectRatio = 0.78;
+                                            basePad = 16.0;
+                                          } else {
+                                            columns = 2;
+                                            aspectRatio = 0.58;
+                                            basePad = 12.0;
+                                          }
+                                          final double extraSidePad =
+                                              maxW > 1400
+                                              ? (maxW - 1400) / 2.0
+                                              : 0.0;
+                                          final double hPad =
+                                              basePad + extraSidePad;
+                                          final double crossSpacing =
+                                              maxW >= 600 ? 14.0 : 12.0;
                                           final double cardWidth =
-                                              (constraints.maxWidth -
+                                              (maxW -
                                                   (hPad * 2) -
                                                   (crossSpacing *
                                                       (columns - 1))) /
@@ -311,8 +340,9 @@ class _TabsScreenState extends State<TabsScreen> {
                                               cardWidth / aspectRatio;
 
                                           return GridView.builder(
+                                            key: const Key('tabs_grid_view'),
                                             controller: _gridScrollController,
-                                            padding: const EdgeInsets.fromLTRB(
+                                            padding: EdgeInsets.fromLTRB(
                                               hPad,
                                               8,
                                               hPad,
@@ -321,7 +351,8 @@ class _TabsScreenState extends State<TabsScreen> {
                                             gridDelegate:
                                                 SliverGridDelegateWithFixedCrossAxisCount(
                                                   crossAxisCount: columns,
-                                                  mainAxisSpacing: 12,
+                                                  mainAxisSpacing:
+                                                      crossSpacing,
                                                   crossAxisSpacing:
                                                       crossSpacing,
                                                   childAspectRatio: aspectRatio,
@@ -805,9 +836,11 @@ class _TabsScreenState extends State<TabsScreen> {
           ? const Color(0xFF061015)
           : (isDark ? AppTheme.deepNavyBg : const Color(0xFFF3F7FD)),
       padding: const EdgeInsets.all(10),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: <Widget>[
+      child: SingleChildScrollView(
+        physics: const NeverScrollableScrollPhysics(),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: <Widget>[
           Container(
             height: 20,
             padding: const EdgeInsets.symmetric(horizontal: 7),
@@ -921,8 +954,9 @@ class _TabsScreenState extends State<TabsScreen> {
                   ),
                 ),
               ),
+            ],
           ],
-        ],
+        ),
       ),
     );
   }
@@ -1054,6 +1088,7 @@ class _TabsScreenState extends State<TabsScreen> {
       context: context,
       isScrollControlled: true,
       showDragHandle: true,
+      constraints: const BoxConstraints(maxWidth: 520),
       builder: (BuildContext sheetContext) {
         final double maxSheetH = MediaQuery.sizeOf(sheetContext).height * 0.80;
         return SafeArea(

@@ -10,6 +10,8 @@ import '../downloads/downloads_controller.dart';
 import '../shield/heaven_shield_screen.dart';
 import '../shield/native_shield_bridge.dart';
 import '../tabs/tab_manager.dart';
+import '../vpn/vpn_controller.dart';
+import '../vpn/vpn_screen.dart';
 import 'browser_settings.dart';
 import 'help_screen.dart';
 import 'languages_screen.dart';
@@ -21,11 +23,13 @@ class SettingsScreen extends StatelessWidget {
     required this.settings,
     required this.tabManager,
     this.downloads,
+    this.vpn,
   });
 
   final BrowserSettingsController settings;
   final TabManagerController tabManager;
   final DownloadsController? downloads;
+  final VpnController? vpn;
 
   Future<void> _openPrivacyPolicy(BuildContext context) async {
     Navigator.of(context).pop();
@@ -41,6 +45,7 @@ class SettingsScreen extends StatelessWidget {
       context: context,
       isScrollControlled: true,
       showDragHandle: true,
+      constraints: const BoxConstraints(maxWidth: 560),
       builder: (BuildContext sheetContext) {
         return SafeArea(
           child: SingleChildScrollView(
@@ -115,11 +120,17 @@ class SettingsScreen extends StatelessWidget {
       ),
       body: SafeArea(
         child: ListenableBuilder(
-          listenable: settings,
+          listenable: vpn != null
+              ? Listenable.merge(<Listenable>[settings, vpn!])
+              : settings,
           builder: (BuildContext context, _) {
-            return ListView(
-              padding: const EdgeInsets.fromLTRB(16, 6, 16, 28),
-              children: <Widget>[
+            return Align(
+              alignment: Alignment.topCenter,
+              child: ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 760),
+                child: ListView(
+                  padding: const EdgeInsets.fromLTRB(16, 6, 16, 28),
+                  children: <Widget>[
                 _MinimalSectionLabel('General', colors),
                 _MinimalGroup(
                   isDark: isDark,
@@ -202,6 +213,57 @@ class SettingsScreen extends StatelessWidget {
                         );
                       },
                     ),
+                    if (vpn != null) ...<Widget>[
+                      _thinDivider(colors),
+                      ListTile(
+                        key: const Key('settings_vpn_tile'),
+                        dense: true,
+                        leading: Icon(
+                          Icons.vpn_lock_rounded,
+                          size: 20,
+                          color: vpn!.isConnected
+                              ? AppTheme.shieldEmerald
+                              : colors.primary,
+                        ),
+                        title: const Text('Heaven VPN'),
+                        subtitle: Text(
+                          vpn!.isConnected
+                              ? 'Connected • ${vpn!.selectedProfile.flagEmoji} ${vpn!.selectedProfile.name}'
+                              : 'Disconnected • ${vpn!.selectedProfile.flagEmoji} ${vpn!.selectedProfile.name}',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(fontSize: 11.5),
+                        ),
+                        trailing: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: <Widget>[
+                            Text(
+                              vpn!.isConnected ? 'ON' : 'OFF',
+                              style: TextStyle(
+                                fontSize: 12,
+                                fontWeight: FontWeight.w800,
+                                color: vpn!.isConnected
+                                    ? AppTheme.shieldEmerald
+                                    : colors.onSurfaceVariant,
+                              ),
+                            ),
+                            const SizedBox(width: 4),
+                            Icon(
+                              Icons.chevron_right_rounded,
+                              size: 18,
+                              color: colors.onSurfaceVariant,
+                            ),
+                          ],
+                        ),
+                        onTap: () {
+                          Navigator.of(context).push(
+                            MaterialPageRoute<void>(
+                              builder: (_) => HeavenVpnScreen(vpn: vpn!),
+                            ),
+                          );
+                        },
+                      ),
+                    ],
                     _thinDivider(colors),
                     Padding(
                       padding: const EdgeInsets.symmetric(
@@ -553,6 +615,8 @@ class SettingsScreen extends StatelessWidget {
                   ],
                 ),
               ],
+            ),
+              ),
             );
           },
         ),

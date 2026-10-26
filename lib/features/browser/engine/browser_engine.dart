@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/foundation.dart';
+import 'package:flutter/widgets.dart';
 import 'package:http/http.dart' as http;
 import 'package:url_launcher/url_launcher.dart';
 import 'package:webview_flutter/webview_flutter.dart';
@@ -83,6 +84,7 @@ class BrowserEngine extends ChangeNotifier {
   final bool enablePlatformWebView;
 
   WebViewController? _controller;
+  Widget? _cachedWebViewWidget;
   int? _androidWebViewId;
   String? _pageIconUrl;
   int _lastAppliedSettingsRevision = -1;
@@ -132,6 +134,32 @@ class BrowserEngine extends ChangeNotifier {
   bool get hasLiveWebView => _controller != null;
 
   WebViewController? get controller => _controller;
+
+  /// Returns a stable cached native Hybrid Composition [WebViewWidget] for the
+  /// active [WebViewController] so Chromium renders directly into the Android
+  /// Window RenderNode at 60/90/120Hz without Surface.lockHardwareCanvas()
+  /// offscreen texture contention or widget recreation jitter.
+  Widget? get cachedWebViewWidget {
+    final WebViewController? ctrl = _controller;
+    if (ctrl == null) {
+      return null;
+    }
+    final Widget? existing = _cachedWebViewWidget;
+    if (existing != null) {
+      return existing;
+    }
+    final Widget created = ctrl.platform is AndroidWebViewController
+        ? WebViewWidget.fromPlatformCreationParams(
+            params: AndroidWebViewWidgetCreationParams(
+              key: ValueKey<Object>(ctrl),
+              controller: ctrl.platform,
+              displayWithHybridComposition: true,
+            ),
+          )
+        : WebViewWidget(key: ValueKey<Object>(ctrl), controller: ctrl);
+    _cachedWebViewWidget = created;
+    return created;
+  }
   int? get androidWebViewId => _androidWebViewId;
   String? get pageIconUrl => _pageIconUrl;
   String? get currentUrl => _currentUrl;
@@ -252,6 +280,7 @@ class BrowserEngine extends ChangeNotifier {
       NativeShieldBridge.instance.detachWebView(_androidWebViewId!);
     }
     _controller = null;
+    _cachedWebViewWidget = null;
     _androidWebViewId = null;
     _isLoading = false;
     _progress = 0;
@@ -279,6 +308,7 @@ class BrowserEngine extends ChangeNotifier {
 
   void _initializeController() {
     _resetCachedControllerFlags();
+    _cachedWebViewWidget = null;
     final WebViewController webController = WebViewController();
     _controller = webController;
 
@@ -2018,6 +2048,7 @@ class BrowserEngine extends ChangeNotifier {
     if (_androidWebViewId != null) {
       NativeShieldBridge.instance.detachWebView(_androidWebViewId!);
     }
+    _cachedWebViewWidget = null;
     super.dispose();
   }
 }

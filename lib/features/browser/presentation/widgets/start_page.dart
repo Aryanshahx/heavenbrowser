@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -162,127 +163,195 @@ class _StartPageState extends State<StartPage> {
       builder: (BuildContext context, _) {
         final List<SiteUsageEntry> sites = widget.settings.quickLaunchSites;
 
-        return RefreshIndicator(
-          onRefresh: _refreshNews,
-          child: CustomScrollView(
-            physics: const AlwaysScrollableScrollPhysics(),
-            slivers: <Widget>[
-              SliverPadding(
-                padding: EdgeInsets.fromLTRB(
-                  18,
-                  22 + widget.topOverlayInset,
-                  18,
-                  12,
-                ),
-                sliver: SliverToBoxAdapter(
-                  child: Column(
-                    children: <Widget>[
-                      ShaderMask(
-                        shaderCallback: (Rect bounds) =>
-                            (widget.isIncognito
-                                    ? AppTheme.incognitoGradient
-                                    : AppTheme.brandGradient)
-                                .createShader(bounds),
-                        child: Text(
-                          widget.isIncognito ? 'Heaven Incognito' : 'Heaven',
-                          textAlign: TextAlign.center,
-                          style: theme.textTheme.displaySmall?.copyWith(
-                            fontWeight: FontWeight.w900,
-                            fontSize: 34,
-                            letterSpacing: -1.0,
-                            color: Colors.white,
+        return LayoutBuilder(
+          builder: (BuildContext context, BoxConstraints constraints) {
+            final double viewportWidth = constraints.maxWidth;
+            final bool isTablet = viewportWidth >= 600.0;
+            final double maxFeedWidth = 1180.0;
+            final double feedSidePad = isTablet
+                ? math.max(24.0, (viewportWidth - maxFeedWidth) / 2.0)
+                : 18.0;
+            final double sitesSidePad = isTablet
+                ? math.max(feedSidePad, (viewportWidth - 880.0) / 2.0)
+                : 18.0;
+            final int tabletNewsColumns = viewportWidth >= 960.0 ? 3 : 2;
+
+            return RefreshIndicator(
+              onRefresh: _refreshNews,
+              child: CustomScrollView(
+                physics: const AlwaysScrollableScrollPhysics(),
+                slivers: <Widget>[
+                  SliverPadding(
+                    padding: EdgeInsets.fromLTRB(
+                      feedSidePad,
+                      (isTablet ? 28 : 22) + widget.topOverlayInset,
+                      feedSidePad,
+                      12,
+                    ),
+                    sliver: SliverToBoxAdapter(
+                      child: Center(
+                        child: ConstrainedBox(
+                          constraints: BoxConstraints(
+                            maxWidth: isTablet ? 680.0 : double.infinity,
+                          ),
+                          child: Column(
+                            children: <Widget>[
+                              ShaderMask(
+                                shaderCallback: (Rect bounds) =>
+                                    (widget.isIncognito
+                                            ? AppTheme.incognitoGradient
+                                            : AppTheme.brandGradient)
+                                        .createShader(bounds),
+                                child: Text(
+                                  widget.isIncognito
+                                      ? 'Heaven Incognito'
+                                      : 'Heaven',
+                                  textAlign: TextAlign.center,
+                                  style: theme.textTheme.displaySmall?.copyWith(
+                                    fontWeight: FontWeight.w900,
+                                    fontSize: isTablet ? 38 : 34,
+                                    letterSpacing: -1.0,
+                                    color: Colors.white,
+                                  ),
+                                ),
+                              ),
+                              const SizedBox(height: 18),
+                              // Working Home Screen Search Bar (Search icon submits + Keyboard Enter; Enter arrow button removed!)
+                              _buildWorkingHomeSearchBar(
+                                context,
+                                colors,
+                                isDark,
+                              ),
+                              if (_homeSearchFocus.hasFocus &&
+                                  (_suggestions.isNotEmpty ||
+                                      (!widget.isIncognito &&
+                                          widget.settings
+                                              .matchingRecentSearches(
+                                                _homeSearchController.text,
+                                              )
+                                              .isNotEmpty))) ...<Widget>[
+                                const SizedBox(height: 6),
+                                _buildHomeSuggestionsCard(colors, isDark),
+                              ],
+                              if (widget.isIncognito) ...<Widget>[
+                                const SizedBox(height: 22),
+                                _buildIncognitoPrivacyNote(colors),
+                              ],
+                            ],
                           ),
                         ),
                       ),
-                      const SizedBox(height: 18),
-                      // Working Home Screen Search Bar (Search icon submits + Keyboard Enter; Enter arrow button removed!)
-                      _buildWorkingHomeSearchBar(context, colors, isDark),
-                      if (_homeSearchFocus.hasFocus &&
-                          (_suggestions.isNotEmpty ||
-                              (!widget.isIncognito &&
-                                  widget.settings
-                                      .matchingRecentSearches(
-                                        _homeSearchController.text,
-                                      )
-                                      .isNotEmpty))) ...<Widget>[
-                        const SizedBox(height: 6),
-                        _buildHomeSuggestionsCard(colors, isDark),
-                      ],
-                      if (widget.isIncognito) ...<Widget>[
-                        const SizedBox(height: 22),
-                        _buildIncognitoPrivacyNote(colors),
-                      ],
-                    ],
+                    ),
                   ),
-                ),
-              ),
-              if (!widget.isIncognito && sites.isNotEmpty)
-                SliverPadding(
-                  padding: const EdgeInsets.fromLTRB(18, 6, 18, 12),
-                  sliver: SliverGrid(
-                    gridDelegate:
-                        const SliverGridDelegateWithMaxCrossAxisExtent(
-                          maxCrossAxisExtent: 88,
+                  if (!widget.isIncognito && sites.isNotEmpty)
+                    SliverPadding(
+                      padding: EdgeInsets.fromLTRB(
+                        sitesSidePad,
+                        6,
+                        sitesSidePad,
+                        12,
+                      ),
+                      sliver: SliverGrid(
+                        gridDelegate: SliverGridDelegateWithMaxCrossAxisExtent(
+                          maxCrossAxisExtent: isTablet ? 98 : 88,
                           mainAxisSpacing: 12,
-                          crossAxisSpacing: 10,
-                          childAspectRatio: 0.80,
+                          crossAxisSpacing: isTablet ? 14 : 10,
+                          childAspectRatio: isTablet ? 0.86 : 0.80,
                         ),
-                    delegate: SliverChildBuilderDelegate((
-                      BuildContext context,
-                      int index,
-                    ) {
-                      final SiteUsageEntry site = sites[index];
-                      return _QuickSiteTile(
-                        site: site,
-                        onTap: () {
-                          unawaited(
-                            widget.interests.recordActivity(
-                              text: '${site.title} ${site.domain}',
-                              weight: 1.2,
-                            ),
+                        delegate: SliverChildBuilderDelegate((
+                          BuildContext context,
+                          int index,
+                        ) {
+                          final SiteUsageEntry site = sites[index];
+                          return _QuickSiteTile(
+                            site: site,
+                            onTap: () {
+                              unawaited(
+                                widget.interests.recordActivity(
+                                  text: '${site.title} ${site.domain}',
+                                  weight: 1.2,
+                                ),
+                              );
+                              widget.onSelectUrl(site.url);
+                            },
+                            onLongPress: () => _showSiteMenu(context, site),
                           );
-                          widget.onSelectUrl(site.url);
-                        },
-                        onLongPress: () => _showSiteMenu(context, site),
-                      );
-                    }, childCount: sites.length),
-                  ),
-                ),
-              if (!widget.isIncognito) ...<Widget>[
-                SliverPadding(
-                  padding: const EdgeInsets.fromLTRB(18, 8, 18, 10),
-                  sliver: SliverToBoxAdapter(
-                    child: _buildNewsSectionHeader(context, colors),
-                  ),
-                ),
-                if (_loadingNews && _newsItems.isEmpty)
-                  const SliverToBoxAdapter(
-                    child: Padding(
-                      padding: EdgeInsets.symmetric(vertical: 36),
-                      child: Center(child: CircularProgressIndicator()),
+                        }, childCount: sites.length),
+                      ),
                     ),
-                  )
-                else if (_newsItems.isEmpty)
-                  SliverToBoxAdapter(child: _buildEmptyNewsState(colors))
-                else
-                  SliverPadding(
-                    padding: const EdgeInsets.fromLTRB(18, 0, 18, 28),
-                    sliver: SliverList.separated(
-                      itemCount: _newsItems.length,
-                      separatorBuilder: (_, _) => const SizedBox(height: 14),
-                      itemBuilder: (BuildContext context, int index) {
-                        return _buildGoogleDiscoverCard(
-                          context,
-                          colors,
-                          isDark,
-                          _newsItems[index],
-                        );
-                      },
+                  if (!widget.isIncognito) ...<Widget>[
+                    SliverPadding(
+                      padding: EdgeInsets.fromLTRB(
+                        feedSidePad,
+                        8,
+                        feedSidePad,
+                        10,
+                      ),
+                      sliver: SliverToBoxAdapter(
+                        child: _buildNewsSectionHeader(context, colors),
+                      ),
                     ),
-                  ),
-              ],
-            ],
-          ),
+                    if (_loadingNews && _newsItems.isEmpty)
+                      const SliverToBoxAdapter(
+                        child: Padding(
+                          padding: EdgeInsets.symmetric(vertical: 36),
+                          child: Center(child: CircularProgressIndicator()),
+                        ),
+                      )
+                    else if (_newsItems.isEmpty)
+                      SliverToBoxAdapter(child: _buildEmptyNewsState(colors))
+                    else if (isTablet)
+                      SliverPadding(
+                        padding: EdgeInsets.fromLTRB(
+                          feedSidePad,
+                          2,
+                          feedSidePad,
+                          28,
+                        ),
+                        sliver: SliverGrid(
+                          key: const Key('discover_tablet_grid'),
+                          gridDelegate:
+                              SliverGridDelegateWithFixedCrossAxisCount(
+                                crossAxisCount: tabletNewsColumns,
+                                mainAxisSpacing: 16,
+                                crossAxisSpacing: 16,
+                                mainAxisExtent: 282,
+                              ),
+                          delegate: SliverChildBuilderDelegate((
+                            BuildContext context,
+                            int index,
+                          ) {
+                            return _buildTabletDiscoverCard(
+                              context,
+                              colors,
+                              isDark,
+                              _newsItems[index],
+                            );
+                          }, childCount: _newsItems.length),
+                        ),
+                      )
+                    else
+                      SliverPadding(
+                        padding: const EdgeInsets.fromLTRB(18, 0, 18, 28),
+                        sliver: SliverList.separated(
+                          itemCount: _newsItems.length,
+                          separatorBuilder: (_, _) =>
+                              const SizedBox(height: 14),
+                          itemBuilder: (BuildContext context, int index) {
+                            return _buildGoogleDiscoverCard(
+                              context,
+                              colors,
+                              isDark,
+                              _newsItems[index],
+                            );
+                          },
+                        ),
+                      ),
+                  ],
+                ],
+              ),
+            );
+          },
         );
       },
     );
@@ -547,6 +616,146 @@ class _StartPageState extends State<StartPage> {
               style: TextStyle(fontSize: 13, color: colors.onSurfaceVariant),
             ),
           ],
+        ),
+      ),
+    );
+  }
+
+  /// Compact multi-column Discover card tailored for tablets (>= 600dp):
+  /// Balanced 150px cover image + crisp headline + publisher footer so news cards
+  /// never stretch into giant full-screen containers on tablet displays.
+  Widget _buildTabletDiscoverCard(
+    BuildContext context,
+    ColorScheme colors,
+    bool isDark,
+    PersonalizedNewsItem item,
+  ) {
+    final bool hasImage = item.imageUrl != null && item.imageUrl!.isNotEmpty;
+
+    return Material(
+      color: isDark ? AppTheme.navySurface : Colors.white,
+      borderRadius: BorderRadius.circular(18),
+      clipBehavior: Clip.antiAlias,
+      child: InkWell(
+        borderRadius: BorderRadius.circular(18),
+        onTap: () {
+          unawaited(
+            widget.interests.recordActivity(
+              text: '${item.title} ${item.matchedTopic ?? ''}',
+              weight: 2.0,
+            ),
+          );
+          widget.onSelectUrl(item.url);
+        },
+        onLongPress: () => _showNewsMenu(context, item),
+        child: Container(
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(18),
+            border: Border.all(
+              color: colors.outlineVariant.withValues(alpha: 0.35),
+            ),
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: <Widget>[
+              if (hasImage)
+                SizedBox(
+                  height: 148,
+                  child: _DiscoverCoverImage(
+                    imageUrl: item.imageUrl!,
+                    fillParent: true,
+                  ),
+                ),
+              Expanded(
+                child: Padding(
+                  padding: const EdgeInsets.fromLTRB(13, 10, 13, 11),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: <Widget>[
+                      Expanded(
+                        child: Text(
+                          item.title,
+                          maxLines: hasImage ? 3 : 6,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            fontSize: hasImage ? 14.5 : 16,
+                            fontWeight: FontWeight.w700,
+                            height: 1.28,
+                          ),
+                        ),
+                      ),
+                      const SizedBox(height: 6),
+                      Row(
+                        children: <Widget>[
+                          SiteLogo(
+                            urlOrDomain: item.sourceUrl,
+                            fallbackLabel: item.sourceName,
+                            size: 17,
+                            borderRadius: 5,
+                          ),
+                          const SizedBox(width: 6),
+                          Expanded(
+                            child: Text(
+                              item.timeLabel.isNotEmpty
+                                  ? '${item.sourceName} • ${item.timeLabel}'
+                                  : item.sourceName,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: TextStyle(
+                                fontSize: 11.5,
+                                fontWeight: FontWeight.w600,
+                                color: colors.onSurfaceVariant,
+                              ),
+                            ),
+                          ),
+                          if (item.matchedTopic != null &&
+                              item.matchedTopic!.isNotEmpty) ...<Widget>[
+                            const SizedBox(width: 5),
+                            Flexible(
+                              flex: 0,
+                              child: Container(
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 6,
+                                  vertical: 2,
+                                ),
+                                decoration: BoxDecoration(
+                                  color: colors.primary.withValues(alpha: 0.14),
+                                  borderRadius: BorderRadius.circular(6),
+                                ),
+                                child: Text(
+                                  item.matchedTopic!,
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: TextStyle(
+                                    fontSize: 10,
+                                    fontWeight: FontWeight.w700,
+                                    color: colors.primary,
+                                  ),
+                                ),
+                              ),
+                            ),
+                          ],
+                          const SizedBox(width: 4),
+                          InkWell(
+                            borderRadius: BorderRadius.circular(12),
+                            onTap: () => _showNewsMenu(context, item),
+                            child: Padding(
+                              padding: const EdgeInsets.all(2),
+                              child: Icon(
+                                Icons.more_horiz_rounded,
+                                size: 17,
+                                color: colors.onSurfaceVariant,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ],
+          ),
         ),
       ),
     );
@@ -921,9 +1130,10 @@ class _QuickSiteTile extends StatelessWidget {
 }
 
 class _DiscoverCoverImage extends StatefulWidget {
-  const _DiscoverCoverImage({required this.imageUrl});
+  const _DiscoverCoverImage({required this.imageUrl, this.fillParent = false});
 
   final String imageUrl;
+  final bool fillParent;
 
   @override
   State<_DiscoverCoverImage> createState() => _DiscoverCoverImageState();
@@ -942,40 +1152,57 @@ class _DiscoverCoverImageState extends State<_DiscoverCoverImage> {
 
   @override
   Widget build(BuildContext context) {
-    if (_failed) {
-      return const SizedBox.shrink();
-    }
     final ColorScheme colors = Theme.of(context).colorScheme;
-    return ClipRRect(
-      borderRadius: const BorderRadius.vertical(top: Radius.circular(19)),
-      child: AspectRatio(
-        aspectRatio: 16 / 9,
-        child: Image.network(
-          widget.imageUrl,
-          fit: BoxFit.cover,
-          loadingBuilder:
-              (
-                BuildContext context,
-                Widget child,
-                ImageChunkEvent? loadingProgress,
-              ) {
-                if (loadingProgress == null) {
-                  return child;
-                }
-                return Container(
-                  color: colors.surfaceContainerHighest.withValues(alpha: 0.35),
-                );
-              },
-          errorBuilder: (_, _, _) {
-            WidgetsBinding.instance.addPostFrameCallback((_) {
-              if (mounted && !_failed) {
-                setState(() => _failed = true);
-              }
-            });
-            return const SizedBox.shrink();
-          },
+    if (_failed) {
+      if (!widget.fillParent) {
+        return const SizedBox.shrink();
+      }
+      return ClipRRect(
+        borderRadius: const BorderRadius.vertical(top: Radius.circular(18)),
+        child: Container(
+          color: colors.surfaceContainerHighest.withValues(alpha: 0.35),
+          alignment: Alignment.center,
+          child: Icon(
+            Icons.newspaper_rounded,
+            size: 32,
+            color: colors.onSurfaceVariant.withValues(alpha: 0.45),
+          ),
         ),
-      ),
+      );
+    }
+    final Widget imageWidget = Image.network(
+      widget.imageUrl,
+      fit: BoxFit.cover,
+      width: double.infinity,
+      height: widget.fillParent ? double.infinity : null,
+      loadingBuilder:
+          (
+            BuildContext context,
+            Widget child,
+            ImageChunkEvent? loadingProgress,
+          ) {
+            if (loadingProgress == null) {
+              return child;
+            }
+            return Container(
+              color: colors.surfaceContainerHighest.withValues(alpha: 0.35),
+            );
+          },
+      errorBuilder: (_, _, _) {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted && !_failed) {
+            setState(() => _failed = true);
+          }
+        });
+        return const SizedBox.shrink();
+      },
+    );
+
+    return ClipRRect(
+      borderRadius: const BorderRadius.vertical(top: Radius.circular(18)),
+      child: widget.fillParent
+          ? imageWidget
+          : AspectRatio(aspectRatio: 16 / 9, child: imageWidget),
     );
   }
 }

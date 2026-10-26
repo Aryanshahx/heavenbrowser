@@ -679,9 +679,13 @@ class _HeavenShieldScreenState extends State<HeavenShieldScreen> {
                   final bool enabled = s.shieldEnabled;
                   final List<String> exceptions = s.shieldDisabledHosts;
 
-                  return ListView(
-                    padding: const EdgeInsets.fromLTRB(12, 8, 12, 32),
-                    children: <Widget>[
+                  return Align(
+                    alignment: Alignment.topCenter,
+                    child: ConstrainedBox(
+                      constraints: const BoxConstraints(maxWidth: 780),
+                      child: ListView(
+                        padding: const EdgeInsets.fromLTRB(12, 8, 12, 32),
+                        children: <Widget>[
                       _buildMasterCard(innerContext, colors, isDark, enabled),
                       if (cleanHost.isNotEmpty) ...<Widget>[
                         const SizedBox(height: 8),
@@ -1174,6 +1178,8 @@ class _HeavenShieldScreenState extends State<HeavenShieldScreen> {
                         },
                       ),
                     ],
+                      ),
+                    ),
                   );
                 },
               ),

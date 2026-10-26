@@ -7,6 +7,7 @@ import android.app.NotificationManager;
 import android.app.PendingIntent;
 import android.content.Context;
 import android.content.Intent;
+import android.content.SharedPreferences;
 import android.net.VpnService;
 import android.os.Build;
 import android.os.Handler;
@@ -49,6 +50,8 @@ import java.util.Map;
 import java.util.Set;
 import java.util.TimeZone;
 import java.util.concurrent.Callable;
+import java.util.concurrent.CompletionService;
+import java.util.concurrent.ExecutorCompletionService;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
@@ -78,10 +81,18 @@ public final class HeavenVpnManager {
   private static final String[] WARP_FALLBACK_ENDPOINTS =
       new String[] {
         "162.159.193.2:500",
-        "188.114.96.3:4500",
-        "162.159.192.1:1701",
-        "engage.cloudflareclient.com:2408"
+        "188.114.96.3:4500"
       };
+
+  private static final String VPN_CACHE_PREFS = "hb_vpn_fast_cache";
+  private static final String PREF_RISEUP_CA = "riseup_ca";
+  private static final String PREF_RISEUP_CERT = "riseup_cert";
+  private static final String PREF_RISEUP_KEY = "riseup_key";
+  private static final String PREF_RISEUP_CERT_AT = "riseup_cert_at";
+  private static final String PREF_RISEUP_EIP = "riseup_eip_json";
+  private static final String PREF_RISEUP_EIP_AT = "riseup_eip_at";
+  private static final String PREF_VPNGATE_CSV = "vpngate_csv";
+  private static final String PREF_VPNGATE_AT = "vpngate_at";
 
   private static final String RISEUP_CA_URL = "https://api.black.riseup.net/ca.crt";
   private static final String RISEUP_CERT_URL = "https://api.black.riseup.net/3/cert";
@@ -122,13 +133,17 @@ public final class HeavenVpnManager {
   private volatile Tunnel.State currentState = Tunnel.State.DOWN;
   private volatile String activeProfileName = "Heaven Free VPN";
 
-  // Cached Riseup credentials & VPNGate directory (in-memory for fast switching)
+  // Cached Riseup credentials, gateway directory & VPNGate directory (persisted + pre-warmed)
+  private final SharedPreferences cachePrefs;
   private volatile String cachedRiseupCa;
   private volatile String cachedRiseupCert;
   private volatile String cachedRiseupKey;
   private volatile long cachedRiseupCertAtMs = 0L;
+  private volatile String cachedRiseupEipJson;
+  private volatile long cachedRiseupEipAtMs = 0L;
   private volatile String cachedVpnGateCsv;
   private volatile long cachedVpnGateAtMs = 0L;
+  private volatile long lastVpnGateFailAtMs = 0L;
 
   private PendingConnectRequest pendingConnect;
 
@@ -176,6 +191,9 @@ public final class HeavenVpnManager {
 
   public HeavenVpnManager(Context context) {
     this.appContext = context.getApplicationContext();
+    this.cachePrefs = this.appContext.getSharedPreferences(VPN_CACHE_PREFS, Context.MODE_PRIVATE);
+    loadPersistedCaches();
+    warmUpCachesAsync();
     this.wgTunnel =
         new Tunnel() {
           @Override
@@ -191,6 +209,44 @@ public final class HeavenVpnManager {
             }
           }
         };
+  }
+
+  private void loadPersistedCaches() {
+    try {
+      String ca = cachePrefs.getString(PREF_RISEUP_CA, null);
+      String cert = cachePrefs.getString(PREF_RISEUP_CERT, null);
+      String key = cachePrefs.getString(PREF_RISEUP_KEY, null);
+      long certAt = cachePrefs.getLong(PREF_RISEUP_CERT_AT, 0L);
+      if (ca != null && cert != null && key != null) {
+        cachedRiseupCa = ca;
+        cachedRiseupCert = cert;
+        cachedRiseupKey = key;
+        cachedRiseupCertAtMs = certAt;
+      }
+      String eip = cachePrefs.getString(PREF_RISEUP_EIP, null);
+      long eipAt = cachePrefs.getLong(PREF_RISEUP_EIP_AT, 0L);
+      if (eip != null && !eip.isEmpty()) {
+        cachedRiseupEipJson = eip;
+        cachedRiseupEipAtMs = eipAt;
+      }
+      String csv = cachePrefs.getString(PREF_VPNGATE_CSV, null);
+      long csvAt = cachePrefs.getLong(PREF_VPNGATE_AT, 0L);
+      if (csv != null && csv.contains("*vpn_servers")) {
+        cachedVpnGateCsv = csv;
+        cachedVpnGateAtMs = csvAt;
+      }
+    } catch (Throwable ignored) {
+    }
+  }
+
+  private void warmUpCachesAsync() {
+    probePool.execute(
+        () -> {
+          try {
+            ensureRiseupReady();
+          } catch (Throwable ignored) {
+          }
+        });
   }
 
   private synchronized GoBackend ensureBackend() {
@@ -289,7 +345,7 @@ public final class HeavenVpnManager {
           addCountryMeta(byCode, "CA", "Canada", 2);
 
           try {
-            String csv = fetchVpnGateCsv();
+            String csv = fetchVpnGateCsv(true);
             if (csv != null) {
               String[] lines = csv.split("\\r?\\n");
               for (int i = 2; i < lines.length; i++) {
@@ -331,11 +387,23 @@ public final class HeavenVpnManager {
 
   private VerifiedCandidate tryProvisionRiseupCandidate(String targetCc, Set<String> excluded) {
     try {
-      ensureRiseupCredentials();
+      ensureRiseupReady();
       if (cachedRiseupCa == null || cachedRiseupCert == null || cachedRiseupKey == null) {
         return null;
       }
-      String eipRaw = httpGetText(RISEUP_EIP_URL, null, 8000);
+      String eipRaw = cachedRiseupEipJson;
+      if (eipRaw == null || eipRaw.isEmpty()) {
+        eipRaw = httpGetText(RISEUP_EIP_URL, null, 3800);
+        if (eipRaw != null && !eipRaw.isEmpty()) {
+          cachedRiseupEipJson = eipRaw;
+          cachedRiseupEipAtMs = System.currentTimeMillis();
+          cachePrefs
+              .edit()
+              .putString(PREF_RISEUP_EIP, eipRaw)
+              .putLong(PREF_RISEUP_EIP_AT, cachedRiseupEipAtMs)
+              .apply();
+        }
+      }
       if (eipRaw == null || eipRaw.isEmpty()) {
         return null;
       }
@@ -374,31 +442,29 @@ public final class HeavenVpnManager {
 
         tasks.add(
             () -> {
-              // Prefer verified OpenVPN TCP (1194 / 53 / 80) first because TCP traverses
-              // carrier UDP filters cleanly and OpenVPN V2 reset confirms live daemon.
+              // Fast parallel-friendly gateway check: try UDP 1194 first (1-RTT tunnel setup),
+              // then immediately fall back to TCP 1194 / 53 if UDP is carrier-filtered.
               int chosenPort = -1;
-              String chosenProto = "tcp-client";
+              String chosenProto = "udp";
               long bestRtt = -1L;
 
-              for (int port : tcpPorts) {
-                long rtt = probeOpenVpnTcp(ip, port, 1900);
-                if (rtt >= 0 && (bestRtt < 0 || rtt < bestRtt)) {
+              if (!udpPorts.isEmpty()) {
+                int udpPort = udpPorts.get(0);
+                long rtt = probeOpenVpnUdp(ip, udpPort, 850);
+                if (rtt >= 0) {
                   bestRtt = rtt;
-                  chosenPort = port;
-                  chosenProto = "tcp-client";
-                  if (port == 1194) {
-                    break;
-                  }
+                  chosenPort = udpPort;
+                  chosenProto = "udp";
                 }
               }
 
               if (bestRtt < 0) {
-                for (int port : udpPorts) {
-                  long rtt = probeOpenVpnUdp(ip, port, 1600);
-                  if (rtt >= 0 && (bestRtt < 0 || rtt < bestRtt)) {
+                for (int port : tcpPorts) {
+                  long rtt = probeOpenVpnTcp(ip, port, 1200);
+                  if (rtt >= 0) {
                     bestRtt = rtt;
                     chosenPort = port;
-                    chosenProto = "udp";
+                    chosenProto = "tcp-client";
                     break;
                   }
                 }
@@ -415,8 +481,15 @@ public final class HeavenVpnManager {
               cfg.append("remote ").append(ip).append(' ').append(chosenPort).append('\n');
               cfg.append("nobind\n");
               cfg.append("persist-key\n");
-              cfg.append("connect-timeout 8\n");
+              if ("udp".equals(chosenProto)) {
+                cfg.append("fast-io\n");
+              }
+              cfg.append("sndbuf 393216\n");
+              cfg.append("rcvbuf 393216\n");
+              cfg.append("connect-timeout 5\n");
+              cfg.append("connect-retry 1 2\n");
               cfg.append("connect-retry-max 2\n");
+              cfg.append("hand-window 12\n");
               cfg.append("remote-cert-tls server\n");
               cfg.append("tls-version-min 1.2\n");
               cfg.append("cipher AES-256-GCM\n");
@@ -436,7 +509,7 @@ public final class HeavenVpnManager {
       if (tasks.isEmpty()) {
         return null;
       }
-      return pickBestCandidate(tasks, 5000);
+      return pickFastestCandidate(tasks, 2600L);
     } catch (Throwable ignored) {
       return null;
     }
@@ -500,7 +573,7 @@ public final class HeavenVpnManager {
 
   private VerifiedCandidate tryProvisionVpnGateCandidate(String targetCc, Set<String> excluded) {
     try {
-      String csv = fetchVpnGateCsv();
+      String csv = fetchVpnGateCsv(false);
       if (csv == null || csv.isEmpty()) {
         return null;
       }
@@ -565,8 +638,8 @@ public final class HeavenVpnManager {
 
               long rtt =
                   proto.contains("udp")
-                      ? probeOpenVpnUdp(host, port, 2200)
-                      : probeOpenVpnTcp(host, port, 2200);
+                      ? probeOpenVpnUdp(host, port, 1300)
+                      : probeOpenVpnTcp(host, port, 1300);
               if (rtt < 0) {
                 return null;
               }
@@ -581,7 +654,7 @@ public final class HeavenVpnManager {
             });
       }
 
-      return pickBestCandidate(tasks, 5000);
+      return pickFastestCandidate(tasks, 2600L);
     } catch (Throwable ignored) {
       return null;
     }
@@ -640,70 +713,188 @@ public final class HeavenVpnManager {
     return out.toString();
   }
 
-  private VerifiedCandidate pickBestCandidate(
+  /**
+   * Races all candidate gateway probes concurrently and returns the VERY FIRST verified live
+   * server immediately (cancelling slow/offline gateways instead of blocking for full timeoutMs!).
+   */
+  private VerifiedCandidate pickFastestCandidate(
       List<Callable<VerifiedCandidate>> tasks, long timeoutMs) {
+    if (tasks.isEmpty()) {
+      return null;
+    }
+    CompletionService<VerifiedCandidate> cs = new ExecutorCompletionService<>(probePool);
+    List<Future<VerifiedCandidate>> submitted = new ArrayList<>(tasks.size());
+    for (Callable<VerifiedCandidate> task : tasks) {
+      submitted.add(cs.submit(task));
+    }
+
+    long deadline = System.currentTimeMillis() + timeoutMs;
     try {
-      List<Future<VerifiedCandidate>> futures =
-          probePool.invokeAll(tasks, timeoutMs, TimeUnit.MILLISECONDS);
-      VerifiedCandidate best = null;
-      for (Future<VerifiedCandidate> f : futures) {
-        if (f.isDone() && !f.isCancelled()) {
-          try {
-            VerifiedCandidate c = f.get();
-            if (c != null) {
-              if (best == null || c.latencyMs < best.latencyMs) {
-                best = c;
-              }
-            }
-          } catch (Throwable ignored) {
+      for (int i = 0; i < submitted.size(); i++) {
+        long remaining = deadline - System.currentTimeMillis();
+        if (remaining <= 0L) {
+          break;
+        }
+        Future<VerifiedCandidate> done = cs.poll(remaining, TimeUnit.MILLISECONDS);
+        if (done == null) {
+          break;
+        }
+        try {
+          VerifiedCandidate candidate = done.get();
+          if (candidate != null) {
+            return candidate;
           }
+        } catch (Throwable ignored) {
         }
       }
-      return best;
+      return null;
     } catch (InterruptedException e) {
       Thread.currentThread().interrupt();
       return null;
+    } finally {
+      for (Future<VerifiedCandidate> f : submitted) {
+        if (!f.isDone()) {
+          f.cancel(true);
+        }
+      }
     }
   }
 
-  private synchronized void ensureRiseupCredentials() {
+  private synchronized void ensureRiseupReady() {
     long now = System.currentTimeMillis();
-    if (cachedRiseupCa != null
-        && cachedRiseupCert != null
-        && cachedRiseupKey != null
-        && (now - cachedRiseupCertAtMs) < 3600_000L * 6) {
+    boolean credsFresh =
+        cachedRiseupCa != null
+            && cachedRiseupCert != null
+            && cachedRiseupKey != null
+            && (now - cachedRiseupCertAtMs) < 3600_000L * 12;
+    boolean eipFresh =
+        cachedRiseupEipJson != null
+            && !cachedRiseupEipJson.isEmpty()
+            && (now - cachedRiseupEipAtMs) < 3600_000L * 6;
+    if (credsFresh && eipFresh) {
       return;
     }
-    String ca = httpGetText(RISEUP_CA_URL, null, 8000);
-    String clientPem = httpPostEmptyText(RISEUP_CERT_URL, 9000);
-    if (ca == null || clientPem == null) {
-      return;
+
+    Future<String> caFuture =
+        credsFresh ? null : probePool.submit(() -> httpGetText(RISEUP_CA_URL, null, 4500));
+    Future<String> certFuture =
+        credsFresh ? null : probePool.submit(() -> httpPostEmptyText(RISEUP_CERT_URL, 5000));
+    Future<String> eipFuture =
+        eipFresh ? null : probePool.submit(() -> httpGetText(RISEUP_EIP_URL, null, 4500));
+
+    SharedPreferences.Editor editor = cachePrefs.edit();
+    boolean wrote = false;
+
+    if (!credsFresh && caFuture != null && certFuture != null) {
+      try {
+        String ca = caFuture.get(5200, TimeUnit.MILLISECONDS);
+        String clientPem = certFuture.get(5500, TimeUnit.MILLISECONDS);
+        if (ca != null && clientPem != null) {
+          Matcher keyM = PEM_KEY_PATTERN.matcher(clientPem);
+          Matcher certM = PEM_CERT_PATTERN.matcher(clientPem);
+          if (keyM.find() && certM.find()) {
+            cachedRiseupCa = ca.trim();
+            cachedRiseupKey = keyM.group(1).trim();
+            cachedRiseupCert = certM.group(1).trim();
+            cachedRiseupCertAtMs = now;
+            editor
+                .putString(PREF_RISEUP_CA, cachedRiseupCa)
+                .putString(PREF_RISEUP_CERT, cachedRiseupCert)
+                .putString(PREF_RISEUP_KEY, cachedRiseupKey)
+                .putLong(PREF_RISEUP_CERT_AT, now);
+            wrote = true;
+          }
+        }
+      } catch (Throwable ignored) {
+      }
     }
-    Matcher keyM = PEM_KEY_PATTERN.matcher(clientPem);
-    Matcher certM = PEM_CERT_PATTERN.matcher(clientPem);
-    if (keyM.find() && certM.find()) {
-      cachedRiseupCa = ca.trim();
-      cachedRiseupKey = keyM.group(1).trim();
-      cachedRiseupCert = certM.group(1).trim();
-      cachedRiseupCertAtMs = now;
+
+    if (!eipFresh && eipFuture != null) {
+      try {
+        String eip = eipFuture.get(5000, TimeUnit.MILLISECONDS);
+        if (eip != null && !eip.isEmpty()) {
+          cachedRiseupEipJson = eip;
+          cachedRiseupEipAtMs = now;
+          editor.putString(PREF_RISEUP_EIP, eip).putLong(PREF_RISEUP_EIP_AT, now);
+          wrote = true;
+        }
+      } catch (Throwable ignored) {
+      }
+    }
+
+    if (wrote) {
+      editor.apply();
     }
   }
 
-  private synchronized String fetchVpnGateCsv() {
+  private synchronized String fetchVpnGateCsv(boolean forceRefresh) {
     long now = System.currentTimeMillis();
-    if (cachedVpnGateCsv != null && (now - cachedVpnGateAtMs) < 180_000L) {
+    if (!forceRefresh
+        && cachedVpnGateCsv != null
+        && (now - cachedVpnGateAtMs) < 300_000L) {
       return cachedVpnGateCsv;
     }
-    String csv = httpGetText(VPNGATE_HTTPS_URL, null, 9000);
-    if (csv == null || !csv.contains("*vpn_servers")) {
-      Map<String, String> hostHdr = Collections.singletonMap("Host", "www.vpngate.net");
-      csv = httpGetText(VPNGATE_FALLBACK_IP_URL, hostHdr, 9000);
+    if (!forceRefresh && lastVpnGateFailAtMs > 0L && (now - lastVpnGateFailAtMs) < 90_000L) {
+      return cachedVpnGateCsv;
     }
-    if (csv != null && csv.contains("*vpn_servers")) {
-      cachedVpnGateCsv = csv;
+
+    // Race HTTPS and direct IP mirror in parallel with a strict 2.4s timeout so ISP filtering
+    // on vpngate.net NEVER hangs the Refresh spinner or delays VPN connection!
+    CompletionService<String> cs = new ExecutorCompletionService<>(probePool);
+    List<Future<String>> futures = new ArrayList<>(2);
+    futures.add(
+        cs.submit(
+            () -> {
+              String s = httpGetText(VPNGATE_HTTPS_URL, null, 2400);
+              return (s != null && s.contains("*vpn_servers")) ? s : null;
+            }));
+    futures.add(
+        cs.submit(
+            () -> {
+              Map<String, String> hostHdr = Collections.singletonMap("Host", "www.vpngate.net");
+              String s = httpGetText(VPNGATE_FALLBACK_IP_URL, hostHdr, 2400);
+              return (s != null && s.contains("*vpn_servers")) ? s : null;
+            }));
+
+    String freshCsv = null;
+    long deadline = System.currentTimeMillis() + 2600L;
+    try {
+      for (int i = 0; i < futures.size(); i++) {
+        long rem = deadline - System.currentTimeMillis();
+        if (rem <= 0L) break;
+        Future<String> f = cs.poll(rem, TimeUnit.MILLISECONDS);
+        if (f == null) break;
+        try {
+          String candidate = f.get();
+          if (candidate != null) {
+            freshCsv = candidate;
+            break;
+          }
+        } catch (Throwable ignored) {
+        }
+      }
+    } catch (InterruptedException ie) {
+      Thread.currentThread().interrupt();
+    } finally {
+      for (Future<String> f : futures) {
+        if (!f.isDone()) {
+          f.cancel(true);
+        }
+      }
+    }
+
+    if (freshCsv != null) {
+      cachedVpnGateCsv = freshCsv;
       cachedVpnGateAtMs = now;
-      return csv;
+      lastVpnGateFailAtMs = 0L;
+      cachePrefs
+          .edit()
+          .putString(PREF_VPNGATE_CSV, freshCsv)
+          .putLong(PREF_VPNGATE_AT, now)
+          .apply();
+      return freshCsv;
     }
+    lastVpnGateFailAtMs = now;
     return cachedVpnGateCsv;
   }
 
@@ -888,8 +1079,8 @@ public final class HeavenVpnManager {
 
             conn = (HttpURLConnection) URI.create(WARP_REG_URL).toURL().openConnection();
             conn.setRequestMethod("POST");
-            conn.setConnectTimeout(15000);
-            conn.setReadTimeout(15000);
+            conn.setConnectTimeout(5500);
+            conn.setReadTimeout(5500);
             conn.setDoOutput(true);
             conn.setRequestProperty("Content-Type", "application/json");
             conn.setRequestProperty("Accept", "application/json");
@@ -1174,9 +1365,9 @@ public final class HeavenVpnManager {
               }
 
               // For user-imported custom WireGuard configs, keep the user's tunnel up directly;
-              // for built-in WARP configs, cryptographically verify a real peer handshake so we
-              // never leave a UDP-blocked carrier tunnel in a black-hole state.
-              if (!isWarpConfig || waitForWireGuardPeerHandshake(backend, 3100L)) {
+              // for built-in WARP configs, cryptographically verify a real peer handshake quickly
+              // so we never leave a UDP-blocked carrier tunnel in a black-hole state.
+              if (!isWarpConfig || waitForWireGuardPeerHandshake(backend, 1500L)) {
                 currentState = Tunnel.State.UP;
                 activeProfileName = label;
                 showConnectedNotification(activeProfileName, browserOnly);
@@ -1217,11 +1408,17 @@ public final class HeavenVpnManager {
   }
 
   private boolean waitForWireGuardPeerHandshake(GoBackend backend, long maxWaitMs) {
-    // Trigger an immediate packet through tun0 so WireGuard initiates Noise_IKpsk2 right away.
+    // Trigger an immediate UDP datagram + HTTPS probe through tun0 so wg-go sends
+    // Noise_IKpsk2 HandshakeInitiation in <1ms instead of waiting for TCP SYN backoff.
     probePool.execute(
         () -> {
+          try (DatagramSocket ds = new DatagramSocket()) {
+            byte[] wake = new byte[] {0x00};
+            ds.send(new DatagramPacket(wake, 1, InetAddress.getByName("1.1.1.1"), 53));
+          } catch (Throwable ignored) {
+          }
           try {
-            httpGetText("https://1.1.1.1/cdn-cgi/trace", null, 2200);
+            httpGetText("https://1.1.1.1/cdn-cgi/trace", null, 1300);
           } catch (Throwable ignored) {
           }
         });
@@ -1244,7 +1441,7 @@ public final class HeavenVpnManager {
             }
           }
         }
-        Thread.sleep(200L);
+        Thread.sleep(60L);
       } catch (InterruptedException ie) {
         Thread.currentThread().interrupt();
         return false;

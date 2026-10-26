@@ -698,17 +698,17 @@ class VpnController extends ChangeNotifier {
 
   String _humanStageLabel(ovpn.VPNStage stage) {
     return switch (stage) {
-      ovpn.VPNStage.prepare => 'Grant VPN permission...',
-      ovpn.VPNStage.resolve => 'Resolving foreign gateway...',
+      ovpn.VPNStage.prepare => 'Waiting for VPN permission',
+      ovpn.VPNStage.resolve => 'Resolving server',
       ovpn.VPNStage.tcp_connect ||
       ovpn.VPNStage.udp_connect ||
-      ovpn.VPNStage.wait_connection => 'Handshaking with foreign server...',
+      ovpn.VPNStage.wait_connection => 'Securing connection',
       ovpn.VPNStage.authenticating ||
-      ovpn.VPNStage.authentication => 'Verifying encrypted certificate...',
+      ovpn.VPNStage.authentication => 'Verifying security',
       ovpn.VPNStage.get_config ||
       ovpn.VPNStage.assign_ip ||
-      ovpn.VPNStage.add_routes => 'Assigning foreign exit IP...',
-      _ => 'Connecting foreign VPN...',
+      ovpn.VPNStage.add_routes => 'Assigning IP address',
+      _ => 'Connecting',
     };
   }
 
@@ -719,7 +719,11 @@ class VpnController extends ChangeNotifier {
     try {
       final List<Map<String, Object?>> countries = await NativeShieldBridge
           .instance
-          .fetchLiveForeignCountries();
+          .fetchLiveForeignCountries()
+          .timeout(
+            const Duration(seconds: 4),
+            onTimeout: () => const <Map<String, Object?>>[],
+          );
       final Set<String> coreCodes = _coreForeignProfiles
           .map((VpnProfile p) => p.countryCode)
           .toSet();
@@ -751,7 +755,10 @@ class VpnController extends ChangeNotifier {
           ),
         );
       }
-      _dynamicForeignProfiles = extras;
+      if (extras.isNotEmpty) {
+        _dynamicForeignProfiles = extras;
+      }
+    } catch (_) {
     } finally {
       _refreshingServers = false;
       notifyListeners();
@@ -890,10 +897,10 @@ class VpnController extends ChangeNotifier {
     _exitCountry = null;
     _rxBytes = 0;
     _txBytes = 0;
-    _statusMessage = 'Finding fastest live server...';
+    final VpnProfile target = selectedProfile;
+    _statusMessage = 'Connecting to ${target.name}';
     notifyListeners();
 
-    final VpnProfile target = selectedProfile;
     if (target.protocol == VpnProtocol.openvpn) {
       return _connectOpenVpnProfile(target);
     }
@@ -902,9 +909,9 @@ class VpnController extends ChangeNotifier {
 
   Future<bool> _connectOpenVpnProfile(VpnProfile target) async {
     try {
-      // Ensure any active WireGuard tunnel is stopped before starting OpenVPN
-      await NativeShieldBridge.instance.disconnectVpn();
       _statsTimer?.cancel();
+      // Tear down any active WireGuard tunnel in parallel with provisioning Attempt 0!
+      Future<void>? wgStopFuture = NativeShieldBridge.instance.disconnectVpn();
       String? lastEngineError;
 
       for (int attempt = 0; attempt < 3; attempt++) {
@@ -913,16 +920,21 @@ class VpnController extends ChangeNotifier {
 
         if (target.isBuiltInForeign) {
           _statusMessage = attempt == 0
-              ? 'Probing live ${target.name} servers...'
-              : 'Switching to backup ${target.name} server (#${attempt + 1})...';
+              ? 'Connecting to ${target.name}'
+              : 'Trying backup ${target.name} server (#${attempt + 1})';
           notifyListeners();
 
-          final Map<String, Object?> provisioned = await NativeShieldBridge
+          final Future<Map<String, Object?>> provFuture = NativeShieldBridge
               .instance
               .provisionForeignOpenVpnConfig(
                 countryCode: target.countryCode,
                 excludeHosts: _sessionExcludedHosts.toList(growable: false),
               );
+          if (wgStopFuture != null) {
+            await wgStopFuture;
+            wgStopFuture = null;
+          }
+          final Map<String, Object?> provisioned = await provFuture;
           if (provisioned['ok'] != true ||
               (provisioned['configText']?.toString().trim().isEmpty ?? true)) {
             if (attempt == 0 && _sessionExcludedHosts.isNotEmpty) {
@@ -940,6 +952,10 @@ class VpnController extends ChangeNotifier {
           configToUse = provisioned['configText']!.toString().trim();
           connectedHost = provisioned['serverHost']?.toString().trim();
         } else {
+          if (wgStopFuture != null) {
+            await wgStopFuture;
+            wgStopFuture = null;
+          }
           configToUse =
               await ovpn.OpenVPN.filteredConfig(configToUse) ?? configToUse;
         }
@@ -966,7 +982,7 @@ class VpnController extends ChangeNotifier {
         }
 
         _activeEngineProtocol = VpnProtocol.openvpn;
-        _statusMessage = 'Connecting to ${target.name}...';
+        _statusMessage = 'Connecting to ${target.name}';
         notifyListeners();
 
         final bool hasCert =
@@ -1046,7 +1062,7 @@ class VpnController extends ChangeNotifier {
     }
     final Completer<bool> completer = Completer<bool>();
     late final StreamSubscription<ovpn.VPNStage> sub;
-    final Timer timeout = Timer(const Duration(seconds: 16), () {
+    final Timer timeout = Timer(const Duration(seconds: 10), () {
       if (!completer.isCompleted) {
         completer.complete(false);
       }
@@ -1077,7 +1093,7 @@ class VpnController extends ChangeNotifier {
       String configToUse = target.configText;
 
       if (target.isBuiltInWarp && configToUse.trim().isEmpty) {
-        _statusMessage = 'Provisioning free WireGuard key...';
+        _statusMessage = 'Preparing WireGuard key';
         notifyListeners();
 
         final Map<String, Object?> provisioned = await NativeShieldBridge
@@ -1112,7 +1128,7 @@ class VpnController extends ChangeNotifier {
         unawaited(_prefs.setString(_keyWarpConfig, _cachedWarpConfig));
       }
 
-      _statusMessage = 'Establishing WireGuard tunnel...';
+      _statusMessage = 'Starting WireGuard tunnel';
       notifyListeners();
 
       final Map<String, Object?> res = await NativeShieldBridge.instance
@@ -1130,7 +1146,7 @@ class VpnController extends ChangeNotifier {
         if (target.isBuiltInWarp &&
             enableNativePolling &&
             !rawErr.toLowerCase().contains('declined')) {
-          _statusMessage = 'UDP blocked — switching to OpenVPN TCP...';
+          _statusMessage = 'Switching to TCP relay';
           notifyListeners();
           return await _connectOpenVpnProfile(
             VpnProfile(

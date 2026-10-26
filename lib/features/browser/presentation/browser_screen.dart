@@ -5,8 +5,6 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:url_launcher/url_launcher.dart';
-import 'package:webview_flutter/webview_flutter.dart';
-import 'package:webview_flutter_android/webview_flutter_android.dart';
 
 import '../../../core/constants/app_constants.dart';
 import '../../../core/theme/app_theme.dart';
@@ -363,11 +361,23 @@ class _BrowserScreenState extends State<BrowserScreen>
             (_isEditingOmnibox &&
                 (_liveSuggestions.isNotEmpty || recentMatches.isNotEmpty));
 
+        final Widget tabsViewportLayer = Positioned.fill(
+          child: RepaintBoundary(
+            child: ValueListenableBuilder<int>(
+              valueListenable: widget.tabManager.viewportRevision,
+              builder: (BuildContext context, int _, _) {
+                return _buildTabsViewport(colors);
+              },
+            ),
+          ),
+        );
+
         return Theme(
           data: effectiveTheme,
           child: ListenableBuilder(
             listenable: engine,
-            builder: (BuildContext context, _) {
+            child: tabsViewportLayer,
+            builder: (BuildContext context, Widget? viewportChild) {
               return PopScope<void>(
                 canPop:
                     !engine.canGoBack &&
@@ -402,15 +412,29 @@ class _BrowserScreenState extends State<BrowserScreen>
                     child: Column(
                       children: <Widget>[
                         // Fixed Search Bar Area — stays visible (never auto-hides)
-                        // and sits strictly ABOVE websites (never overlays websites).
+                        // and sits strictly ABOVE websites (including loading bar)
+                        // so zero Flutter overlay layers intersect the WebView!
                         RepaintBoundary(
                           key: const Key('top_navigation_bar_wrapper'),
                           child: ColoredBox(
                             color: effectiveTheme.scaffoldBackgroundColor,
-                            child: _buildCommandCapsuleBar(
-                              context,
-                              colors,
-                              engine,
+                            child: Stack(
+                              children: <Widget>[
+                                _buildCommandCapsuleBar(
+                                  context,
+                                  colors,
+                                  engine,
+                                ),
+                                if (engine.isLoading)
+                                  Positioned(
+                                    left: 0,
+                                    right: 0,
+                                    bottom: 0,
+                                    child: _SinglePassLoadingBar(
+                                      progress: engine.progress,
+                                    ),
+                                  ),
+                              ],
                             ),
                           ),
                         ),
@@ -419,26 +443,7 @@ class _BrowserScreenState extends State<BrowserScreen>
                           key: const Key('browser_website_viewport_box'),
                           child: Stack(
                             children: <Widget>[
-                              Positioned.fill(
-                                child: RepaintBoundary(
-                                  child: ValueListenableBuilder<int>(
-                                    valueListenable:
-                                        widget.tabManager.viewportRevision,
-                                    builder: (BuildContext context, int _, _) {
-                                      return _buildTabsViewport(colors);
-                                    },
-                                  ),
-                                ),
-                              ),
-                              if (engine.isLoading)
-                                Positioned(
-                                  top: 0,
-                                  left: 0,
-                                  right: 0,
-                                  child: _SinglePassLoadingBar(
-                                    progress: engine.progress,
-                                  ),
-                                ),
+                              viewportChild!,
                               if (engine.pullProgress > 0.02)
                                 Positioned(
                                   top: 10 + (engine.pullProgress * 46),
@@ -460,7 +465,17 @@ class _BrowserScreenState extends State<BrowserScreen>
                                   left: 12,
                                   right: 12,
                                   bottom: 14,
-                                  child: _buildDownloadStartedPopupCard(colors),
+                                  child: Align(
+                                    alignment: Alignment.bottomCenter,
+                                    child: ConstrainedBox(
+                                      constraints: const BoxConstraints(
+                                        maxWidth: 560,
+                                      ),
+                                      child: _buildDownloadStartedPopupCard(
+                                        colors,
+                                      ),
+                                    ),
+                                  ),
                                 ),
                               if (incognito &&
                                   widget.tabManager.isIncognitoLocked)
@@ -487,11 +502,19 @@ class _BrowserScreenState extends State<BrowserScreen>
                                   left: 10,
                                   right: 10,
                                   top: 4,
-                                  child: _buildOmniboxOverlayPanel(
-                                    context,
-                                    colors,
-                                    engine,
-                                    showLinkActions: showLinkActions,
+                                  child: Align(
+                                    alignment: Alignment.topCenter,
+                                    child: ConstrainedBox(
+                                      constraints: const BoxConstraints(
+                                        maxWidth: 720,
+                                      ),
+                                      child: _buildOmniboxOverlayPanel(
+                                        context,
+                                        colors,
+                                        engine,
+                                        showLinkActions: showLinkActions,
+                                      ),
+                                    ),
                                   ),
                                 ),
                             ],
@@ -598,25 +621,19 @@ class _BrowserScreenState extends State<BrowserScreen>
             },
           ),
         ),
-      AnimatedPositioned(
-        duration: _leftEdgeDragPx > 0
-            ? Duration.zero
-            : const Duration(milliseconds: 190),
-        curve: Curves.easeOutCubic,
-        left: leftProgress > 0.02 ? (-28 + (leftProgress * 46)) : -48,
-        top: 0,
-        bottom: 0,
-        child: Center(
-          child: IgnorePointer(
-            child: AnimatedScale(
-              duration: const Duration(milliseconds: 140),
-              curve: Curves.easeOutBack,
-              scale: leftProgress > 0.02
-                  ? (leftProgress >= 0.88 ? 1.08 : (0.76 + leftProgress * 0.24))
-                  : 0.5,
-              child: AnimatedOpacity(
-                duration: const Duration(milliseconds: 130),
-                opacity: leftProgress > 0.02 ? 1.0 : 0.0,
+      // Only mount visual edge-arrow indicator pills while actively dragging
+      // from the edge so ZERO painted Flutter layers sit above WebView at rest!
+      if (leftProgress > 0.02)
+        Positioned(
+          left: -28 + (leftProgress * 46),
+          top: 0,
+          bottom: 0,
+          child: Center(
+            child: IgnorePointer(
+              child: Transform.scale(
+                scale: leftProgress >= 0.88
+                    ? 1.08
+                    : (0.76 + leftProgress * 0.24),
                 child: Material(
                   elevation: 6,
                   shape: const CircleBorder(),
@@ -639,28 +656,17 @@ class _BrowserScreenState extends State<BrowserScreen>
             ),
           ),
         ),
-      ),
-      AnimatedPositioned(
-        duration: _rightEdgeDragPx > 0
-            ? Duration.zero
-            : const Duration(milliseconds: 190),
-        curve: Curves.easeOutCubic,
-        right: rightProgress > 0.02 ? (-28 + (rightProgress * 46)) : -48,
-        top: 0,
-        bottom: 0,
-        child: Center(
-          child: IgnorePointer(
-            child: AnimatedScale(
-              duration: const Duration(milliseconds: 140),
-              curve: Curves.easeOutBack,
-              scale: rightProgress > 0.02
-                  ? (rightProgress >= 0.88
-                        ? 1.08
-                        : (0.76 + rightProgress * 0.24))
-                  : 0.5,
-              child: AnimatedOpacity(
-                duration: const Duration(milliseconds: 130),
-                opacity: rightProgress > 0.02 ? 1.0 : 0.0,
+      if (rightProgress > 0.02)
+        Positioned(
+          right: -28 + (rightProgress * 46),
+          top: 0,
+          bottom: 0,
+          child: Center(
+            child: IgnorePointer(
+              child: Transform.scale(
+                scale: rightProgress >= 0.88
+                    ? 1.08
+                    : (0.76 + rightProgress * 0.24),
                 child: Material(
                   elevation: 6,
                   shape: const CircleBorder(),
@@ -683,7 +689,6 @@ class _BrowserScreenState extends State<BrowserScreen>
             ),
           ),
         ),
-      ),
     ];
   }
 
@@ -890,26 +895,6 @@ class _BrowserScreenState extends State<BrowserScreen>
     );
   }
 
-  Widget _buildHardwareWebView(BrowserTab tab, BrowserEngine engine) {
-    final WebViewController ctrl = engine.controller!;
-    if (ctrl.platform is AndroidWebViewController) {
-      // Texture Layer Hybrid Composition (displayWithHybridComposition: false)
-      // renders WebView via hardware GPU texture without locking Flutter's UI
-      // thread on every frame — eliminating screen jitter on weak & old phones!
-      return WebViewWidget.fromPlatformCreationParams(
-        params: AndroidWebViewWidgetCreationParams(
-          key: ValueKey<Object>(ctrl),
-          controller: ctrl.platform,
-          displayWithHybridComposition: false,
-        ),
-      );
-    }
-    return WebViewWidget(
-      key: ValueKey<Object>(ctrl),
-      controller: ctrl,
-    );
-  }
-
   Widget _buildSingleTabBody(
     BrowserTab tab,
     ColorScheme colors, {
@@ -920,12 +905,15 @@ class _BrowserScreenState extends State<BrowserScreen>
     return ListenableBuilder(
       listenable: engine,
       builder: (BuildContext context, _) {
+        if (!isActiveTab && !engine.isMediaPlaying) {
+          return const SizedBox.shrink();
+        }
         final bool shouldMountWebView =
             engine.controller != null &&
             (engine.isShowingWebPage || engine.isLoading) &&
             (isActiveTab || engine.isMediaPlaying);
         final Widget? liveWebView = shouldMountWebView
-            ? _buildHardwareWebView(tab, engine)
+            ? engine.cachedWebViewWidget
             : null;
 
         Widget? overlayChild;
@@ -1327,7 +1315,40 @@ class _BrowserScreenState extends State<BrowserScreen>
             padding: EdgeInsets.zero,
             constraints: const BoxConstraints(minWidth: 32, minHeight: 36),
           ),
-          if (engine.canGoForward)
+          if (MediaQuery.sizeOf(context).width >= 600) ...<Widget>[
+            IconButton(
+              key: const Key('tablet_bar_back_button'),
+              onPressed: engine.canGoBack ? engine.goBack : null,
+              icon: const Icon(Icons.arrow_back_rounded, size: 19),
+              tooltip: 'Navigate Back',
+              visualDensity: VisualDensity.compact,
+              padding: EdgeInsets.zero,
+              constraints: const BoxConstraints(minWidth: 32, minHeight: 36),
+            ),
+            IconButton(
+              key: const Key('tablet_bar_forward_button'),
+              onPressed: engine.canGoForward ? engine.goForward : null,
+              icon: const Icon(Icons.arrow_forward_rounded, size: 19),
+              tooltip: 'Navigate Forward',
+              visualDensity: VisualDensity.compact,
+              padding: EdgeInsets.zero,
+              constraints: const BoxConstraints(minWidth: 32, minHeight: 36),
+            ),
+            IconButton(
+              key: const Key('tablet_bar_reload_button'),
+              onPressed: engine.isShowingWebPage ? engine.reloadOrStop : null,
+              icon: Icon(
+                engine.isLoading
+                    ? Icons.close_rounded
+                    : Icons.refresh_rounded,
+                size: 19,
+              ),
+              tooltip: engine.isLoading ? 'Stop Loading' : 'Reload Page',
+              visualDensity: VisualDensity.compact,
+              padding: EdgeInsets.zero,
+              constraints: const BoxConstraints(minWidth: 32, minHeight: 36),
+            ),
+          ] else if (engine.canGoForward)
             IconButton(
               onPressed: engine.goForward,
               icon: const Icon(Icons.arrow_forward_rounded, size: 19),
@@ -1896,6 +1917,7 @@ class _BrowserScreenState extends State<BrowserScreen>
       context: context,
       isScrollControlled: true,
       showDragHandle: true,
+      constraints: const BoxConstraints(maxWidth: 560),
       builder: (BuildContext sheetContext) {
         final ColorScheme colors = Theme.of(sheetContext).colorScheme;
         return SafeArea(
@@ -2091,6 +2113,7 @@ class _BrowserScreenState extends State<BrowserScreen>
                                   settings: widget.settings,
                                   tabManager: widget.tabManager,
                                   downloads: widget.downloads,
+                                  vpn: widget.vpn,
                                 ),
                               ),
                             );

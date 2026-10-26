@@ -256,7 +256,13 @@ class DownloadsScreen extends StatelessWidget {
       return ColoredBox(
         key: const Key('downloads_tab_view'),
         color: theme.scaffoldBackgroundColor,
-        child: _buildBodyContent(context, theme, colors, isDark),
+        child: Align(
+          alignment: Alignment.topCenter,
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 820),
+            child: _buildBodyContent(context, theme, colors, isDark),
+          ),
+        ),
       );
     }
 
@@ -269,7 +275,13 @@ class DownloadsScreen extends StatelessWidget {
         actions: _buildHeaderActions(context),
       ),
       body: SafeArea(
-        child: _buildBodyContent(context, theme, colors, isDark),
+        child: Align(
+          alignment: Alignment.topCenter,
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 820),
+            child: _buildBodyContent(context, theme, colors, isDark),
+          ),
+        ),
       ),
     );
   }

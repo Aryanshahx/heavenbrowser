@@ -706,7 +706,9 @@ class NativeShieldBridge {
 
   Future<void> disconnectVpn() async {
     try {
-      await _channel.invokeMethod<Map<Object?, Object?>>('disconnectVpn');
+      await _channel
+          .invokeMethod<Map<Object?, Object?>>('disconnectVpn')
+          .timeout(const Duration(seconds: 2), onTimeout: () => null);
     } on MissingPluginException {
       // Expected in widget tests.
     } on PlatformException {

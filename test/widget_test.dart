@@ -1433,7 +1433,14 @@ void main() {
         expect(shieldJava.contains('LAYER_TYPE_HARDWARE'), isFalse);
         expect(shieldJava.contains('isVideoPlayerTouchZone'), isTrue);
         expect(shieldJava.contains('lastInnerScrollMsByWv'), isTrue);
-        expect(shieldJava.contains('__hbLastSy'), isTrue);
+        expect(
+          shieldJava.contains("window.addEventListener('pointerdown'"),
+          isTrue,
+        );
+        expect(
+          shieldJava.contains("window.addEventListener('scroll'"),
+          isFalse,
+        );
         expect(shieldJava.contains('focusWebView'), isTrue);
         expect(shieldJava.contains('addDocumentStartJavaScript'), isTrue);
         expect(shieldJava.contains('window.__hbInBg'), isTrue);
@@ -1469,17 +1476,20 @@ void main() {
           isFalse,
         );
 
+        final String browserEngineDart = File(
+          'lib/features/browser/engine/browser_engine.dart',
+        ).readAsStringSync();
+        expect(
+          browserEngineDart.contains('displayWithHybridComposition: true'),
+          isTrue,
+        );
+        expect(browserEngineDart.contains('cachedWebViewWidget'), isTrue);
+
         final String browserScreenDart = File(
           'lib/features/browser/presentation/browser_screen.dart',
         ).readAsStringSync();
-        expect(
-          browserScreenDart.contains('displayWithHybridComposition: false'),
-          isTrue,
-        );
-        expect(
-          browserScreenDart.contains('displayWithHybridComposition: true'),
-          isFalse,
-        );
+        expect(browserScreenDart.contains('if (leftProgress > 0.02)'), isTrue);
+        expect(browserScreenDart.contains('if (rightProgress > 0.02)'), isTrue);
 
         final String mainKt = File(
           'android/app/src/main/kotlin/com/hypertechlabs/heavenbrowser/MainActivity.kt',
@@ -1496,6 +1506,9 @@ void main() {
         expect(vpnJava.contains('normalizeVpnGateOvpnForOpenSsl3'), isTrue);
         expect(vpnJava.contains('extractRiseupOpenVpnPorts'), isTrue);
         expect(vpnJava.contains('DEFAULT:@SECLEVEL=0'), isTrue);
+        expect(vpnJava.contains('pickFastestCandidate'), isTrue);
+        expect(vpnJava.contains('ExecutorCompletionService'), isTrue);
+        expect(vpnJava.contains('ensureRiseupReady'), isTrue);
 
         final String proguardRules = File(
           'android/app/proguard-rules.pro',
@@ -1645,6 +1658,248 @@ void main() {
         expect(engineSrc.contains('isFastRedirect'), isTrue);
 
         tabManager.dispose();
+        settings.dispose();
+      },
+    );
+
+    testWidgets(
+      'Step 24: VPN in Settings, Zero .... & Idle Refresh Button in VPN Screen, & Full Tablet Optimization (800x1280 & 1280x800)',
+      (WidgetTester tester) async {
+        const MethodChannel nativeChannel = MethodChannel(
+          'com.hypertechlabs.heavenbrowser/native_shield',
+        );
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+            .setMockMethodCallHandler(nativeChannel, (MethodCall call) async {
+              switch (call.method) {
+                case 'fetchLiveForeignCountries':
+                  return <String, Object?>{
+                    'ok': true,
+                    'countries': <Map<String, Object?>>[
+                      <String, Object?>{
+                        'countryCode': 'US',
+                        'countryName': 'United States',
+                        'serverCount': 4,
+                      },
+                    ],
+                  };
+                case 'provisionForeignOpenVpnConfig':
+                  return <String, Object?>{
+                    'ok': true,
+                    'configText':
+                        'client\ndev tun\nproto udp\nremote 89.187.173.169 1194\n<ca>\nTEST\n</ca>\n<cert>\nTEST\n</cert>\n<key>\nTEST\n</key>\n',
+                    'serverHost': '89.187.173.169',
+                    'countryCode': 'US',
+                    'countryName': 'United States (Miami)',
+                    'latencyMs': 95,
+                  };
+                case 'disconnectVpn':
+                  return <String, Object?>{'ok': true};
+                case 'getVpnStatus':
+                  return <String, Object?>{
+                    'connected': false,
+                    'rxBytes': 0,
+                    'txBytes': 0,
+                  };
+                default:
+                  return null;
+              }
+            });
+        addTearDown(() {
+          TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+              .setMockMethodCallHandler(nativeChannel, null);
+        });
+
+        // Start on a 1280x800 Landscape Tablet viewport!
+        tester.view.physicalSize = const Size(1280, 800);
+        tester.view.devicePixelRatio = 1.0;
+        addTearDown(() {
+          tester.view.resetPhysicalSize();
+          tester.view.resetDevicePixelRatio();
+        });
+
+        SharedPreferences.setMockInitialValues(<String, Object>{});
+        final SharedPreferences prefs = await SharedPreferences.getInstance();
+        final BrowserSettingsController settings = BrowserSettingsController(
+          prefs,
+        );
+        final DownloadsController downloads = DownloadsController(
+          prefs,
+          enableNativePolling: false,
+        );
+        final InterestProfileController interests = InterestProfileController(
+          prefs,
+        );
+        final HeavenNewsFeedService newsService = _createMockNewsService(
+          prefs,
+          interests,
+        );
+        final VpnController vpn = VpnController(
+          prefs,
+          enableNativePolling: false,
+          client: MockClient(
+            (_) async =>
+                http.Response('ip=89.187.173.169\nloc=US\nwarp=off\n', 200),
+          ),
+        );
+
+        await tester.pumpWidget(
+          HeavenBrowserApp(
+            settings: settings,
+            downloads: downloads,
+            interests: interests,
+            newsService: newsService,
+            vpn: vpn,
+            enablePlatformWebView: false,
+            searchService: _createMockSearchService(),
+          ),
+        );
+        await tester.pumpAndSettle();
+        expect(tester.takeException(), isNull);
+
+        // 1. Tablet StartPage: centered search bar (<= 680px) + 3-column compact Discover grid!
+        expect(find.byKey(const Key('tablet_bar_back_button')), findsOneWidget);
+        expect(
+          find.byKey(const Key('tablet_bar_reload_button')),
+          findsOneWidget,
+        );
+        final Size searchFieldSize = tester.getSize(
+          find.byKey(const Key('home_search_textfield')),
+        );
+        expect(searchFieldSize.width, lessThanOrEqualTo(680));
+
+        expect(find.byKey(const Key('discover_tablet_grid')), findsOneWidget);
+        final SliverGrid landscapeDiscoverGrid = tester.widget<SliverGrid>(
+          find.byKey(const Key('discover_tablet_grid')),
+        );
+        final SliverGridDelegateWithFixedCrossAxisCount landscapeDelegate =
+            landscapeDiscoverGrid.gridDelegate
+                as SliverGridDelegateWithFixedCrossAxisCount;
+        expect(landscapeDelegate.crossAxisCount, 3);
+        expect(landscapeDelegate.mainAxisExtent, lessThanOrEqualTo(290));
+
+        // Switch to 800x1280 Portrait Tablet -> 2-column compact Discover grid!
+        tester.view.physicalSize = const Size(800, 1280);
+        await tester.pumpAndSettle();
+        expect(tester.takeException(), isNull);
+        final SliverGrid portraitDiscoverGrid = tester.widget<SliverGrid>(
+          find.byKey(const Key('discover_tablet_grid')),
+        );
+        final SliverGridDelegateWithFixedCrossAxisCount portraitDelegate =
+            portraitDiscoverGrid.gridDelegate
+                as SliverGridDelegateWithFixedCrossAxisCount;
+        expect(portraitDelegate.crossAxisCount, 2);
+
+        // 2. Open Settings -> Heaven VPN tile is present and opens HeavenVpnScreen!
+        tester.view.physicalSize = const Size(1280, 800);
+        await tester.pumpAndSettle();
+        await tester.tap(find.byTooltip('Browser Menu'));
+        await tester.pumpAndSettle();
+        await tester.tap(find.text('Settings'));
+        await tester.pumpAndSettle();
+        expect(find.byType(SettingsScreen), findsOneWidget);
+        expect(find.byKey(const Key('settings_vpn_tile')), findsOneWidget);
+        expect(find.text('Heaven VPN'), findsOneWidget);
+
+        await tester.tap(find.byKey(const Key('settings_vpn_tile')));
+        await tester.pumpAndSettle();
+        expect(find.byType(HeavenVpnScreen), findsOneWidget);
+
+        // 3. VPN Screen: Refresh button is IDLE (NOT spinning!), tablet 2-col country grid active, and ZERO "..." / "...." text anywhere!
+        expect(find.byKey(const Key('vpn_refresh_button')), findsOneWidget);
+        expect(
+          find.descendant(
+            of: find.byKey(const Key('vpn_refresh_button')),
+            matching: find.byType(CircularProgressIndicator),
+          ),
+          findsNothing,
+        );
+        expect(find.byKey(const Key('vpn_tablet_country_grid')), findsOneWidget);
+
+        for (final Text txt in tester.widgetList<Text>(
+          find.descendant(
+            of: find.byType(HeavenVpnScreen),
+            matching: find.byType(Text),
+          ),
+        )) {
+          final String data = txt.data ?? '';
+          expect(data.contains('...'), isFalse, reason: 'Found dots in "$data"');
+        }
+        final TextField vpnSearch = tester.widget<TextField>(
+          find.byKey(const Key('vpn_country_search_field')),
+        );
+        expect(vpnSearch.decoration?.hintText?.contains('...'), isFalse);
+
+        // Tapping Refresh completes cleanly and settles back to idle icon!
+        await tester.tap(find.byKey(const Key('vpn_refresh_button')));
+        await tester.pumpAndSettle();
+        expect(vpn.isRefreshingServers, isFalse);
+        expect(
+          find.descendant(
+            of: find.byKey(const Key('vpn_refresh_button')),
+            matching: find.byType(CircularProgressIndicator),
+          ),
+          findsNothing,
+        );
+
+        // Connect VPN -> fast connection with zero "..." in status
+        await tester.tap(find.byKey(const Key('vpn_power_button')));
+        await tester.pumpAndSettle();
+        expect(vpn.isConnected, isTrue);
+
+        // Navigate back to BrowserScreen (pop VPN -> pop Settings)
+        await tester.pageBack();
+        await tester.pumpAndSettle();
+        expect(find.textContaining('Connected •'), findsOneWidget);
+        await tester.pageBack();
+        await tester.pumpAndSettle();
+
+        // 4. Tablet TabsScreen: 5 columns on 1280x800, 4 columns on 960x800, & 3 columns on 800x1280!
+        final TabManagerController tabManager = tester
+            .widget<BrowserScreen>(find.byType(BrowserScreen))
+            .tabManager;
+        await tabManager.openNewTab(initialInput: 'https://example.com');
+        await tabManager.openNewTab(initialInput: 'https://flutter.dev');
+        await tabManager.openNewTab(initialInput: 'https://dart.dev');
+        await tester.pumpAndSettle();
+
+        await tester.tap(find.byTooltip('Switch Tabs'));
+        await tester.pumpAndSettle();
+        expect(find.byType(TabsScreen), findsOneWidget);
+        expect(tester.takeException(), isNull);
+
+        final GridView landscapeTabsGrid = tester.widget<GridView>(
+          find.byKey(const Key('tabs_grid_view')),
+        );
+        final SliverGridDelegateWithFixedCrossAxisCount landscapeTabsDel =
+            landscapeTabsGrid.gridDelegate
+                as SliverGridDelegateWithFixedCrossAxisCount;
+        expect(landscapeTabsDel.crossAxisCount, 5);
+
+        tester.view.physicalSize = const Size(960, 800);
+        await tester.pumpAndSettle();
+        expect(tester.takeException(), isNull);
+        final GridView midTabletTabsGrid = tester.widget<GridView>(
+          find.byKey(const Key('tabs_grid_view')),
+        );
+        final SliverGridDelegateWithFixedCrossAxisCount midTabletTabsDel =
+            midTabletTabsGrid.gridDelegate
+                as SliverGridDelegateWithFixedCrossAxisCount;
+        expect(midTabletTabsDel.crossAxisCount, 4);
+
+        tester.view.physicalSize = const Size(800, 1280);
+        await tester.pumpAndSettle();
+        expect(tester.takeException(), isNull);
+        final GridView portraitTabsGrid = tester.widget<GridView>(
+          find.byKey(const Key('tabs_grid_view')),
+        );
+        final SliverGridDelegateWithFixedCrossAxisCount portraitTabsDel =
+            portraitTabsGrid.gridDelegate
+                as SliverGridDelegateWithFixedCrossAxisCount;
+        expect(portraitTabsDel.crossAxisCount, 3);
+
+        vpn.dispose();
+        downloads.dispose();
+        interests.dispose();
         settings.dispose();
       },
     );
