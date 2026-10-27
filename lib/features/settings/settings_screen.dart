@@ -5,7 +5,7 @@ import 'package:flutter/material.dart';
 import '../../core/constants/app_constants.dart';
 import '../../core/theme/app_theme.dart';
 import '../../core/utils/omnibox_parser.dart';
-import '../../core/widgets/site_logo.dart';
+import '../../core/widgets/search_engine_chip_button.dart';
 import '../downloads/downloads_controller.dart';
 import '../shield/heaven_shield_screen.dart';
 import '../shield/native_shield_bridge.dart';
@@ -68,11 +68,10 @@ class SettingsScreen extends StatelessWidget {
                     shape: RoundedRectangleBorder(
                       borderRadius: BorderRadius.circular(12),
                     ),
-                    leading: SiteLogo(
-                      urlOrDomain: engine.homeUrl,
-                      fallbackLabel: engine.shortLabel,
-                      size: 28,
-                      borderRadius: 8,
+                    leading: SearchEngineLogo(
+                      engine: engine,
+                      size: 26,
+                      borderRadius: 7,
                     ),
                     title: Text(
                       engine == SearchEngine.google
@@ -91,9 +90,19 @@ class SettingsScreen extends StatelessWidget {
                     trailing: settings.searchEngine == engine
                         ? Icon(Icons.check_rounded, color: colors.primary)
                         : null,
-                    onTap: () {
-                      settings.setSearchEngine(engine);
-                      Navigator.pop(sheetContext);
+                    onTap: () async {
+                      await settings.setSearchEngine(engine);
+                      if (sheetContext.mounted) {
+                        Navigator.pop(sheetContext);
+                      }
+                      final active = tabManager.activeEngine;
+                      if (active.isShowingWebPage) {
+                        final String q = OmniboxParser.extractSearchOrSiteQuery(
+                          currentUrl: active.currentUrl,
+                          pageTitle: active.pageTitle,
+                        );
+                        unawaited(active.loadUri(engine.buildSearchUri(q)));
+                      }
                     },
                   ),
               ],
@@ -139,9 +148,8 @@ class SettingsScreen extends StatelessWidget {
                     ListTile(
                       key: const Key('settings_search_engine_tile'),
                       dense: true,
-                      leading: SiteLogo(
-                        urlOrDomain: settings.searchEngine.homeUrl,
-                        fallbackLabel: settings.searchEngine.shortLabel,
+                      leading: SearchEngineLogo(
+                        engine: settings.searchEngine,
                         size: 24,
                         borderRadius: 7,
                       ),

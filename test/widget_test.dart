@@ -8,8 +8,11 @@ import 'package:heavenbrowser/core/constants/app_constants.dart';
 import 'package:heavenbrowser/core/l10n/app_strings.dart';
 import 'package:heavenbrowser/core/theme/app_theme.dart';
 import 'package:heavenbrowser/core/utils/omnibox_parser.dart';
+import 'package:heavenbrowser/core/widgets/search_engine_chip_button.dart';
+import 'package:heavenbrowser/features/ai/heaven_ai_sheet.dart';
 import 'package:heavenbrowser/features/browser/page_translate_reader_service.dart';
 import 'package:heavenbrowser/features/browser/presentation/browser_screen.dart';
+import 'package:heavenbrowser/features/browser/presentation/widgets/web_context_menu_sheet.dart';
 import 'package:heavenbrowser/features/browser/site_controls_sheet.dart';
 import 'package:heavenbrowser/features/devtools/desktop_inspector_panel.dart';
 import 'package:heavenbrowser/features/downloads/downloads_controller.dart';
@@ -1896,6 +1899,358 @@ void main() {
             portraitTabsGrid.gridDelegate
                 as SliverGridDelegateWithFixedCrossAxisCount;
         expect(portraitTabsDel.crossAxisCount, 3);
+
+        vpn.dispose();
+        downloads.dispose();
+        interests.dispose();
+        settings.dispose();
+      },
+    );
+
+    testWidgets(
+      'Step 25: On-Device AI (Model Download Prompt), Real Engine Images, Instant Re-Search on Engine Switch, Chrome/Brave Context Menu, & Cross-Website New-Tab + Seamless Back',
+      (WidgetTester tester) async {
+        // 1. Verify all 6 Search Engine real PNG brand assets exist & Native AI files are wired
+        for (final SearchEngine engine in SearchEngine.values) {
+          final File iconFile = File(engine.logoAssetPath);
+          expect(
+            iconFile.existsSync(),
+            isTrue,
+            reason: 'Missing engine logo asset ${engine.logoAssetPath}',
+          );
+          final Uint8List bytes = iconFile.readAsBytesSync();
+          expect(bytes.length, greaterThan(1500));
+          // PNG signature: 89 50 4E 47
+          expect(bytes.sublist(0, 4), <int>[0x89, 0x50, 0x4E, 0x47]);
+        }
+
+        final String aiManagerJava = File(
+          'android/app/src/main/java/com/hypertechlabs/heavenbrowser/HeavenAiManager.java',
+        ).readAsStringSync();
+        expect(
+          aiManagerJava,
+          contains('com.google.mlkit.genai.summarization.Summarization'),
+        );
+        expect(
+          aiManagerJava,
+          contains('com.google.mlkit.genai.prompt.Generation'),
+        );
+        expect(
+          File('android/app/build.gradle.kts').readAsStringSync(),
+          contains('com.google.mlkit:genai-prompt:1.0.0-beta2'),
+        );
+        expect(
+          File('android/app/proguard-rules.pro').readAsStringSync(),
+          contains('com.google.mlkit.genai.**'),
+        );
+
+        // 2. Domain / Cross-website equivalence & Search Query Extraction unit checks
+        expect(
+          OmniboxParser.isSameWebsite(
+            'https://m.youtube.com/watch?v=123',
+            'https://youtu.be/123',
+          ),
+          isTrue,
+        );
+        expect(
+          OmniboxParser.isSameWebsite(
+            'https://en.wikipedia.org/wiki/Dart',
+            'https://fr.wikipedia.org/wiki/Dart',
+          ),
+          isTrue,
+        );
+        expect(
+          OmniboxParser.isSameWebsite(
+            'https://news.ycombinator.com/item?id=1',
+            'https://flutter.dev/docs',
+          ),
+          isFalse,
+        );
+
+        bool modelDownloaded = false;
+        int downloadModelCalls = 0;
+        const MethodChannel nativeChannel = MethodChannel(
+          'com.hypertechlabs.heavenbrowser/native_shield',
+        );
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+            .setMockMethodCallHandler(nativeChannel, (MethodCall call) async {
+              switch (call.method) {
+                case 'checkOnDeviceAiStatus':
+                  return <String, Object?>{
+                    'status': modelDownloaded ? 'available' : 'downloadable',
+                    'modelName': 'Gemini Nano',
+                  };
+                case 'downloadOnDeviceAiModel':
+                  downloadModelCalls += 1;
+                  modelDownloaded = true;
+                  return <String, Object?>{
+                    'ok': true,
+                    'status': 'available',
+                  };
+                case 'promptOnDeviceAi':
+                  return <String, Object?>{
+                    'ok': true,
+                    'engine': 'gemini-nano',
+                    'text':
+                        'Gemini Nano on-device answer: Flutter builds fast native apps.',
+                  };
+                case 'summarizeWithOnDeviceAi':
+                  return <String, Object?>{
+                    'ok': true,
+                    'engine': 'gemini-nano',
+                    'text': '• Bullet 1\n• Bullet 2\n• Bullet 3',
+                  };
+                case 'startDownload':
+                  return <String, Object?>{
+                    'downloadId': 777,
+                    'url': (call.arguments as Map<Object?, Object?>)['url'],
+                    'fileName': 'logo.png',
+                    'mimeType': 'image/png',
+                    'state': 'completed',
+                    'bytesDownloaded': 4096,
+                    'totalBytes': 4096,
+                  };
+                default:
+                  return null;
+              }
+            });
+        addTearDown(() {
+          TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+              .setMockMethodCallHandler(nativeChannel, null);
+        });
+
+        tester.view.physicalSize = const Size(900, 800);
+        tester.view.devicePixelRatio = 1.0;
+        addTearDown(() {
+          tester.view.resetPhysicalSize();
+          tester.view.resetDevicePixelRatio();
+        });
+
+        SharedPreferences.setMockInitialValues(<String, Object>{});
+        final SharedPreferences prefs = await SharedPreferences.getInstance();
+        final BrowserSettingsController settings = BrowserSettingsController(
+          prefs,
+        );
+        final DownloadsController downloads = DownloadsController(
+          prefs,
+          enableNativePolling: false,
+        );
+        final InterestProfileController interests = InterestProfileController(
+          prefs,
+        );
+        final HeavenNewsFeedService newsService = _createMockNewsService(
+          prefs,
+          interests,
+        );
+        final VpnController vpn = VpnController(
+          prefs,
+          enableNativePolling: false,
+          client: MockClient(
+            (_) async =>
+                http.Response('ip=89.187.173.169\nloc=US\nwarp=off\n', 200),
+          ),
+        );
+
+        await tester.pumpWidget(
+          HeavenBrowserApp(
+            settings: settings,
+            downloads: downloads,
+            interests: interests,
+            newsService: newsService,
+            searchService: _createMockSearchService(),
+            vpn: vpn,
+            enablePlatformWebView: false,
+          ),
+        );
+        await tester.pumpAndSettle();
+
+        // Verify SearchEngineChipButton renders real SearchEngineLogo AssetImage!
+        expect(find.byType(SearchEngineLogo), findsWidgets);
+        final Image chipLogo = tester.widget<Image>(
+          find
+              .descendant(
+                of: find.byKey(const Key('tiny_search_engine_switcher')).first,
+                matching: find.byType(Image),
+              )
+              .first,
+        );
+        expect(chipLogo.image, isA<AssetImage>());
+        expect(
+          (chipLogo.image as AssetImage).assetName,
+          'assets/images/engines/google.png',
+        );
+
+        final TabManagerController tabManager = tester
+            .widget<BrowserScreen>(find.byType(BrowserScreen))
+            .tabManager;
+
+        // 3. Search Immediately on Search Engine Change while on ANY website!
+        await tabManager.activeEngine.loadUserEntry(
+          'https://www.google.com/search?q=raspberry+pi+5',
+        );
+        await tester.pumpAndSettle();
+        expect(
+          tabManager.activeEngine.currentUrl,
+          contains('google.com/search?q=raspberry+pi+5'),
+        );
+
+        // Tap search bar engine switcher -> select Perplexity -> searches immediately!
+        await tester.tap(
+          find.byKey(const Key('tiny_search_engine_switcher')).first,
+        );
+        await tester.pumpAndSettle();
+        await tester.tap(find.text('Perplexity').last);
+        await tester.pumpAndSettle();
+        expect(settings.searchEngine, SearchEngine.perplexity);
+        expect(
+          tabManager.activeEngine.currentUrl,
+          'https://www.perplexity.ai/search?q=raspberry+pi+5',
+        );
+
+        // Even on a non-search website (e.g. Wikipedia), switching engine immediately searches!
+        await tabManager.activeEngine.loadUserEntry(
+          'https://en.wikipedia.org/wiki/Quantum_computing',
+        );
+        await tester.pumpAndSettle();
+        await tester.tap(
+          find.byKey(const Key('tiny_search_engine_switcher')).first,
+        );
+        await tester.pumpAndSettle();
+        await tester.tap(find.text('Brave Search').last);
+        await tester.pumpAndSettle();
+        expect(settings.searchEngine, SearchEngine.brave);
+        expect(
+          tabManager.activeEngine.currentUrl,
+          startsWith('https://search.brave.com/search?q='),
+        );
+
+        // 4. On-Device AI: asks user permission to download Gemini Nano model when downloadable!
+        await tester.tap(find.byKey(const Key('top_bar_ai_button')));
+        await tester.pumpAndSettle();
+        expect(find.byType(HeavenAiSheet), findsOneWidget);
+        expect(find.byKey(const Key('ai_download_prompt_card')), findsOneWidget);
+        expect(
+          find.byKey(const Key('ai_download_model_button')),
+          findsOneWidget,
+        );
+
+        await tester.enterText(
+          find.byKey(const Key('ai_prompt_textfield')),
+          'What makes Flutter fast?',
+        );
+        await tester.tap(find.byKey(const Key('ai_send_prompt_button')));
+        await tester.pumpAndSettle();
+
+        // Confirmation dialog asks user to download the model first!
+        expect(
+          find.byKey(const Key('ai_confirm_download_dialog')),
+          findsOneWidget,
+        );
+        await tester.tap(find.byKey(const Key('ai_confirm_download_yes')));
+        await tester.pumpAndSettle();
+
+        expect(downloadModelCalls, 1);
+        expect(find.byKey(const Key('ai_response_card')), findsOneWidget);
+        expect(
+          find.textContaining('Gemini Nano on-device answer'),
+          findsOneWidget,
+        );
+
+        // Close AI sheet
+        await tester.tap(find.byTooltip('Close'));
+        await tester.pumpAndSettle();
+
+        // 5. Cross-Website Redirects Open in New Tab + Seamless Back to Opener Tab!
+        await tabManager.closeAllTabsByMode(incognito: false);
+        await tester.pumpAndSettle();
+        expect(tabManager.totalTabCount, 1);
+
+        final String openerId = tabManager.activeTab.id;
+        await tabManager.activeEngine.loadUserEntry(
+          'https://news.ycombinator.com',
+        );
+        await tester.pumpAndSettle();
+        expect(
+          tabManager.activeEngine.currentUrl,
+          'https://news.ycombinator.com',
+        );
+
+        // Same-website navigation stays in the same tab
+        final sameSiteDecision = await tabManager.activeEngine
+            .handleWebsiteNavigationOrRedirect(
+              'https://news.ycombinator.com/newest',
+            );
+        expect(sameSiteDecision.name, 'navigate');
+        expect(tabManager.totalTabCount, 1);
+
+        // Cross-website redirect opens in a new child tab automatically!
+        final crossSiteDecision = await tabManager.activeEngine
+            .handleWebsiteNavigationOrRedirect(
+              'https://flutter.dev/multi-platform',
+            );
+        await tester.pumpAndSettle();
+        expect(crossSiteDecision.name, 'prevent');
+        expect(tabManager.totalTabCount, 2);
+        expect(tabManager.activeTab.openerTabId, openerId);
+        expect(
+          tabManager.activeEngine.currentUrl,
+          'https://flutter.dev/multi-platform',
+        );
+        expect(tabManager.canReturnToOpenerTab, isTrue);
+        // Entry page of spawned child tab has canGoBack == false so Back returns straight to opener!
+        expect(tabManager.activeEngine.canGoBack, isFalse);
+
+        // Press Back -> seamlessly closes child tab and lands back on https://news.ycombinator.com!
+        await tester.tap(find.byKey(const Key('tablet_bar_back_button')));
+        await tester.pumpAndSettle();
+        expect(tabManager.totalTabCount, 1);
+        expect(tabManager.activeTab.id, openerId);
+        expect(
+          tabManager.activeEngine.currentUrl,
+          'https://news.ycombinator.com',
+        );
+
+        // 6. Chrome / Brave-Style Web Context Menu for Linked Images!
+        tabManager.activeEngine.onWebContextMenu?.call(
+          const WebContextMenuData(
+            webViewId: 1,
+            linkUrl: 'https://dart.dev/guides',
+            linkText: 'Dart Guides',
+            imageUrl: 'https://dart.dev/assets/logo.png',
+            imageAlt: 'Dart Logo',
+            hitType: 8,
+          ),
+        );
+        await tester.pumpAndSettle();
+        expect(find.byType(WebContextMenuSheet), findsOneWidget);
+        expect(find.byKey(const Key('ctx_open_new_tab')), findsOneWidget);
+        expect(find.byKey(const Key('ctx_open_bg_tab')), findsOneWidget);
+        expect(find.byKey(const Key('ctx_open_incognito_tab')), findsOneWidget);
+        expect(find.byKey(const Key('ctx_copy_link')), findsOneWidget);
+        expect(find.byKey(const Key('ctx_copy_link_text')), findsOneWidget);
+        expect(find.byKey(const Key('ctx_download_link')), findsOneWidget);
+        expect(find.byKey(const Key('ctx_open_image_new_tab')), findsOneWidget);
+        expect(find.byKey(const Key('ctx_download_image')), findsOneWidget);
+        expect(
+          find.byKey(const Key('ctx_search_image_google')),
+          findsOneWidget,
+        );
+        expect(find.byKey(const Key('ctx_copy_image_url')), findsOneWidget);
+
+        // Tapping "Open in new tab" opens the link as a child tab and Back returns seamlessly!
+        await tester.tap(find.byKey(const Key('ctx_open_new_tab')));
+        await tester.pumpAndSettle();
+        expect(tabManager.totalTabCount, 2);
+        expect(tabManager.activeEngine.currentUrl, 'https://dart.dev/guides');
+        expect(tabManager.canReturnToOpenerTab, isTrue);
+
+        await tabManager.navigateBackSeamlessly();
+        await tester.pumpAndSettle();
+        expect(tabManager.totalTabCount, 1);
+        expect(
+          tabManager.activeEngine.currentUrl,
+          'https://news.ycombinator.com',
+        );
 
         vpn.dispose();
         downloads.dispose();

@@ -31,14 +31,17 @@ import android.hardware.biometrics.BiometricPrompt;
 import android.media.MediaScannerConnection;
 import android.net.Uri;
 import android.os.Build;
+import android.os.Bundle;
 import android.os.CancellationSignal;
 import android.os.Environment;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.Message;
 import android.os.SystemClock;
 import android.provider.DocumentsContract;
 import android.provider.Settings;
 import android.speech.RecognizerIntent;
+import android.view.HapticFeedbackConstants;
 import android.view.MotionEvent;
 import android.view.View;
 import android.view.WindowManager;
@@ -79,6 +82,7 @@ import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
+import org.json.JSONObject;
 
 public class HeavenShieldPlugin
     implements FlutterPlugin,
@@ -293,6 +297,7 @@ public class HeavenShieldPlugin
   private MethodChannel.Result pendingBiometricResult;
   private HeavenVpnManager vpnManager;
   private HeavenShieldEngine shieldEngine;
+  private HeavenAiManager aiManager;
   private volatile long activeFocusedWebViewId = -1L;
 
   private final ExecutorService downloadPool =
@@ -339,6 +344,8 @@ public class HeavenShieldPlugin
       };
   private final Map<Long, Boolean> lastDesktopApplied = new ConcurrentHashMap<>();
   private final Map<Long, ScriptHandler> docStartHandlers = new ConcurrentHashMap<>();
+  private final Map<Long, Float> lastTouchXByWv = new ConcurrentHashMap<>();
+  private final Map<Long, Float> lastTouchYByWv = new ConcurrentHashMap<>();
 
   public HeavenShieldPlugin() {}
 
@@ -365,6 +372,7 @@ public class HeavenShieldPlugin
     this.downloadNotificationsEnabled = sp.getBoolean(PREF_DL_NOTIFS_ENABLED, true);
     this.vpnManager = new HeavenVpnManager(appCtx);
     this.shieldEngine = new HeavenShieldEngine(appCtx);
+    this.aiManager = new HeavenAiManager(appCtx);
     this.channel = new MethodChannel(binding.getBinaryMessenger(), CHANNEL_NAME);
     this.channel.setMethodCallHandler(this);
     registerDownloadControlReceiver(appCtx);
@@ -383,6 +391,10 @@ public class HeavenShieldPlugin
     unregisterDownloadControlReceiver(binding.getApplicationContext());
     unregisterMediaCommandReceiver(binding.getApplicationContext());
     stopBackgroundMediaService();
+    if (this.aiManager != null) {
+      this.aiManager.dispose();
+      this.aiManager = null;
+    }
     this.shieldEngine = null;
     if (this.channel != null) {
       this.channel.setMethodCallHandler(null);
@@ -1160,6 +1172,54 @@ public class HeavenShieldPlugin
         }
         break;
 
+      case "checkOnDeviceAiStatus":
+        if (aiManager != null) {
+          aiManager.checkStatusAsync(result);
+        } else {
+          result.success(Collections.singletonMap("status", "unavailable"));
+        }
+        break;
+
+      case "downloadOnDeviceAiModel":
+        if (aiManager != null) {
+          aiManager.downloadModelAsync(
+              (state, downloaded, total, err) -> {
+                MethodChannel ch = this.channel;
+                if (ch != null) {
+                  Map<String, Object> ev = new HashMap<>(6);
+                  ev.put("state", state);
+                  ev.put("bytesDownloaded", downloaded);
+                  ev.put("totalBytes", total);
+                  if (err != null) {
+                    ev.put("error", err);
+                  }
+                  ch.invokeMethod("onAiDownloadProgress", ev);
+                }
+              },
+              result);
+        } else {
+          result.success(Collections.singletonMap("ok", false));
+        }
+        break;
+
+      case "summarizeWithOnDeviceAi":
+        if (aiManager != null) {
+          String textArg = call.argument("text");
+          aiManager.summarizeArticleAsync(textArg != null ? textArg : "", result);
+        } else {
+          result.success(Collections.singletonMap("ok", false));
+        }
+        break;
+
+      case "promptOnDeviceAi":
+        if (aiManager != null) {
+          String promptArg = call.argument("prompt");
+          aiManager.generatePromptAsync(promptArg != null ? promptArg : "", result);
+        } else {
+          result.success(Collections.singletonMap("ok", false));
+        }
+        break;
+
       default:
         result.notImplemented();
         break;
@@ -1639,6 +1699,7 @@ public class HeavenShieldPlugin
       applyDesktopSettingsToWebView(webView, webViewId, this.desktopMode, false);
       installOrRefreshDocumentStartShield(webView, webViewId);
       installPullToRefreshListener(webView, webViewId);
+      installContextMenuListener(webView, webViewId);
       installDownloadListener(webView, webViewId);
       return true;
     } catch (Throwable ignored) {
@@ -1697,6 +1758,8 @@ public class HeavenShieldPlugin
 
             switch (action) {
               case MotionEvent.ACTION_DOWN:
+                lastTouchXByWv.put(webViewId, event.getX());
+                lastTouchYByWv.put(webViewId, event.getY());
                 if (isWebPageAtTop() && !isVideoPlayerTouchZone(event.getY())) {
                   startY = event.getRawY();
                   startX = event.getRawX();
@@ -1797,6 +1860,220 @@ public class HeavenShieldPlugin
             Map<String, Object> payload = new HashMap<>(2);
             payload.put("webViewId", webViewId);
             ch.invokeMethod("onPullRefresh", payload);
+          }
+        });
+  }
+
+  @SuppressWarnings("deprecation")
+  private void installContextMenuListener(final WebView webView, final long webViewId) {
+    webView.setOnLongClickListener(
+        v -> {
+          try {
+            final WebView.HitTestResult hit = webView.getHitTestResult();
+            final int hitType =
+                hit != null ? hit.getType() : WebView.HitTestResult.UNKNOWN_TYPE;
+            if (hitType == WebView.HitTestResult.EDIT_TEXT_TYPE) {
+              return false;
+            }
+            final String hitExtra = hit != null && hit.getExtra() != null ? hit.getExtra() : "";
+            final boolean isDirectLinkOrMedia =
+                hitType == WebView.HitTestResult.SRC_ANCHOR_TYPE
+                    || hitType == WebView.HitTestResult.SRC_IMAGE_ANCHOR_TYPE
+                    || hitType == WebView.HitTestResult.IMAGE_TYPE
+                    || hitType == WebView.HitTestResult.EMAIL_TYPE
+                    || hitType == WebView.HitTestResult.PHONE_TYPE;
+
+            Float txObj = lastTouchXByWv.get(webViewId);
+            Float tyObj = lastTouchYByWv.get(webViewId);
+            final float scale = Math.max(0.25f, webView.getScale());
+            final int cssX = txObj != null ? Math.round(txObj / scale) : -1;
+            final int cssY = tyObj != null ? Math.round(tyObj / scale) : -1;
+
+            if (isDirectLinkOrMedia) {
+              try {
+                webView.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS);
+              } catch (Throwable ignored) {
+              }
+            }
+
+            final Handler hrefHandler =
+                new Handler(
+                    Looper.getMainLooper(),
+                    (Message msg) -> {
+                      Bundle b = msg.getData();
+                      final String nodeUrl = b != null ? b.getString("url", "") : "";
+                      final String nodeTitle = b != null ? b.getString("title", "") : "";
+                      final String nodeSrc = b != null ? b.getString("src", "") : "";
+                      inspectDomAndEmitContextMenu(
+                          webView,
+                          webViewId,
+                          hitType,
+                          hitExtra,
+                          nodeUrl,
+                          nodeTitle,
+                          nodeSrc,
+                          cssX,
+                          cssY,
+                          isDirectLinkOrMedia);
+                      return true;
+                    });
+            webView.requestFocusNodeHref(hrefHandler.obtainMessage());
+            return isDirectLinkOrMedia;
+          } catch (Throwable ignored) {
+            return false;
+          }
+        });
+  }
+
+  @SuppressWarnings("deprecation")
+  private void inspectDomAndEmitContextMenu(
+      final WebView webView,
+      final long webViewId,
+      final int hitType,
+      final String hitExtra,
+      final String nodeUrl,
+      final String nodeTitle,
+      final String nodeSrc,
+      final int cssX,
+      final int cssY,
+      final boolean wasConsumed) {
+    final String fallbackLink;
+    final String fallbackImg;
+    if (hitType == WebView.HitTestResult.IMAGE_TYPE) {
+      fallbackLink = nodeUrl != null ? nodeUrl : "";
+      fallbackImg = !hitExtra.isEmpty() ? hitExtra : (nodeSrc != null ? nodeSrc : "");
+    } else if (hitType == WebView.HitTestResult.SRC_IMAGE_ANCHOR_TYPE) {
+      fallbackLink = !nodeUrl.isEmpty() ? nodeUrl : "";
+      fallbackImg = !hitExtra.isEmpty() ? hitExtra : (nodeSrc != null ? nodeSrc : "");
+    } else if (hitType == WebView.HitTestResult.EMAIL_TYPE) {
+      fallbackLink = hitExtra.startsWith("mailto:") ? hitExtra : ("mailto:" + hitExtra);
+      fallbackImg = "";
+    } else if (hitType == WebView.HitTestResult.PHONE_TYPE) {
+      fallbackLink = hitExtra.startsWith("tel:") ? hitExtra : ("tel:" + hitExtra);
+      fallbackImg = "";
+    } else if (hitType == WebView.HitTestResult.SRC_ANCHOR_TYPE) {
+      fallbackLink = !nodeUrl.isEmpty() ? nodeUrl : hitExtra;
+      fallbackImg = nodeSrc != null ? nodeSrc : "";
+    } else {
+      fallbackLink = nodeUrl != null ? nodeUrl : "";
+      fallbackImg = nodeSrc != null ? nodeSrc : "";
+    }
+
+    if (cssX < 0 || cssY < 0) {
+      if (!fallbackLink.isEmpty() || !fallbackImg.isEmpty()) {
+        emitWebContextMenu(
+            webViewId,
+            fallbackLink,
+            nodeTitle != null ? nodeTitle : "",
+            fallbackImg,
+            "",
+            hitType);
+      }
+      return;
+    }
+
+    String js =
+        "(function(){try{"
+            + "var el=document.elementFromPoint("
+            + cssX
+            + ","
+            + cssY
+            + ");"
+            + "if(!el)return '';"
+            + "var a=el.closest?el.closest('a[href]'):null;"
+            + "var img=(el.tagName==='IMG')?el:(el.querySelector?el.querySelector('img'):null);"
+            + "if(!img&&a&&a.querySelector){img=a.querySelector('img');}"
+            + "var bg='';"
+            + "if(!img){var cur=el;for(var i=0;i<3&&cur;i++){"
+            + "var st=window.getComputedStyle(cur);var bi=st?st.backgroundImage:'';"
+            + "if(bi&&bi.indexOf('url(')!==-1){var m=bi.match(/url\\([\"']?([^\"')]+)[\"']?\\)/);"
+            + "if(m&&m[1]&&m[1].indexOf('http')===0){bg=m[1];break;}}"
+            + "cur=cur.parentElement;}}"
+            + "var lUrl=a&&a.href?String(a.href):'';"
+            + "var lTxt=a?String((a.innerText||a.getAttribute('aria-label')||a.title||'').replace(/\\s+/g,' ').trim()):'';"
+            + "var iUrl=img?String(img.currentSrc||img.src||''):bg;"
+            + "var iAlt=img?String((img.alt||img.title||'').trim()):'';"
+            + "if(!lUrl&&!iUrl)return '';"
+            + "try{if(window.getSelection)window.getSelection().removeAllRanges();}catch(_e){}"
+            + "return JSON.stringify({linkUrl:lUrl,linkText:lTxt.slice(0,220),imageUrl:iUrl,imageAlt:iAlt.slice(0,180)});"
+            + "}catch(e){return '';}})();";
+
+    try {
+      webView.evaluateJavascript(
+          js,
+          rawVal -> {
+            String linkUrl = fallbackLink;
+            String linkText = nodeTitle != null ? nodeTitle : "";
+            String imageUrl = fallbackImg;
+            String imageAlt = "";
+
+            if (rawVal != null && !rawVal.isEmpty() && !"null".equals(rawVal) && !"\"\"".equals(rawVal)) {
+              try {
+                String jsonText = rawVal;
+                if (jsonText.startsWith("\"") && jsonText.endsWith("\"") && jsonText.length() >= 2) {
+                  jsonText =
+                      new JSONObject("{\"v\":" + jsonText + "}").optString("v", "");
+                }
+                if (!jsonText.isEmpty()) {
+                  JSONObject obj = new JSONObject(jsonText);
+                  String jl = obj.optString("linkUrl", "").trim();
+                  String jt = obj.optString("linkText", "").trim();
+                  String ji = obj.optString("imageUrl", "").trim();
+                  String ja = obj.optString("imageAlt", "").trim();
+                  if (!jl.isEmpty()) linkUrl = jl;
+                  if (!jt.isEmpty()) linkText = jt;
+                  if (!ji.isEmpty()) imageUrl = ji;
+                  if (!ja.isEmpty()) imageAlt = ja;
+                }
+              } catch (Throwable ignored) {
+              }
+            }
+
+            if (linkUrl.startsWith("javascript:")) {
+              linkUrl = "";
+            }
+            if (!linkUrl.isEmpty() || !imageUrl.isEmpty()) {
+              if (!wasConsumed) {
+                try {
+                  webView.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS);
+                } catch (Throwable ignored) {
+                }
+              }
+              emitWebContextMenu(webViewId, linkUrl, linkText, imageUrl, imageAlt, hitType);
+            }
+          });
+    } catch (Throwable ignored) {
+      if (!fallbackLink.isEmpty() || !fallbackImg.isEmpty()) {
+        emitWebContextMenu(
+            webViewId,
+            fallbackLink,
+            nodeTitle != null ? nodeTitle : "",
+            fallbackImg,
+            "",
+            hitType);
+      }
+    }
+  }
+
+  private void emitWebContextMenu(
+      final long webViewId,
+      final String linkUrl,
+      final String linkText,
+      final String imageUrl,
+      final String imageAlt,
+      final int hitType) {
+    mainHandler.post(
+        () -> {
+          MethodChannel ch = this.channel;
+          if (ch != null) {
+            Map<String, Object> payload = new HashMap<>(8);
+            payload.put("webViewId", webViewId);
+            payload.put("linkUrl", linkUrl);
+            payload.put("linkText", linkText);
+            payload.put("imageUrl", imageUrl);
+            payload.put("imageAlt", imageAlt);
+            payload.put("hitType", hitType);
+            ch.invokeMethod("onWebContextMenu", payload);
           }
         });
   }

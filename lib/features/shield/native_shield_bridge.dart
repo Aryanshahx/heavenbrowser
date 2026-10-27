@@ -11,6 +11,38 @@ typedef NativeConsoleMessageCallback =
 typedef NativeMediaPlaybackChangedCallback =
     void Function(bool playing, String title);
 typedef NativeWebScrollNavBarCallback = void Function(bool visible);
+typedef NativeAiDownloadProgressCallback =
+    void Function(
+      String state,
+      int bytesDownloaded,
+      int totalBytes,
+      String? error,
+    );
+
+class WebContextMenuData {
+  const WebContextMenuData({
+    required this.webViewId,
+    required this.linkUrl,
+    required this.linkText,
+    required this.imageUrl,
+    required this.imageAlt,
+    required this.hitType,
+  });
+
+  final int webViewId;
+  final String linkUrl;
+  final String linkText;
+  final String imageUrl;
+  final String imageAlt;
+  final int hitType;
+
+  bool get hasLink => linkUrl.trim().isNotEmpty;
+  bool get hasImage => imageUrl.trim().isNotEmpty;
+  bool get isEmpty => !hasLink && !hasImage;
+  bool get hasAnyTarget => !isEmpty;
+}
+
+typedef NativeWebContextMenuCallback = void Function(WebContextMenuData data);
 
 class HeavenShieldStats {
   const HeavenShieldStats({
@@ -48,8 +80,12 @@ class NativeShieldBridge {
       <int, NativeMediaPlaybackChangedCallback>{};
   final Map<int, NativeWebScrollNavBarCallback> _scrollNavListeners =
       <int, NativeWebScrollNavBarCallback>{};
+  final Map<int, NativeWebContextMenuCallback> _contextMenuListeners =
+      <int, NativeWebContextMenuCallback>{};
 
   NativeDownloadStartedCallback? onDownloadStarted;
+  NativeAiDownloadProgressCallback? onAiDownloadProgress;
+  NativeWebContextMenuCallback? onGlobalWebContextMenu;
 
   Future<dynamic> _handleNativeCall(MethodCall call) async {
     final Object? rawArgs = call.arguments;
@@ -100,6 +136,34 @@ class NativeShieldBridge {
         _downloadInterceptListeners[webViewId]?.call(wasEmpty);
       }
       onDownloadStarted?.call(normalized);
+    } else if (call.method == 'onWebContextMenu' &&
+        rawArgs is Map<Object?, Object?>) {
+      final int webViewId = (rawArgs['webViewId'] as num?)?.toInt() ?? -1;
+      final WebContextMenuData data = WebContextMenuData(
+        webViewId: webViewId,
+        linkUrl: (rawArgs['linkUrl']?.toString() ?? '').trim(),
+        linkText: (rawArgs['linkText']?.toString() ?? '').trim(),
+        imageUrl: (rawArgs['imageUrl']?.toString() ?? '').trim(),
+        imageAlt: (rawArgs['imageAlt']?.toString() ?? '').trim(),
+        hitType: (rawArgs['hitType'] as num?)?.toInt() ?? 0,
+      );
+      if (!data.isEmpty) {
+        final NativeWebContextMenuCallback? cb =
+            _contextMenuListeners[webViewId];
+        if (cb != null) {
+          cb(data);
+        } else {
+          onGlobalWebContextMenu?.call(data);
+        }
+      }
+    } else if (call.method == 'onAiDownloadProgress' &&
+        rawArgs is Map<Object?, Object?>) {
+      final String state = (rawArgs['state']?.toString() ?? 'downloading')
+          .trim();
+      final int downloaded = (rawArgs['bytesDownloaded'] as num?)?.toInt() ?? 0;
+      final int total = (rawArgs['totalBytes'] as num?)?.toInt() ?? 0;
+      final String? err = rawArgs['error']?.toString();
+      onAiDownloadProgress?.call(state, downloaded, total, err);
     }
     return null;
   }
@@ -238,6 +302,7 @@ class NativeShieldBridge {
     NativeConsoleMessageCallback? onConsoleMessage,
     NativeMediaPlaybackChangedCallback? onMediaPlaybackChanged,
     NativeWebScrollNavBarCallback? onScrollNavBarChanged,
+    NativeWebContextMenuCallback? onContextMenu,
   }) async {
     _pullProgressListeners[webViewId] = onPullProgress;
     _pullRefreshListeners[webViewId] = onPullRefresh;
@@ -252,6 +317,9 @@ class NativeShieldBridge {
     }
     if (onScrollNavBarChanged != null) {
       _scrollNavListeners[webViewId] = onScrollNavBarChanged;
+    }
+    if (onContextMenu != null) {
+      _contextMenuListeners[webViewId] = onContextMenu;
     }
     try {
       await _channel.invokeMethod<bool>('attachToWebView', <String, Object?>{
@@ -332,6 +400,7 @@ class NativeShieldBridge {
     _consoleListeners.remove(webViewId);
     _playbackListeners.remove(webViewId);
     _scrollNavListeners.remove(webViewId);
+    _contextMenuListeners.remove(webViewId);
   }
 
   Future<bool> isBiometricAvailable() async {
@@ -985,6 +1054,94 @@ class NativeShieldBridge {
       return const <String, Object?>{'connected': false};
     } on PlatformException {
       return const <String, Object?>{'connected': false};
+    }
+  }
+
+  Future<Map<String, Object?>> checkOnDeviceAiStatus() async {
+    try {
+      final Map<Object?, Object?>? raw = await _channel
+          .invokeMethod<Map<Object?, Object?>>('checkOnDeviceAiStatus');
+      if (raw == null) {
+        return const <String, Object?>{'status': 'unavailable'};
+      }
+      return <String, Object?>{
+        for (final MapEntry<Object?, Object?> e in raw.entries)
+          if (e.key != null) e.key.toString(): e.value,
+      };
+    } on MissingPluginException {
+      return const <String, Object?>{'status': 'unavailable'};
+    } on PlatformException {
+      return const <String, Object?>{'status': 'unavailable'};
+    }
+  }
+
+  Future<Map<String, Object?>> downloadOnDeviceAiModel() async {
+    try {
+      final Map<Object?, Object?>? raw = await _channel
+          .invokeMethod<Map<Object?, Object?>>('downloadOnDeviceAiModel');
+      if (raw == null) {
+        return const <String, Object?>{'ok': false, 'status': 'unavailable'};
+      }
+      return <String, Object?>{
+        for (final MapEntry<Object?, Object?> e in raw.entries)
+          if (e.key != null) e.key.toString(): e.value,
+      };
+    } on MissingPluginException {
+      return const <String, Object?>{'ok': false, 'status': 'unavailable'};
+    } on PlatformException catch (e) {
+      return <String, Object?>{
+        'ok': false,
+        'status': 'unavailable',
+        'error': e.message ?? 'Download failed',
+      };
+    }
+  }
+
+  Future<Map<String, Object?>> summarizeWithOnDeviceAi(String text) async {
+    try {
+      final Map<Object?, Object?>? raw = await _channel
+          .invokeMethod<Map<Object?, Object?>>(
+            'summarizeWithOnDeviceAi',
+            <String, Object>{'text': text},
+          );
+      if (raw == null) {
+        return const <String, Object?>{'ok': false};
+      }
+      return <String, Object?>{
+        for (final MapEntry<Object?, Object?> e in raw.entries)
+          if (e.key != null) e.key.toString(): e.value,
+      };
+    } on MissingPluginException {
+      return const <String, Object?>{'ok': false};
+    } on PlatformException catch (e) {
+      return <String, Object?>{
+        'ok': false,
+        'error': e.message ?? 'Summarization failed',
+      };
+    }
+  }
+
+  Future<Map<String, Object?>> promptOnDeviceAi(String prompt) async {
+    try {
+      final Map<Object?, Object?>? raw = await _channel
+          .invokeMethod<Map<Object?, Object?>>(
+            'promptOnDeviceAi',
+            <String, Object>{'prompt': prompt},
+          );
+      if (raw == null) {
+        return const <String, Object?>{'ok': false};
+      }
+      return <String, Object?>{
+        for (final MapEntry<Object?, Object?> e in raw.entries)
+          if (e.key != null) e.key.toString(): e.value,
+      };
+    } on MissingPluginException {
+      return const <String, Object?>{'ok': false};
+    } on PlatformException catch (e) {
+      return <String, Object?>{
+        'ok': false,
+        'error': e.message ?? 'AI prompt failed',
+      };
     }
   }
 }

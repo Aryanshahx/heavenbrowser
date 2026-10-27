@@ -2,20 +2,20 @@ import 'package:flutter/material.dart';
 
 import '../utils/omnibox_parser.dart';
 
-/// Tiny Search Engine Quick-Switcher button placed directly inside the Search Bar
-/// so users can switch between Google (Default), Perplexity, DuckDuckGo, Brave,
-/// Bing, and Startpage in a single tap.
-class SearchEngineChipButton extends StatelessWidget {
-  const SearchEngineChipButton({
+/// Renders the real bundled brand logo image for a [SearchEngine].
+class SearchEngineLogo extends StatelessWidget {
+  const SearchEngineLogo({
     super.key,
-    required this.currentEngine,
-    required this.onSelected,
+    required this.engine,
+    this.size = 20,
+    this.borderRadius = 6,
   });
 
-  final SearchEngine currentEngine;
-  final ValueChanged<SearchEngine> onSelected;
+  final SearchEngine engine;
+  final double size;
+  final double borderRadius;
 
-  static Color _engineColor(SearchEngine engine) {
+  static Color engineColor(SearchEngine engine) {
     return switch (engine) {
       SearchEngine.google => const Color(0xFF4285F4),
       SearchEngine.perplexity => const Color(0xFF20B8CD),
@@ -26,20 +26,56 @@ class SearchEngineChipButton extends StatelessWidget {
     };
   }
 
-  static String _engineBadgeText(SearchEngine engine) {
-    return switch (engine) {
-      SearchEngine.google => 'G',
-      SearchEngine.perplexity => 'Px',
-      SearchEngine.duckDuckGo => 'D',
-      SearchEngine.brave => 'Br',
-      SearchEngine.bing => 'Bi',
-      SearchEngine.startpage => 'Sp',
-    };
+  @override
+  Widget build(BuildContext context) {
+    final Color c = engineColor(engine);
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(borderRadius),
+      child: Image.asset(
+        engine.logoAssetPath,
+        key: Key('search_engine_logo_${engine.name}'),
+        width: size,
+        height: size,
+        fit: BoxFit.contain,
+        filterQuality: FilterQuality.high,
+        errorBuilder: (_, _, _) => Container(
+          width: size,
+          height: size,
+          alignment: Alignment.center,
+          decoration: BoxDecoration(
+            color: c.withValues(alpha: 0.18),
+            borderRadius: BorderRadius.circular(borderRadius),
+          ),
+          child: Text(
+            engine.badge,
+            style: TextStyle(
+              fontSize: size * 0.48,
+              fontWeight: FontWeight.w900,
+              color: c,
+            ),
+          ),
+        ),
+      ),
+    );
   }
+}
+
+/// Search Engine Quick-Switcher button placed directly inside the Search Bar
+/// showing the real brand image of Google (Default), Perplexity, DuckDuckGo,
+/// Brave, Bing, or Startpage.
+class SearchEngineChipButton extends StatelessWidget {
+  const SearchEngineChipButton({
+    super.key,
+    required this.currentEngine,
+    required this.onSelected,
+  });
+
+  final SearchEngine currentEngine;
+  final ValueChanged<SearchEngine> onSelected;
 
   @override
   Widget build(BuildContext context) {
-    final Color badgeColor = _engineColor(currentEngine);
+    final Color badgeColor = SearchEngineLogo.engineColor(currentEngine);
     return PopupMenuButton<SearchEngine>(
       key: const Key('tiny_search_engine_switcher'),
       tooltip: 'Switch Search Engine (${currentEngine.label})',
@@ -49,28 +85,12 @@ class SearchEngineChipButton extends StatelessWidget {
       itemBuilder: (BuildContext context) {
         return SearchEngine.values.map((SearchEngine engine) {
           final bool active = engine == currentEngine;
-          final Color c = _engineColor(engine);
           return PopupMenuItem<SearchEngine>(
+            key: Key('popup_search_engine_${engine.name}'),
             value: engine,
             child: Row(
               children: <Widget>[
-                Container(
-                  width: 24,
-                  height: 24,
-                  alignment: Alignment.center,
-                  decoration: BoxDecoration(
-                    color: c.withValues(alpha: 0.16),
-                    shape: BoxShape.circle,
-                  ),
-                  child: Text(
-                    _engineBadgeText(engine),
-                    style: TextStyle(
-                      fontSize: 11,
-                      fontWeight: FontWeight.w900,
-                      color: c,
-                    ),
-                  ),
-                ),
+                SearchEngineLogo(engine: engine, size: 22, borderRadius: 6),
                 const SizedBox(width: 10),
                 Expanded(
                   child: Text(
@@ -96,22 +116,19 @@ class SearchEngineChipButton extends StatelessWidget {
       },
       child: Container(
         height: 28,
-        padding: const EdgeInsets.symmetric(horizontal: 7),
+        padding: const EdgeInsets.symmetric(horizontal: 6),
         decoration: BoxDecoration(
-          color: badgeColor.withValues(alpha: 0.14),
+          color: badgeColor.withValues(alpha: 0.12),
           borderRadius: BorderRadius.circular(999),
-          border: Border.all(color: badgeColor.withValues(alpha: 0.42)),
+          border: Border.all(color: badgeColor.withValues(alpha: 0.36)),
         ),
         child: Row(
           mainAxisSize: MainAxisSize.min,
           children: <Widget>[
-            Text(
-              _engineBadgeText(currentEngine),
-              style: TextStyle(
-                fontSize: 11.5,
-                fontWeight: FontWeight.w900,
-                color: badgeColor,
-              ),
+            SearchEngineLogo(
+              engine: currentEngine,
+              size: 18,
+              borderRadius: 9,
             ),
             const SizedBox(width: 2),
             Icon(

@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../../../../core/theme/app_theme.dart';
+import '../../../../core/utils/omnibox_parser.dart';
 import '../../../../core/widgets/search_engine_chip_button.dart';
 import '../../../../core/widgets/site_logo.dart';
 import '../../../news/interest_news_service.dart';
@@ -393,7 +394,13 @@ class _StartPageState extends State<StartPage> {
           const SizedBox(width: 4),
           SearchEngineChipButton(
             currentEngine: widget.settings.searchEngine,
-            onSelected: (engine) => widget.settings.setSearchEngine(engine),
+            onSelected: (SearchEngine engine) async {
+              await widget.settings.setSearchEngine(engine);
+              final String typed = _homeSearchController.text.trim();
+              if (typed.isNotEmpty) {
+                _submitHomeSearch(typed);
+              }
+            },
           ),
           // Clickable Search Icon submits query (or focuses when empty)!
           IconButton(

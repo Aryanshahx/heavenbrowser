@@ -58,6 +58,7 @@ class BrowserTab {
     required this.createdAt,
     DateTime? lastActiveAt,
     this.groupId,
+    this.openerTabId,
     this.previewBytes,
   }) : lastActiveAt = lastActiveAt ?? createdAt,
        repaintKey = GlobalKey();
@@ -70,6 +71,7 @@ class BrowserTab {
   final GlobalKey repaintKey;
   Uint8List? previewBytes;
   String? groupId;
+  String? openerTabId;
 
   String get displayTitle {
     if (engine.isShowingDownloadsPage) {
@@ -220,6 +222,9 @@ class TabManagerController extends ChangeNotifier {
               }
               final String? title = entry['title']?.toString().trim();
               final String? groupId = entry['groupId']?.toString().trim();
+              final String? openerTabId = entry['openerTabId']
+                  ?.toString()
+                  .trim();
 
               Uint8List? restoredPreview;
               final String? rawPrevB64 = settings.prefs.getString(
@@ -256,8 +261,12 @@ class TabManagerController extends ChangeNotifier {
                 groupId: (groupId != null && groupId.isNotEmpty)
                     ? groupId
                     : null,
+                openerTabId: (openerTabId != null && openerTabId.isNotEmpty)
+                    ? openerTabId
+                    : null,
                 previewBytes: restoredPreview,
               );
+              _attachTabEngineCallbacks(restoredTab);
               _lastEngineSummaryByTab[id] = _engineSummary(engine);
               _tabs.add(restoredTab);
             }
@@ -295,6 +304,7 @@ class TabManagerController extends ChangeNotifier {
             'url': t.engine.currentUrl ?? '',
             'title': t.engine.pageTitle,
             'groupId': t.groupId ?? '',
+            'openerTabId': t.openerTabId ?? '',
           },
         )
         .toList(growable: false);
@@ -492,7 +502,26 @@ class TabManagerController extends ChangeNotifier {
     }
   }
 
-  BrowserTab _spawnTab({required bool incognito, required bool switchTo}) {
+  void _attachTabEngineCallbacks(BrowserTab tab) {
+    tab.engine.onOpenCrossSiteInNewTab = (String targetUrl) {
+      unawaited(
+        openNewTab(
+          incognito: tab.isIncognito,
+          initialInput: targetUrl,
+          switchTo: true,
+          openerTabId: tab.id,
+          groupId: tab.groupId,
+        ),
+      );
+    };
+  }
+
+  BrowserTab _spawnTab({
+    required bool incognito,
+    required bool switchTo,
+    String? openerTabId,
+    String? groupId,
+  }) {
     final String id = 'tab_${_nextIdCounter++}';
     final BrowserEngine engine = BrowserEngine(
       settings: settings,
@@ -506,9 +535,23 @@ class TabManagerController extends ChangeNotifier {
       isIncognito: incognito,
       engine: engine,
       createdAt: DateTime.now(),
+      openerTabId: openerTabId,
+      groupId: groupId,
     );
+    _attachTabEngineCallbacks(tab);
     _lastEngineSummaryByTab[id] = _engineSummary(engine);
-    _tabs.add(tab);
+    if (openerTabId != null) {
+      final int parentIdx = _tabs.indexWhere(
+        (BrowserTab t) => t.id == openerTabId,
+      );
+      if (parentIdx >= 0 && parentIdx < _tabs.length - 1) {
+        _tabs.insert(parentIdx + 1, tab);
+      } else {
+        _tabs.add(tab);
+      }
+    } else {
+      _tabs.add(tab);
+    }
     if (switchTo) {
       _activeTabId = id;
       _syncPrivateScreenshotSecurity();
@@ -574,6 +617,8 @@ class TabManagerController extends ChangeNotifier {
     bool incognito = false,
     String? initialInput,
     bool switchTo = true,
+    String? openerTabId,
+    String? groupId,
   }) async {
     if (switchTo && _tabs.isNotEmpty) {
       activeTab.lastActiveAt = DateTime.now();
@@ -581,15 +626,49 @@ class TabManagerController extends ChangeNotifier {
       lastTransitionDirection = 1;
       tabTransitionEpoch += 1;
     }
-    final BrowserTab tab = _spawnTab(incognito: incognito, switchTo: switchTo);
+    final BrowserTab tab = _spawnTab(
+      incognito: incognito,
+      switchTo: switchTo,
+      openerTabId: openerTabId,
+      groupId: groupId,
+    );
     _hibernateExcessBackgroundTabs();
     _persistSessionSnapshot(force: true);
     notifyListeners();
     if (initialInput != null && initialInput.trim().isEmpty == false) {
-      await tab.engine.loadUserEntry(initialInput.trim());
+      await tab.engine.loadUserEntry(
+        initialInput.trim(),
+        replaceInitialBlankHistory: openerTabId != null,
+      );
       _persistSessionSnapshot(force: true);
     }
     return tab;
+  }
+
+  /// True when the active tab was opened via cross-website redirect / link from
+  /// another open tab and can seamlessly return to that opener tab on Back.
+  bool get canReturnToOpenerTab {
+    if (_tabs.isEmpty) return false;
+    final BrowserTab current = activeTab;
+    final String? parentId = current.openerTabId;
+    if (parentId == null || parentId.isEmpty) return false;
+    return _tabs.any(
+      (BrowserTab t) => t.id == parentId && t.isIncognito == current.isIncognito,
+    );
+  }
+
+  /// Navigates back inside the active tab if possible; otherwise closes the
+  /// spawned child tab and seamlessly switches back to its opener tab.
+  Future<bool> navigateBackSeamlessly() async {
+    if (activeEngine.canGoBack) {
+      await activeEngine.goBack();
+      return true;
+    }
+    if (canReturnToOpenerTab) {
+      await closeTab(activeTab.id);
+      return true;
+    }
+    return false;
   }
 
   void switchToTab(String tabId) {
@@ -675,14 +754,28 @@ class TabManagerController extends ChangeNotifier {
     } else if (_activeTabId == tabId) {
       lastTransitionDirection = -1;
       tabTransitionEpoch += 1;
-      final List<BrowserTab> sameMode = _tabs
-          .where((BrowserTab t) => t.isIncognito == removed.isIncognito)
-          .toList();
-      if (sameMode.isNotEmpty) {
-        _activeTabId = sameMode.last.id;
+      final String? parentId = removed.openerTabId;
+      final BrowserTab? opener = (parentId != null && parentId.isNotEmpty)
+          ? _tabs
+                .where(
+                  (BrowserTab t) =>
+                      t.id == parentId && t.isIncognito == removed.isIncognito,
+                )
+                .firstOrNull
+          : null;
+      if (opener != null) {
+        _activeTabId = opener.id;
+        opener.lastActiveAt = DateTime.now();
       } else {
-        final int nextIdx = (idx - 1).clamp(0, _tabs.length - 1);
-        _activeTabId = _tabs[nextIdx].id;
+        final List<BrowserTab> sameMode = _tabs
+            .where((BrowserTab t) => t.isIncognito == removed.isIncognito)
+            .toList();
+        if (sameMode.isNotEmpty) {
+          _activeTabId = sameMode.last.id;
+        } else {
+          final int nextIdx = (idx - 1).clamp(0, _tabs.length - 1);
+          _activeTabId = _tabs[nextIdx].id;
+        }
       }
       unawaited(activeTab.engine.focusNativeWebView());
     }

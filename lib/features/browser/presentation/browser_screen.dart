@@ -11,6 +11,7 @@ import '../../../core/theme/app_theme.dart';
 import '../../../core/utils/omnibox_parser.dart';
 import '../../../core/widgets/search_engine_chip_button.dart';
 import '../../../core/widgets/site_logo.dart';
+import '../../ai/heaven_ai_sheet.dart';
 import '../../devtools/desktop_inspector_panel.dart';
 import '../../downloads/downloads_controller.dart';
 import '../../downloads/downloads_screen.dart';
@@ -32,6 +33,7 @@ import '../site_controls_sheet.dart';
 import 'widgets/library_screen.dart';
 import 'widgets/reader_mode_sheet.dart';
 import 'widgets/start_page.dart';
+import 'widgets/web_context_menu_sheet.dart';
 
 class BrowserScreen extends StatefulWidget {
   const BrowserScreen({
@@ -96,6 +98,7 @@ class _BrowserScreenState extends State<BrowserScreen>
     }
     for (final BrowserTab tab in widget.tabManager.allTabs) {
       tab.engine.onSitePermissionPrompt = null;
+      tab.engine.onWebContextMenu = null;
     }
     WidgetsBinding.instance.removeObserver(this);
     _omniboxController.dispose();
@@ -347,6 +350,7 @@ class _BrowserScreenState extends State<BrowserScreen>
         final BrowserEngine engine = _activeEngine;
 
         engine.onSitePermissionPrompt ??= _promptSitePermission;
+        engine.onWebContextMenu = _handleWebContextMenu;
 
         final bool showLinkActions =
             _isEditingOmnibox && _showLinkActionsCard && engine.isShowingWebPage;
@@ -378,9 +382,11 @@ class _BrowserScreenState extends State<BrowserScreen>
             listenable: engine,
             child: tabsViewportLayer,
             builder: (BuildContext context, Widget? viewportChild) {
+              final bool canBackNow =
+                  engine.canGoBack || widget.tabManager.canReturnToOpenerTab;
               return PopScope<void>(
                 canPop:
-                    !engine.canGoBack &&
+                    !canBackNow &&
                     !_isEditingOmnibox &&
                     !_showLinkActionsCard &&
                     !_showFindBar &&
@@ -403,8 +409,8 @@ class _BrowserScreenState extends State<BrowserScreen>
                     unawaited(engine.clearInspectorHighlight());
                     return;
                   }
-                  if (engine.canGoBack) {
-                    await engine.goBack();
+                  if (canBackNow) {
+                    await widget.tabManager.navigateBackSeamlessly();
                   }
                 },
                 child: Scaffold(
@@ -547,9 +553,11 @@ class _BrowserScreenState extends State<BrowserScreen>
   ) {
     final double leftProgress = (_leftEdgeDragPx / 64.0).clamp(0.0, 1.0);
     final double rightProgress = (_rightEdgeDragPx / 64.0).clamp(0.0, 1.0);
+    final bool canGoBackOrReturn =
+        engine.canGoBack || widget.tabManager.canReturnToOpenerTab;
 
     return <Widget>[
-      if (engine.canGoBack)
+      if (canGoBackOrReturn)
         Positioned(
           left: 0,
           top: 0,
@@ -578,9 +586,9 @@ class _BrowserScreenState extends State<BrowserScreen>
               final double vx = d.primaryVelocity ?? 0.0;
               final bool trigger = _leftEdgeDragPx >= 56.0 || vx > 360.0;
               setState(() => _leftEdgeDragPx = 0.0);
-              if (trigger && engine.canGoBack) {
+              if (trigger && canGoBackOrReturn) {
                 HapticFeedback.lightImpact();
-                unawaited(engine.goBack());
+                unawaited(widget.tabManager.navigateBackSeamlessly());
               }
             },
           ),
@@ -1318,7 +1326,10 @@ class _BrowserScreenState extends State<BrowserScreen>
           if (MediaQuery.sizeOf(context).width >= 600) ...<Widget>[
             IconButton(
               key: const Key('tablet_bar_back_button'),
-              onPressed: engine.canGoBack ? engine.goBack : null,
+              onPressed:
+                  (engine.canGoBack || widget.tabManager.canReturnToOpenerTab)
+                  ? widget.tabManager.navigateBackSeamlessly
+                  : null,
               icon: const Icon(Icons.arrow_back_rounded, size: 19),
               tooltip: 'Navigate Back',
               visualDensity: VisualDensity.compact,
@@ -1545,7 +1556,7 @@ class _BrowserScreenState extends State<BrowserScreen>
         SearchEngineChipButton(
           currentEngine: widget.settings.searchEngine,
           onSelected: (SearchEngine sel) =>
-              widget.settings.setSearchEngine(sel),
+              _handleSearchEngineChanged(sel, engine),
         ),
         const SizedBox(width: 6),
         Expanded(
@@ -1616,14 +1627,14 @@ class _BrowserScreenState extends State<BrowserScreen>
           flex: 0,
           child: ConstrainedBox(
             constraints: BoxConstraints(
-              maxWidth: engine.isShowingWebPage ? 76 : 88,
+              maxWidth: engine.isShowingWebPage ? 56 : 64,
             ),
             child: FittedBox(
               fit: BoxFit.scaleDown,
               child: SearchEngineChipButton(
                 currentEngine: widget.settings.searchEngine,
                 onSelected: (SearchEngine sel) =>
-                    widget.settings.setSearchEngine(sel),
+                    _handleSearchEngineChanged(sel, engine),
               ),
             ),
           ),
@@ -1681,19 +1692,147 @@ class _BrowserScreenState extends State<BrowserScreen>
             ),
           ),
         ),
+        Tooltip(
+          message: 'Heaven On-Device AI',
+          child: InkWell(
+            key: const Key('top_bar_ai_button'),
+            borderRadius: BorderRadius.circular(18),
+            onTap: () => _openHeavenAiSheet(context, engine),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 6),
+              child: Icon(
+                Icons.auto_awesome_rounded,
+                size: 16,
+                color: colors.primary,
+              ),
+            ),
+          ),
+        ),
         if (engine.isShowingStartPage) ...<Widget>[
           IconButton(
             onPressed: _triggerVoiceSearch,
-            icon: Icon(Icons.mic_rounded, size: 18, color: colors.primary),
+            icon: Icon(Icons.mic_rounded, size: 17, color: colors.primary),
+            style: IconButton.styleFrom(
+              tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+            ),
             visualDensity: VisualDensity.compact,
             padding: EdgeInsets.zero,
-            constraints: const BoxConstraints(minWidth: 26, minHeight: 32),
+            constraints: const BoxConstraints(minWidth: 24, minHeight: 30),
             tooltip: 'Voice Search',
           ),
           const SizedBox(width: 2),
         ] else
-          const SizedBox(width: 5),
+          const SizedBox(width: 3),
       ],
+    );
+  }
+
+  Future<void> _handleSearchEngineChanged(
+    SearchEngine selected,
+    BrowserEngine engine,
+  ) async {
+    await widget.settings.setSearchEngine(selected);
+    if (_isEditingOmnibox) {
+      final String typed = _omniboxController.text.trim();
+      if (typed.isNotEmpty) {
+        final String query = OmniboxParser.extractSearchOrSiteQuery(
+          currentUrl: engine.currentUrl,
+          pageTitle: engine.pageTitle,
+          typedText: typed,
+        );
+        if (query.isNotEmpty) {
+          _closeOmniboxOverlay();
+          await engine.loadUri(selected.buildSearchUri(query));
+          return;
+        }
+      }
+    }
+    if (engine.isShowingWebPage) {
+      final String query = OmniboxParser.extractSearchOrSiteQuery(
+        currentUrl: engine.currentUrl,
+        pageTitle: engine.pageTitle,
+      );
+      if (query.isNotEmpty) {
+        _closeOmniboxOverlay();
+        await engine.loadUri(selected.buildSearchUri(query));
+      }
+    }
+  }
+
+  Future<void> _openHeavenAiSheet(
+    BuildContext context,
+    BrowserEngine engine,
+  ) async {
+    await showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      showDragHandle: true,
+      constraints: const BoxConstraints(maxWidth: 600),
+      builder: (BuildContext _) {
+        return HeavenAiSheet(engine: engine);
+      },
+    );
+  }
+
+  void _handleWebContextMenu(WebContextMenuData data) {
+    if (!mounted || !data.hasAnyTarget) return;
+    final BrowserTab parentTab = widget.tabManager.activeTab;
+    HapticFeedback.mediumImpact();
+    showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      showDragHandle: true,
+      constraints: const BoxConstraints(maxWidth: 520),
+      builder: (BuildContext _) {
+        return WebContextMenuSheet(
+          data: data,
+          onOpenInNewTab: (String url) {
+            unawaited(
+              widget.tabManager.openNewTab(
+                incognito: parentTab.isIncognito,
+                initialInput: url,
+                switchTo: true,
+                openerTabId: parentTab.id,
+                groupId: parentTab.groupId,
+              ),
+            );
+          },
+          onOpenInBackgroundTab: (String url) {
+            unawaited(
+              widget.tabManager.openNewTab(
+                incognito: parentTab.isIncognito,
+                initialInput: url,
+                switchTo: false,
+                openerTabId: parentTab.id,
+                groupId: parentTab.groupId,
+              ),
+            );
+            if (mounted) {
+              ScaffoldMessenger.of(context)
+                ..clearSnackBars()
+                ..showSnackBar(
+                  const SnackBar(
+                    content: Text('Opened in background tab'),
+                    behavior: SnackBarBehavior.floating,
+                    duration: Duration(milliseconds: 1600),
+                  ),
+                );
+            }
+          },
+          onOpenInIncognitoTab: (String url) {
+            unawaited(
+              widget.tabManager.openNewTab(
+                incognito: true,
+                initialInput: url,
+                switchTo: true,
+              ),
+            );
+          },
+          onDownloadUrl: (String url) {
+            unawaited(widget.downloads.startUrlDownload(url: url));
+          },
+        );
+      },
     );
   }
 
@@ -1935,10 +2074,14 @@ class _BrowserScreenState extends State<BrowserScreen>
                     children: <Widget>[
                       IconButton(
                         tooltip: 'Back',
-                        onPressed: engine.canGoBack
+                        onPressed:
+                            (engine.canGoBack ||
+                                widget.tabManager.canReturnToOpenerTab)
                             ? () {
                                 Navigator.pop(sheetContext);
-                                engine.goBack();
+                                unawaited(
+                                  widget.tabManager.navigateBackSeamlessly(),
+                                );
                               }
                             : null,
                         icon: const Icon(Icons.arrow_back_rounded),
@@ -2124,6 +2267,25 @@ class _BrowserScreenState extends State<BrowserScreen>
                   ),
                   const SizedBox(height: 8),
                   const Divider(height: 1),
+                  ListTile(
+                    key: const Key('browser_menu_ai_tile'),
+                    dense: true,
+                    contentPadding: const EdgeInsets.symmetric(horizontal: 8),
+                    leading: Icon(
+                      Icons.auto_awesome_rounded,
+                      size: 20,
+                      color: colors.primary,
+                    ),
+                    title: const Text('Heaven On-Device AI'),
+                    subtitle: const Text(
+                      'Free private page summary & chat (Gemini Nano)',
+                      style: TextStyle(fontSize: 11.5),
+                    ),
+                    onTap: () {
+                      Navigator.pop(sheetContext);
+                      _openHeavenAiSheet(context, engine);
+                    },
+                  ),
                   ListTile(
                     key: const Key('browser_menu_inspect_tile'),
                     dense: true,

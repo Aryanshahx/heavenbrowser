@@ -80,6 +80,8 @@ class BrowserEngine extends ChangeNotifier {
 
   final BrowserSettingsController settings;
   SitePermissionPromptCallback? onSitePermissionPrompt;
+  ValueChanged<String>? onOpenCrossSiteInNewTab;
+  NativeWebContextMenuCallback? onWebContextMenu;
   final bool isIncognito;
   final bool enablePlatformWebView;
 
@@ -103,6 +105,7 @@ class BrowserEngine extends ChangeNotifier {
   String? _lastCompletedWebUrl;
   int _lastDownloadInterceptMs = 0;
   int _lastPageFinishedMs = 0;
+  int _userInitiatedLoadUntilMs = 0;
   Timer? _finishLoadingDebounceTimer;
 
   // Live Background Audio state
@@ -291,6 +294,7 @@ class BrowserEngine extends ChangeNotifier {
   }
 
   Future<void> _loadRestoredUri(Uri uri) async {
+    _markUserInitiatedLoad();
     _isLoading = _controller != null;
     _progress = 0.1;
     notifyListeners();
@@ -304,6 +308,28 @@ class BrowserEngine extends ChangeNotifier {
     }
     await _applyControllerSettings(forHost: uri.host);
     await _controller?.loadRequest(uri, headers: _headersForTarget());
+  }
+
+  void _markUserInitiatedLoad() {
+    _userInitiatedLoadUntilMs = DateTime.now().millisecondsSinceEpoch + 1600;
+  }
+
+  static bool _isOAuthOrSsoFlow(Uri uri) {
+    final String h = uri.host.toLowerCase();
+    final String p = uri.path.toLowerCase();
+    if (p.contains('/oauth') ||
+        p.contains('/authorize') ||
+        p.contains('/auth/') ||
+        p.contains('/saml') ||
+        p.contains('/openid')) {
+      return true;
+    }
+    return (h == 'accounts.google.com' ||
+            h == 'appleid.apple.com' ||
+            h == 'login.microsoftonline.com' ||
+            h == 'auth0.com' ||
+            h.endsWith('.auth0.com')) &&
+        (p.contains('signin') || p.contains('login') || p.contains('auth'));
   }
 
   void _initializeController() {
@@ -431,6 +457,7 @@ class BrowserEngine extends ChangeNotifier {
               const Duration(milliseconds: 180),
               () {
                 _finishLoadingDebounceTimer = null;
+                _userInitiatedLoadUntilMs = 0;
                 if (_isLoading) {
                   _isLoading = false;
                   _progress = 0;
@@ -556,6 +583,9 @@ class BrowserEngine extends ChangeNotifier {
           },
           onScrollNavBarChanged: (bool visible) {
             setNavBarVisible(visible);
+          },
+          onContextMenu: (WebContextMenuData data) {
+            onWebContextMenu?.call(data);
           },
         ),
       );
@@ -739,80 +769,70 @@ class BrowserEngine extends ChangeNotifier {
 
     // Bypass top-level redirect tracking wrappers & AMP pages directly to canonical destination
     if (request.isMainFrame) {
-      final Uri? unwrappedBounce = settings.shieldCleanUrls
-          ? OmniboxParser.unwrapTrackingRedirectUri(uri)
-          : OmniboxParser.unwrapGoogleRedirectUri(uri);
-      if (unwrappedBounce != null && unwrappedBounce != uri) {
-        Uri nextTarget = unwrappedBounce;
-        if (settings.isShieldActiveForHost(nextTarget.host) &&
-            settings.shieldAutoRedirectAmp) {
-          nextTarget = OmniboxParser.unwrapAmpUri(nextTarget) ?? nextTarget;
-        }
-        if (settings.isShieldActiveForHost(nextTarget.host) &&
-            settings.shieldCleanUrls) {
-          nextTarget = BrowserSettingsController.stripTrackingParameters(
-            nextTarget,
-          );
-        }
-        await _applyControllerSettings(forHost: nextTarget.host);
-        await _controller?.loadRequest(
-          nextTarget,
-          headers: _headersForTarget(),
-        );
-        return NavigationDecision.prevent;
-      }
-
-      if (settings.isShieldActiveForHost(uri.host) &&
+      Uri resolvedUri =
+          (settings.shieldCleanUrls
+              ? OmniboxParser.unwrapTrackingRedirectUri(uri)
+              : OmniboxParser.unwrapGoogleRedirectUri(uri)) ??
+          uri;
+      if (settings.isShieldActiveForHost(resolvedUri.host) &&
           settings.shieldAutoRedirectAmp) {
-        final Uri? nonAmp = OmniboxParser.unwrapAmpUri(uri);
-        if (nonAmp != null && nonAmp != uri) {
-          final Uri cleanedNonAmp = settings.shieldCleanUrls
-              ? BrowserSettingsController.stripTrackingParameters(nonAmp)
-              : nonAmp;
-          await _controller?.loadRequest(
-            cleanedNonAmp,
-            headers: _headersForTarget(),
-          );
-          return NavigationDecision.prevent;
-        }
+        resolvedUri = OmniboxParser.unwrapAmpUri(resolvedUri) ?? resolvedUri;
       }
-
-      if (settings.isShieldActiveForHost(uri.host) && settings.shieldCleanUrls) {
-        final Uri cleanedUri = BrowserSettingsController.stripTrackingParameters(
-          uri,
+      if (settings.desktopMode) {
+        resolvedUri = rewriteMobileToDesktopUri(resolvedUri);
+      }
+      if (settings.httpsUpgrade &&
+          resolvedUri.scheme == 'http' &&
+          !OmniboxParser.isLocalOrPrivateHost(resolvedUri.host)) {
+        resolvedUri = resolvedUri.replace(scheme: 'https');
+      }
+      if (settings.isShieldActiveForHost(resolvedUri.host) &&
+          settings.shieldCleanUrls) {
+        resolvedUri = BrowserSettingsController.stripTrackingParameters(
+          resolvedUri,
         );
-        if (cleanedUri != uri) {
-          await _controller?.loadRequest(
-            cleanedUri,
-            headers: _headersForTarget(),
-          );
-          return NavigationDecision.prevent;
-        }
       }
-    }
 
-    // If Desktop Mode is enabled and a site redirects to m.example.com, rewrite to desktop host
-    if (request.isMainFrame && settings.desktopMode) {
-      final Uri desktopUri = rewriteMobileToDesktopUri(uri);
-      if (desktopUri != uri) {
+      // Cross-website redirect / link navigation -> open seamlessly in a new child tab
+      // so the current website stays intact and Back returns seamlessly!
+      final bool isUserDirectLoad =
+          DateTime.now().millisecondsSinceEpoch <= _userInitiatedLoadUntilMs;
+      final String? establishedUrl = _lastCompletedWebUrl;
+      if (!isUserDirectLoad &&
+          onOpenCrossSiteInNewTab != null &&
+          isShowingWebPage &&
+          establishedUrl != null &&
+          establishedUrl.isNotEmpty &&
+          !_isOAuthOrSsoFlow(resolvedUri) &&
+          !OmniboxParser.isSameWebsite(
+            establishedUrl,
+            resolvedUri.toString(),
+          )) {
+        onOpenCrossSiteInNewTab!(resolvedUri.toString());
+        return NavigationDecision.prevent;
+      }
+
+      if (resolvedUri != uri) {
+        await _applyControllerSettings(forHost: resolvedUri.host);
         await _controller?.loadRequest(
-          desktopUri,
+          resolvedUri,
           headers: _headersForTarget(),
         );
         return NavigationDecision.prevent;
       }
-    }
-
-    if (request.isMainFrame &&
-        settings.httpsUpgrade &&
-        uri.scheme == 'http' &&
-        !OmniboxParser.isLocalOrPrivateHost(uri.host)) {
-      final Uri httpsUri = uri.replace(scheme: 'https');
-      await _controller?.loadRequest(httpsUri, headers: _headersForTarget());
-      return NavigationDecision.prevent;
     }
 
     return NavigationDecision.navigate;
+  }
+
+  /// Evaluates a main-frame website redirect or link navigation (also usable in
+  /// unit/widget tests without a platform WebView).
+  Future<NavigationDecision> handleWebsiteNavigationOrRedirect(
+    String targetUrl,
+  ) {
+    return _handleNavigationRequest(
+      NavigationRequest(url: targetUrl, isMainFrame: true),
+    );
   }
 
   static Uri rewriteMobileToDesktopUri(Uri uri) {
@@ -923,6 +943,7 @@ class BrowserEngine extends ChangeNotifier {
   }
 
   Future<void> setDesktopModeAndReload(bool enabled) async {
+    _markUserInitiatedLoad();
     await settings.setDesktopMode(enabled);
     await _applyControllerSettings(force: true);
 
@@ -1022,7 +1043,10 @@ class BrowserEngine extends ChangeNotifier {
     notifyListeners();
   }
 
-  Future<void> loadUserEntry(String rawInput) async {
+  Future<void> loadUserEntry(
+    String rawInput, {
+    bool replaceInitialBlankHistory = false,
+  }) async {
     final String trimmed = rawInput.trim();
     if (OmniboxParser.isDownloadsUrl(trimmed)) {
       openDownloadsPage();
@@ -1041,14 +1065,21 @@ class BrowserEngine extends ChangeNotifier {
       resolveSns: settings.resolveSnsDomains,
       resolveUnstoppable: settings.resolveUnstoppableDomains,
     );
-    await loadUri(target);
+    await loadUri(
+      target,
+      replaceInitialBlankHistory: replaceInitialBlankHistory,
+    );
   }
 
-  Future<void> loadUri(Uri uri) async {
+  Future<void> loadUri(
+    Uri uri, {
+    bool replaceInitialBlankHistory = false,
+  }) async {
     if (OmniboxParser.isDownloadsUrl(uri.toString())) {
       openDownloadsPage();
       return;
     }
+    _markUserInitiatedLoad();
     _finishLoadingDebounceTimer?.cancel();
     _finishLoadingDebounceTimer = null;
     _errorMessage = null;
@@ -1087,7 +1118,14 @@ class BrowserEngine extends ChangeNotifier {
     }
 
     final String targetUrl = finalUri.toString();
-    _pushVirtualLocation(targetUrl);
+    if (replaceInitialBlankHistory &&
+        _virtualHistory.length == 1 &&
+        _virtualHistory.first.isEmpty) {
+      _virtualHistory[0] = targetUrl;
+      _virtualIndex = 0;
+    } else {
+      _pushVirtualLocation(targetUrl);
+    }
 
     if (enablePlatformWebView && _controller == null) {
       _initializeController();
@@ -1112,6 +1150,8 @@ class BrowserEngine extends ChangeNotifier {
     await _applyControllerSettings(forHost: finalUri.host);
     await _controller?.loadRequest(finalUri, headers: _headersForTarget());
     if (_controller == null) {
+      _lastCompletedWebUrl = targetUrl;
+      _userInitiatedLoadUntilMs = 0;
       _isLoading = false;
       _progress = 0;
       if (!isIncognito &&
@@ -1141,6 +1181,7 @@ class BrowserEngine extends ChangeNotifier {
   }
 
   Future<void> goBack() async {
+    _markUserInitiatedLoad();
     if (isShowingWebPage &&
         _controller != null &&
         await _controller!.canGoBack()) {
@@ -1156,6 +1197,7 @@ class BrowserEngine extends ChangeNotifier {
   }
 
   Future<void> goForward() async {
+    _markUserInitiatedLoad();
     if (isShowingWebPage &&
         _controller != null &&
         await _controller!.canGoForward()) {
@@ -1171,6 +1213,7 @@ class BrowserEngine extends ChangeNotifier {
   }
 
   Future<void> _restoreVirtualLocation(String target) async {
+    _markUserInitiatedLoad();
     _errorMessage = null;
     _pullProgress = 0;
     if (target.isEmpty) {
@@ -1212,6 +1255,7 @@ class BrowserEngine extends ChangeNotifier {
   }
 
   Future<void> reloadFullPage() async {
+    _markUserInitiatedLoad();
     _finishLoadingDebounceTimer?.cancel();
     _finishLoadingDebounceTimer = null;
     _errorMessage = null;

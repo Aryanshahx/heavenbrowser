@@ -3,6 +3,7 @@ enum SearchEngine {
     label: 'Google Search',
     shortLabel: 'Google',
     badge: 'G',
+    logoAssetPath: 'assets/images/engines/google.png',
     homeUrl: 'https://www.google.com',
     queryPrefix: 'https://www.google.com/search?q=',
   ),
@@ -10,6 +11,7 @@ enum SearchEngine {
     label: 'Perplexity',
     shortLabel: 'Perplexity',
     badge: 'Px',
+    logoAssetPath: 'assets/images/engines/perplexity.png',
     homeUrl: 'https://www.perplexity.ai',
     queryPrefix: 'https://www.perplexity.ai/search?q=',
   ),
@@ -17,6 +19,7 @@ enum SearchEngine {
     label: 'DuckDuckGo',
     shortLabel: 'DDG',
     badge: 'D',
+    logoAssetPath: 'assets/images/engines/duckduckgo.png',
     homeUrl: 'https://duckduckgo.com',
     queryPrefix: 'https://duckduckgo.com/?kp=-2&q=',
   ),
@@ -24,6 +27,7 @@ enum SearchEngine {
     label: 'Brave Search',
     shortLabel: 'Brave',
     badge: 'Br',
+    logoAssetPath: 'assets/images/engines/brave.png',
     homeUrl: 'https://search.brave.com',
     queryPrefix: 'https://search.brave.com/search?q=',
   ),
@@ -31,6 +35,7 @@ enum SearchEngine {
     label: 'Bing Search',
     shortLabel: 'Bing',
     badge: 'Bi',
+    logoAssetPath: 'assets/images/engines/bing.png',
     homeUrl: 'https://www.bing.com',
     queryPrefix: 'https://www.bing.com/search?adlt=off&q=',
   ),
@@ -38,6 +43,7 @@ enum SearchEngine {
     label: 'Startpage',
     shortLabel: 'Startpage',
     badge: 'S',
+    logoAssetPath: 'assets/images/engines/startpage.png',
     homeUrl: 'https://www.startpage.com',
     queryPrefix: 'https://www.startpage.com/sp/search?query=',
   );
@@ -46,6 +52,7 @@ enum SearchEngine {
     required this.label,
     required this.shortLabel,
     required this.badge,
+    required this.logoAssetPath,
     required this.homeUrl,
     required this.queryPrefix,
   });
@@ -53,6 +60,7 @@ enum SearchEngine {
   final String label;
   final String shortLabel;
   final String badge;
+  final String logoAssetPath;
   final String homeUrl;
   final String queryPrefix;
 
@@ -480,5 +488,148 @@ class OmniboxParser {
       return clean;
     }
     return firstPart[0].toUpperCase() + firstPart.substring(1);
+  }
+
+  static const Set<String> _twoPartCountryTlds = <String>{
+    'co.uk',
+    'org.uk',
+    'ac.uk',
+    'gov.uk',
+    'co.in',
+    'net.in',
+    'org.in',
+    'ac.in',
+    'com.au',
+    'net.au',
+    'org.au',
+    'co.jp',
+    'ne.jp',
+    'or.jp',
+    'com.br',
+    'com.mx',
+    'co.za',
+    'co.nz',
+    'com.sg',
+    'com.hk',
+    'com.tw',
+    'co.kr',
+    'com.tr',
+    'com.ar',
+    'co.id',
+    'com.my',
+    'com.ph',
+    'com.vn',
+  };
+
+  /// Extracts the canonical registrable root domain (eTLD+1) and normalizes
+  /// well-known companion/shortener hosts so same-site redirects are recognized.
+  static String registrableDomain(String? rawUrlOrHost) {
+    final String clean = cleanDomain(rawUrlOrHost);
+    if (clean.isEmpty) {
+      return '';
+    }
+    // Normalize well-known companion domains to canonical brand root
+    if (clean == 'youtu.be' ||
+        clean == 'youtube-nocookie.com' ||
+        clean.endsWith('.youtube.com')) {
+      return 'youtube.com';
+    }
+    if (clean == 'redd.it' || clean.endsWith('.reddit.com')) {
+      return 'reddit.com';
+    }
+    if (clean == 'fb.com' || clean.endsWith('.facebook.com')) {
+      return 'facebook.com';
+    }
+    if (clean == 'x.com' ||
+        clean.endsWith('.x.com') ||
+        clean == 'twitter.com' ||
+        clean.endsWith('.twitter.com')) {
+      return 'x.com';
+    }
+    if (clean == 'google.com' ||
+        clean.startsWith('google.co.') ||
+        clean.startsWith('google.com.') ||
+        RegExp(r'^google\.[a-z]{2,3}$').hasMatch(clean)) {
+      return 'google.com';
+    }
+
+    final List<String> labels = clean.split('.');
+    if (labels.length <= 2) {
+      return clean;
+    }
+    final String lastTwo =
+        '${labels[labels.length - 2]}.${labels[labels.length - 1]}';
+    if (_twoPartCountryTlds.contains(lastTwo) && labels.length >= 3) {
+      return '${labels[labels.length - 3]}.$lastTwo';
+    }
+    return lastTwo;
+  }
+
+  /// Returns true when [urlOrHostA] and [urlOrHostB] belong to the same website.
+  static bool isSameWebsite(String? urlOrHostA, String? urlOrHostB) {
+    final String rootA = registrableDomain(urlOrHostA);
+    final String rootB = registrableDomain(urlOrHostB);
+    if (rootA.isEmpty || rootB.isEmpty) {
+      return false;
+    }
+    return rootA == rootB;
+  }
+
+  /// Extracts the active search query or topic when the user switches search
+  /// engines while viewing any search results page or regular website.
+  static String extractSearchOrSiteQuery({
+    String? currentUrl,
+    String? pageTitle,
+    String? typedText,
+  }) {
+    final String rawTyped = (typedText ?? '').trim();
+    if (rawTyped.isNotEmpty) {
+      final String typedQ = extractAnySearchQuery(rawTyped);
+      if (typedQ.isNotEmpty) {
+        return typedQ;
+      }
+      if (!looksLikeDirectDestination(rawTyped)) {
+        return rawTyped;
+      }
+    }
+
+    final String engineQ = extractAnySearchQuery(currentUrl);
+    if (engineQ.isNotEmpty) {
+      return engineQ;
+    }
+
+    if (currentUrl != null && currentUrl.isNotEmpty) {
+      final Uri? uri = Uri.tryParse(currentUrl);
+      if (uri != null) {
+        for (final String key in const <String>[
+          'q',
+          'query',
+          'search_query',
+          'search',
+          's',
+          'k',
+          'keyword',
+        ]) {
+          final String val = (uri.queryParameters[key] ?? '').trim();
+          if (val.isNotEmpty) {
+            return val;
+          }
+        }
+      }
+    }
+
+    final String cleanTitle = (pageTitle ?? '').trim();
+    if (cleanTitle.isNotEmpty &&
+        cleanTitle != 'New Tab' &&
+        cleanTitle != 'Incognito Tab' &&
+        cleanTitle != 'Downloads' &&
+        cleanTitle != 'Home' &&
+        !cleanTitle.startsWith('http://') &&
+        !cleanTitle.startsWith('https://')) {
+      return cleanTitle;
+    }
+
+    final String dom = cleanDomain(currentUrl);
+    return dom;
   }
 }
