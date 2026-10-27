@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="heaven_widget_description">Fast search, voice search &amp; visual camera search on your Home Screen</string>
+    <color name="heaven_widget_bg">#F7FAFF</color>
+    <color name="heaven_widget_stroke">#4D2563EB</color>
+    <color name="heaven_widget_hint">#64748B</color>
+    <color name="heaven_widget_accent">#2563EB</color>
+</resources>

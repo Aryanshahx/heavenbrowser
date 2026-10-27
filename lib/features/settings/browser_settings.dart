@@ -1812,7 +1812,18 @@ class BrowserSettingsController extends ChangeNotifier {
   Future<void> setSearchEngine(SearchEngine engine) async {
     _searchEngine = engine;
     await _prefs.setString(_keySearchEngine, engine.name);
+    unawaited(NativeShieldBridge.instance.refreshSearchWidgets());
     notifyListeners();
+  }
+
+  static const String _keyPromptedDefaultBrowser =
+      'heaven_prompted_default_browser_v1';
+
+  bool get hasPromptedDefaultBrowser =>
+      _prefs.getBool(_keyPromptedDefaultBrowser) ?? false;
+
+  Future<void> markPromptedDefaultBrowser() async {
+    await _prefs.setBool(_keyPromptedDefaultBrowser, true);
   }
 
   Future<void> setThemeMode(ThemeMode mode) async {

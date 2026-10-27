@@ -34,13 +34,31 @@ public class HeavenFileProvider extends ContentProvider {
     return true;
   }
 
-  private File resolveSafeFile(Uri uri) throws FileNotFoundException {
+  private boolean isCaptureCacheFile(File target) {
+    Context ctx = getContext();
+    if (ctx == null) {
+      return false;
+    }
+    try {
+      File captureDir = new File(ctx.getCacheDir(), "lens_capture").getCanonicalFile();
+      return target.getPath().startsWith(captureDir.getPath() + File.separator);
+    } catch (IOException e) {
+      return false;
+    }
+  }
+
+  private File resolveSafeFile(Uri uri, boolean allowCaptureWrite) throws FileNotFoundException {
     String rawPath = uri.getQueryParameter("path");
     if (rawPath == null || rawPath.isEmpty()) {
       throw new FileNotFoundException("Missing file path");
     }
     try {
       File target = new File(rawPath).getCanonicalFile();
+      if (isCaptureCacheFile(target)) {
+        if (allowCaptureWrite || (target.exists() && target.isFile())) {
+          return target;
+        }
+      }
       boolean allowed = false;
 
       File extRoot = Environment.getExternalStorageDirectory();
@@ -87,7 +105,7 @@ public class HeavenFileProvider extends ContentProvider {
       String[] selectionArgs,
       String sortOrder) {
     try {
-      File file = resolveSafeFile(uri);
+      File file = resolveSafeFile(uri, false);
       String[] cols =
           projection != null
               ? projection
@@ -136,7 +154,15 @@ public class HeavenFileProvider extends ContentProvider {
 
   @Override
   public ParcelFileDescriptor openFile(Uri uri, String mode) throws FileNotFoundException {
-    File file = resolveSafeFile(uri);
+    boolean wantsWrite = mode != null && (mode.contains("w") || mode.contains("t"));
+    File file = resolveSafeFile(uri, wantsWrite);
+    if (wantsWrite && isCaptureCacheFile(file)) {
+      int pfdMode =
+          ParcelFileDescriptor.MODE_READ_WRITE
+              | ParcelFileDescriptor.MODE_CREATE
+              | ParcelFileDescriptor.MODE_TRUNCATE;
+      return ParcelFileDescriptor.open(file, pfdMode);
+    }
     return ParcelFileDescriptor.open(file, ParcelFileDescriptor.MODE_READ_ONLY);
   }
 

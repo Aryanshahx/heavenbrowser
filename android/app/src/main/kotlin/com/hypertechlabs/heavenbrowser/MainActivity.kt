@@ -1,5 +1,6 @@
 package com.hypertechlabs.heavenbrowser
 
+import android.content.Intent
 import android.os.Build
 import android.os.Bundle
 import io.flutter.embedding.android.FlutterActivity
@@ -7,11 +8,15 @@ import io.flutter.embedding.engine.FlutterEngine
 
 class MainActivity : FlutterActivity() {
     private var shieldPlugin: HeavenShieldPlugin? = null
+    private var pendingStartupIntent: Intent? = null
     private var refreshRateConfigured: Boolean = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableHighestRefreshRate()
+        if (savedInstanceState == null && intent != null) {
+            pendingStartupIntent = intent
+        }
     }
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
@@ -19,6 +24,21 @@ class MainActivity : FlutterActivity() {
         val plugin = HeavenShieldPlugin(this)
         shieldPlugin = plugin
         flutterEngine.plugins.add(plugin)
+        pendingStartupIntent?.let { initial ->
+            pendingStartupIntent = null
+            plugin.handleIncomingIntent(initial, false)
+        }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        val plugin = shieldPlugin
+        if (plugin != null) {
+            plugin.handleIncomingIntent(intent, true)
+        } else {
+            pendingStartupIntent = intent
+        }
     }
 
     override fun onPause() {
@@ -34,6 +54,7 @@ class MainActivity : FlutterActivity() {
     override fun onResume() {
         super.onResume()
         shieldPlugin?.onActivityResumed()
+        HeavenSearchWidgetProvider.refreshAllWidgets(this)
     }
 
     override fun onTrimMemory(level: Int) {

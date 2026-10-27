@@ -9,6 +9,7 @@ import android.app.Notification;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.app.PendingIntent;
+import android.app.role.RoleManager;
 import android.content.ActivityNotFoundException;
 import android.content.BroadcastReceiver;
 import android.content.Context;
@@ -16,6 +17,7 @@ import android.content.Intent;
 import android.content.IntentFilter;
 import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
+import android.content.pm.ResolveInfo;
 import android.content.pm.ShortcutInfo;
 import android.content.pm.ShortcutManager;
 import android.graphics.Bitmap;
@@ -38,9 +40,16 @@ import android.os.Handler;
 import android.os.Looper;
 import android.os.Message;
 import android.os.SystemClock;
+import android.print.PrintAttributes;
+import android.print.PrintDocumentAdapter;
+import android.print.PrintManager;
 import android.provider.DocumentsContract;
+import android.provider.MediaStore;
 import android.provider.Settings;
 import android.speech.RecognizerIntent;
+import android.speech.tts.TextToSpeech;
+import android.speech.tts.UtteranceProgressListener;
+import android.util.Base64;
 import android.view.HapticFeedbackConstants;
 import android.view.MotionEvent;
 import android.view.View;
@@ -105,6 +114,10 @@ public class HeavenShieldPlugin
   private static final int FOLDER_PICKER_REQUEST_CODE = 49025;
   private static final int SITE_HARDWARE_PERM_REQUEST_CODE = 49027;
   private static final int LEGACY_CREDENTIAL_REQUEST_CODE = 49028;
+  private static final int DEFAULT_BROWSER_ROLE_REQUEST_CODE = 49029;
+  private static final int VISUAL_CAMERA_CAPTURE_REQUEST_CODE = 49030;
+  private static final int VISUAL_GALLERY_PICK_REQUEST_CODE = 49031;
+  private static final int VISUAL_CAMERA_PERM_REQUEST_CODE = 49032;
 
   private static final String DESKTOP_CHROME_WIN_UA =
       "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -295,9 +308,17 @@ public class HeavenShieldPlugin
   private MethodChannel.Result pendingNotifPermResult;
   private MethodChannel.Result pendingSiteHardwarePermResult;
   private MethodChannel.Result pendingBiometricResult;
+  private MethodChannel.Result pendingDefaultBrowserResult;
+  private MethodChannel.Result pendingVisualSearchResult;
+  private File pendingCameraCaptureFile;
   private HeavenVpnManager vpnManager;
   private HeavenShieldEngine shieldEngine;
-  private HeavenAiManager aiManager;
+  private TextToSpeech ttsEngine;
+  private volatile boolean ttsReady = false;
+  private volatile float ttsSpeechRate = 1.0f;
+  private volatile String pendingTtsText;
+  private volatile String pendingTtsUtteranceId;
+  private Map<String, Object> pendingInitialLaunchAction;
   private volatile long activeFocusedWebViewId = -1L;
 
   private final ExecutorService downloadPool =
@@ -372,7 +393,6 @@ public class HeavenShieldPlugin
     this.downloadNotificationsEnabled = sp.getBoolean(PREF_DL_NOTIFS_ENABLED, true);
     this.vpnManager = new HeavenVpnManager(appCtx);
     this.shieldEngine = new HeavenShieldEngine(appCtx);
-    this.aiManager = new HeavenAiManager(appCtx);
     this.channel = new MethodChannel(binding.getBinaryMessenger(), CHANNEL_NAME);
     this.channel.setMethodCallHandler(this);
     registerDownloadControlReceiver(appCtx);
@@ -391,10 +411,7 @@ public class HeavenShieldPlugin
     unregisterDownloadControlReceiver(binding.getApplicationContext());
     unregisterMediaCommandReceiver(binding.getApplicationContext());
     stopBackgroundMediaService();
-    if (this.aiManager != null) {
-      this.aiManager.dispose();
-      this.aiManager = null;
-    }
+    shutdownTtsEngine();
     this.shieldEngine = null;
     if (this.channel != null) {
       this.channel.setMethodCallHandler(null);
@@ -810,12 +827,44 @@ public class HeavenShieldPlugin
       }
       return true;
     }
+    if (requestCode == DEFAULT_BROWSER_ROLE_REQUEST_CODE) {
+      MethodChannel.Result roleCb = this.pendingDefaultBrowserResult;
+      this.pendingDefaultBrowserResult = null;
+      if (roleCb != null) {
+        roleCb.success(isDefaultBrowser());
+      }
+      return true;
+    }
+    if (requestCode == VISUAL_CAMERA_CAPTURE_REQUEST_CODE
+        || requestCode == VISUAL_GALLERY_PICK_REQUEST_CODE) {
+      handleVisualSearchActivityResult(requestCode, resultCode, data);
+      return true;
+    }
     return false;
   }
 
   @Override
   public boolean onRequestPermissionsResult(
       int requestCode, String[] permissions, int[] grantResults) {
+    if (requestCode == VISUAL_CAMERA_PERM_REQUEST_CODE) {
+      boolean granted =
+          grantResults != null
+              && grantResults.length > 0
+              && grantResults[0] == PackageManager.PERMISSION_GRANTED;
+      if (granted) {
+        launchCameraCaptureIntent();
+      } else {
+        MethodChannel.Result cb = this.pendingVisualSearchResult;
+        this.pendingVisualSearchResult = null;
+        if (cb != null) {
+          Map<String, Object> err = new HashMap<>(4);
+          err.put("ok", false);
+          err.put("error", "Camera permission denied");
+          cb.success(err);
+        }
+      }
+      return true;
+    }
     if (requestCode == NOTIF_PERM_REQUEST_CODE) {
       MethodChannel.Result cb = this.pendingNotifPermResult;
       this.pendingNotifPermResult = null;
@@ -853,6 +902,71 @@ public class HeavenShieldPlugin
     switch (call.method) {
       case "openDefaultBrowserSettings":
         result.success(openDefaultBrowserSettings());
+        break;
+
+      case "isDefaultBrowser":
+        result.success(isDefaultBrowser());
+        break;
+
+      case "requestDefaultBrowserRole":
+        handleRequestDefaultBrowserRole(result);
+        break;
+
+      case "consumeInitialLaunchAction":
+        Map<String, Object> actionPayload = this.pendingInitialLaunchAction;
+        this.pendingInitialLaunchAction = null;
+        result.success(actionPayload);
+        break;
+
+      case "requestPinSearchWidget":
+        Context widgetCtx = resolveContext();
+        result.success(HeavenSearchWidgetProvider.requestPinToHomeScreen(widgetCtx));
+        break;
+
+      case "refreshSearchWidgets":
+        HeavenSearchWidgetProvider.refreshAllWidgets(resolveContext());
+        result.success(true);
+        break;
+
+      case "captureVisualSearchImage":
+        String imgSource = call.argument("source");
+        handleCaptureVisualSearchImage(imgSource != null ? imgSource : "camera", result);
+        break;
+
+      case "ttsSpeak":
+        String speakText = call.argument("text");
+        Double speakRate = call.argument("rate");
+        String uttId = call.argument("utteranceId");
+        handleTtsSpeak(
+            speakText != null ? speakText : "",
+            speakRate != null ? speakRate.floatValue() : 1.0f,
+            uttId != null ? uttId : "hb_utt",
+            result);
+        break;
+
+      case "ttsStop":
+        handleTtsStop();
+        result.success(true);
+        break;
+
+      case "ttsIsSpeaking":
+        result.success(this.ttsEngine != null && this.ttsReady && this.ttsEngine.isSpeaking());
+        break;
+
+      case "saveOfflinePage":
+        handleSaveOfflinePage(call, result);
+        break;
+
+      case "loadOfflineArchive":
+        handleLoadOfflineArchive(call, result);
+        break;
+
+      case "deleteOfflinePage":
+        handleDeleteOfflinePage(call, result);
+        break;
+
+      case "saveWebPageAsPdf":
+        handleSaveWebPageAsPdf(call, result);
         break;
 
       case "startVoiceSearch":
@@ -1169,54 +1283,6 @@ public class HeavenShieldPlugin
           vpnManager.getVpnStatus(result);
         } else {
           result.success(Collections.singletonMap("connected", false));
-        }
-        break;
-
-      case "checkOnDeviceAiStatus":
-        if (aiManager != null) {
-          aiManager.checkStatusAsync(result);
-        } else {
-          result.success(Collections.singletonMap("status", "unavailable"));
-        }
-        break;
-
-      case "downloadOnDeviceAiModel":
-        if (aiManager != null) {
-          aiManager.downloadModelAsync(
-              (state, downloaded, total, err) -> {
-                MethodChannel ch = this.channel;
-                if (ch != null) {
-                  Map<String, Object> ev = new HashMap<>(6);
-                  ev.put("state", state);
-                  ev.put("bytesDownloaded", downloaded);
-                  ev.put("totalBytes", total);
-                  if (err != null) {
-                    ev.put("error", err);
-                  }
-                  ch.invokeMethod("onAiDownloadProgress", ev);
-                }
-              },
-              result);
-        } else {
-          result.success(Collections.singletonMap("ok", false));
-        }
-        break;
-
-      case "summarizeWithOnDeviceAi":
-        if (aiManager != null) {
-          String textArg = call.argument("text");
-          aiManager.summarizeArticleAsync(textArg != null ? textArg : "", result);
-        } else {
-          result.success(Collections.singletonMap("ok", false));
-        }
-        break;
-
-      case "promptOnDeviceAi":
-        if (aiManager != null) {
-          String promptArg = call.argument("prompt");
-          aiManager.generatePromptAsync(promptArg != null ? promptArg : "", result);
-        } else {
-          result.success(Collections.singletonMap("ok", false));
         }
         break;
 
@@ -1659,6 +1725,8 @@ public class HeavenShieldPlugin
 
       WebSettings ws = webView.getSettings();
       ws.setMediaPlaybackRequiresUserGesture(false);
+      ws.setJavaScriptCanOpenWindowsAutomatically(false);
+      ws.setSupportMultipleWindows(false);
       ws.setDomStorageEnabled(true);
       ws.setCacheMode(WebSettings.LOAD_DEFAULT);
       ws.setMixedContentMode(WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE);
@@ -3941,6 +4009,561 @@ public class HeavenShieldPlugin
     } catch (Throwable e) {
       result.success(false);
     }
+  }
+
+  public void handleIncomingIntent(Intent intent, boolean isNewRuntimeIntent) {
+    if (intent == null) {
+      return;
+    }
+    Map<String, Object> payload = null;
+    String widgetAction = intent.getStringExtra(HeavenSearchWidgetProvider.EXTRA_WIDGET_ACTION);
+    Uri data = intent.getData();
+
+    if (widgetAction != null && !widgetAction.trim().isEmpty()) {
+      payload = new HashMap<>(4);
+      payload.put("type", widgetAction.trim());
+    } else if (data != null) {
+      String scheme = data.getScheme() != null ? data.getScheme().toLowerCase(Locale.US) : "";
+      if ("heaven".equals(scheme) && "widget".equals(data.getHost())) {
+        String seg = data.getLastPathSegment();
+        if (seg != null && !seg.isEmpty()) {
+          payload = new HashMap<>(4);
+          payload.put("type", seg);
+        }
+      } else if ("http".equals(scheme) || "https".equals(scheme)) {
+        payload = new HashMap<>(4);
+        payload.put("type", "url");
+        payload.put("url", data.toString());
+      }
+    }
+
+    if (payload == null) {
+      return;
+    }
+    if (isNewRuntimeIntent && this.channel != null) {
+      final Map<String, Object> dispatch = payload;
+      mainHandler.post(
+          () -> {
+            MethodChannel ch = this.channel;
+            if (ch != null) {
+              ch.invokeMethod("onExternalLaunchAction", dispatch);
+            } else {
+              this.pendingInitialLaunchAction = dispatch;
+            }
+          });
+    } else {
+      this.pendingInitialLaunchAction = payload;
+    }
+  }
+
+  private boolean isDefaultBrowser() {
+    Context ctx = resolveContext();
+    if (ctx == null) {
+      return false;
+    }
+    try {
+      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+        RoleManager rm = ctx.getSystemService(RoleManager.class);
+        if (rm != null && rm.isRoleAvailable(RoleManager.ROLE_BROWSER)) {
+          return rm.isRoleHeld(RoleManager.ROLE_BROWSER);
+        }
+      }
+      Intent probe = new Intent(Intent.ACTION_VIEW, Uri.parse("https://www.example.com"));
+      ResolveInfo resolved =
+          ctx.getPackageManager().resolveActivity(probe, PackageManager.MATCH_DEFAULT_ONLY);
+      return resolved != null
+          && resolved.activityInfo != null
+          && ctx.getPackageName().equals(resolved.activityInfo.packageName);
+    } catch (Throwable ignored) {
+      return false;
+    }
+  }
+
+  private void handleRequestDefaultBrowserRole(MethodChannel.Result result) {
+    if (isDefaultBrowser()) {
+      result.success(true);
+      return;
+    }
+    Activity act = this.activity;
+    if (act != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+      try {
+        RoleManager rm = act.getSystemService(RoleManager.class);
+        if (rm != null && rm.isRoleAvailable(RoleManager.ROLE_BROWSER)) {
+          Intent roleIntent = rm.createRequestRoleIntent(RoleManager.ROLE_BROWSER);
+          this.pendingDefaultBrowserResult = result;
+          act.startActivityForResult(roleIntent, DEFAULT_BROWSER_ROLE_REQUEST_CODE);
+          return;
+        }
+      } catch (Throwable ignored) {
+        this.pendingDefaultBrowserResult = null;
+      }
+    }
+    result.success(openDefaultBrowserSettings());
+  }
+
+  private void handleTtsSpeak(
+      final String text, final float rate, final String utteranceId, final MethodChannel.Result result) {
+    final String clean = text != null ? text.trim() : "";
+    if (clean.isEmpty()) {
+      result.success(false);
+      return;
+    }
+    final Context ctx = resolveContext();
+    if (ctx == null) {
+      result.success(false);
+      return;
+    }
+    this.ttsSpeechRate = Math.max(0.5f, Math.min(2.5f, rate));
+    if (this.ttsEngine != null && this.ttsReady) {
+      this.ttsEngine.setSpeechRate(this.ttsSpeechRate);
+      int code =
+          this.ttsEngine.speak(clean, TextToSpeech.QUEUE_FLUSH, null, utteranceId);
+      result.success(code == TextToSpeech.SUCCESS);
+      return;
+    }
+
+    this.pendingTtsText = clean;
+    this.pendingTtsUtteranceId = utteranceId;
+    if (this.ttsEngine == null) {
+      this.ttsEngine =
+          new TextToSpeech(
+              ctx.getApplicationContext(),
+              status -> {
+                if (status == TextToSpeech.SUCCESS && this.ttsEngine != null) {
+                  this.ttsReady = true;
+                  try {
+                    this.ttsEngine.setLanguage(Locale.getDefault());
+                  } catch (Throwable ignored) {
+                  }
+                  this.ttsEngine.setOnUtteranceProgressListener(
+                      new UtteranceProgressListener() {
+                        @Override
+                        public void onStart(String id) {
+                          emitTtsEvent("start", id);
+                        }
+
+                        @Override
+                        public void onDone(String id) {
+                          emitTtsEvent("done", id);
+                        }
+
+                        @Override
+                        @SuppressWarnings("deprecation")
+                        public void onError(String id) {
+                          emitTtsEvent("error", id);
+                        }
+
+                        @Override
+                        public void onError(String id, int errorCode) {
+                          emitTtsEvent("error", id);
+                        }
+                      });
+                  String queued = this.pendingTtsText;
+                  String qId = this.pendingTtsUtteranceId;
+                  this.pendingTtsText = null;
+                  this.pendingTtsUtteranceId = null;
+                  if (queued != null && !queued.isEmpty()) {
+                    this.ttsEngine.setSpeechRate(this.ttsSpeechRate);
+                    this.ttsEngine.speak(
+                        queued, TextToSpeech.QUEUE_FLUSH, null, qId != null ? qId : "hb_utt");
+                  }
+                } else {
+                  this.ttsReady = false;
+                  emitTtsEvent("error", this.pendingTtsUtteranceId);
+                }
+              });
+    }
+    result.success(true);
+  }
+
+  private void emitTtsEvent(final String eventName, final String utteranceId) {
+    mainHandler.post(
+        () -> {
+          MethodChannel ch = this.channel;
+          if (ch != null) {
+            Map<String, Object> ev = new HashMap<>(4);
+            ev.put("event", eventName);
+            ev.put("utteranceId", utteranceId != null ? utteranceId : "");
+            ch.invokeMethod("onTtsEvent", ev);
+          }
+        });
+  }
+
+  private void handleTtsStop() {
+    this.pendingTtsText = null;
+    if (this.ttsEngine != null) {
+      try {
+        this.ttsEngine.stop();
+      } catch (Throwable ignored) {
+      }
+    }
+  }
+
+  private void shutdownTtsEngine() {
+    this.pendingTtsText = null;
+    this.ttsReady = false;
+    if (this.ttsEngine != null) {
+      try {
+        this.ttsEngine.stop();
+        this.ttsEngine.shutdown();
+      } catch (Throwable ignored) {
+      }
+      this.ttsEngine = null;
+    }
+  }
+
+  private File getOfflinePagesDir(Context ctx) {
+    File dir = new File(ctx.getFilesDir(), "offline_pages");
+    if (!dir.exists()) {
+      //noinspection ResultOfMethodCallIgnored
+      dir.mkdirs();
+    }
+    return dir;
+  }
+
+  private void handleSaveOfflinePage(final MethodCall call, final MethodChannel.Result result) {
+    final Context ctx = resolveContext();
+    if (ctx == null || this.pluginBinding == null) {
+      result.success(Collections.singletonMap("ok", false));
+      return;
+    }
+    Object idObj = call.argument("webViewId");
+    final long wvId = (idObj instanceof Number) ? ((Number) idObj).longValue() : activeFocusedWebViewId;
+    final String rawTitle = call.argument("title");
+    final String rawUrl = call.argument("url");
+
+    WebView wv = WebViewFlutterAndroidExternalApi.getWebView(this.pluginBinding, wvId);
+    if (wv == null) {
+      result.success(Collections.singletonMap("ok", false));
+      return;
+    }
+
+    File dir = getOfflinePagesDir(ctx);
+    final long nowMs = System.currentTimeMillis();
+    final String pageId = "offline_" + nowMs;
+    final File outFile = new File(dir, pageId + ".mht");
+
+    try {
+      wv.saveWebArchive(
+          outFile.getAbsolutePath(),
+          false,
+          savedPath -> {
+            if (savedPath == null || savedPath.isEmpty()) {
+              result.success(Collections.singletonMap("ok", false));
+              return;
+            }
+            File savedFile = new File(savedPath);
+            if (!savedFile.exists() || savedFile.length() <= 0L) {
+              result.success(Collections.singletonMap("ok", false));
+              return;
+            }
+            Map<String, Object> out = new HashMap<>(8);
+            out.put("ok", true);
+            out.put("id", pageId);
+            out.put("title", rawTitle != null && !rawTitle.trim().isEmpty() ? rawTitle.trim() : "Saved Page");
+            out.put("url", rawUrl != null ? rawUrl : "");
+            out.put("filePath", savedFile.getAbsolutePath());
+            out.put("sizeBytes", savedFile.length());
+            out.put("savedAtMs", nowMs);
+            result.success(out);
+          });
+    } catch (Throwable e) {
+      result.success(Collections.singletonMap("ok", false));
+    }
+  }
+
+  @SuppressLint("SetJavaScriptEnabled")
+  private void handleLoadOfflineArchive(final MethodCall call, final MethodChannel.Result result) {
+    final Context ctx = resolveContext();
+    if (ctx == null || this.pluginBinding == null) {
+      result.success(false);
+      return;
+    }
+    Object idObj = call.argument("webViewId");
+    final long wvId = (idObj instanceof Number) ? ((Number) idObj).longValue() : activeFocusedWebViewId;
+    String rawPath = call.argument("filePath");
+    if (rawPath == null || rawPath.trim().isEmpty()) {
+      result.success(false);
+      return;
+    }
+    try {
+      File offlineDir = getOfflinePagesDir(ctx).getCanonicalFile();
+      File target = new File(rawPath.trim()).getCanonicalFile();
+      if (!target.getPath().startsWith(offlineDir.getPath() + File.separator)
+          || !target.exists()
+          || !target.isFile()) {
+        result.success(false);
+        return;
+      }
+      WebView wv = WebViewFlutterAndroidExternalApi.getWebView(this.pluginBinding, wvId);
+      if (wv == null) {
+        result.success(false);
+        return;
+      }
+      wv.getSettings().setAllowFileAccess(true);
+      wv.loadUrl(Uri.fromFile(target).toString());
+      result.success(true);
+    } catch (Throwable ignored) {
+      result.success(false);
+    }
+  }
+
+  private void handleDeleteOfflinePage(final MethodCall call, final MethodChannel.Result result) {
+    final Context ctx = resolveContext();
+    String rawPath = call.argument("filePath");
+    if (ctx == null || rawPath == null || rawPath.trim().isEmpty()) {
+      result.success(false);
+      return;
+    }
+    try {
+      File offlineDir = getOfflinePagesDir(ctx).getCanonicalFile();
+      File target = new File(rawPath.trim()).getCanonicalFile();
+      if (target.getPath().startsWith(offlineDir.getPath() + File.separator) && target.exists()) {
+        result.success(target.delete());
+        return;
+      }
+    } catch (Throwable ignored) {
+    }
+    result.success(false);
+  }
+
+  private void handleSaveWebPageAsPdf(final MethodCall call, final MethodChannel.Result result) {
+    final Activity act = this.activity;
+    if (act == null || this.pluginBinding == null) {
+      result.success(false);
+      return;
+    }
+    Object idObj = call.argument("webViewId");
+    final long wvId = (idObj instanceof Number) ? ((Number) idObj).longValue() : activeFocusedWebViewId;
+    String rawTitle = call.argument("title");
+    WebView wv = WebViewFlutterAndroidExternalApi.getWebView(this.pluginBinding, wvId);
+    if (wv == null) {
+      result.success(false);
+      return;
+    }
+    try {
+      PrintManager pm = (PrintManager) act.getSystemService(Context.PRINT_SERVICE);
+      if (pm == null) {
+        result.success(false);
+        return;
+      }
+      String cleanName =
+          (rawTitle != null ? rawTitle : "Heaven_Webpage")
+              .replaceAll("[^a-zA-Z0-9._\\- ]", "_")
+              .trim();
+      if (cleanName.isEmpty()) {
+        cleanName = "Heaven_Webpage";
+      }
+      if (cleanName.length() > 64) {
+        cleanName = cleanName.substring(0, 64);
+      }
+      PrintDocumentAdapter adapter = wv.createPrintDocumentAdapter(cleanName);
+      PrintAttributes attrs =
+          new PrintAttributes.Builder()
+              .setMediaSize(PrintAttributes.MediaSize.ISO_A4)
+              .setResolution(new PrintAttributes.Resolution("pdf", "PDF", 300, 300))
+              .setMinMargins(PrintAttributes.Margins.NO_MARGINS)
+              .build();
+      pm.print(cleanName, adapter, attrs);
+      result.success(true);
+    } catch (Throwable e) {
+      result.success(false);
+    }
+  }
+
+  private void handleCaptureVisualSearchImage(String source, MethodChannel.Result result) {
+    Activity act = this.activity;
+    if (act == null) {
+      result.success(Collections.singletonMap("ok", false));
+      return;
+    }
+    this.pendingVisualSearchResult = result;
+    if ("gallery".equalsIgnoreCase(source)) {
+      try {
+        Intent pick = new Intent(Intent.ACTION_GET_CONTENT);
+        pick.setType("image/*");
+        pick.addCategory(Intent.CATEGORY_OPENABLE);
+        act.startActivityForResult(
+            Intent.createChooser(pick, "Select Image for Visual Search"),
+            VISUAL_GALLERY_PICK_REQUEST_CODE);
+      } catch (Throwable e) {
+        this.pendingVisualSearchResult = null;
+        result.success(Collections.singletonMap("ok", false));
+      }
+      return;
+    }
+
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M
+        && act.checkSelfPermission(Manifest.permission.CAMERA)
+            != PackageManager.PERMISSION_GRANTED) {
+      act.requestPermissions(
+          new String[] {Manifest.permission.CAMERA}, VISUAL_CAMERA_PERM_REQUEST_CODE);
+      return;
+    }
+    launchCameraCaptureIntent();
+  }
+
+  private void launchCameraCaptureIntent() {
+    Activity act = this.activity;
+    MethodChannel.Result cb = this.pendingVisualSearchResult;
+    if (act == null || cb == null) {
+      return;
+    }
+    try {
+      File captureDir = new File(act.getCacheDir(), "lens_capture");
+      if (!captureDir.exists()) {
+        //noinspection ResultOfMethodCallIgnored
+        captureDir.mkdirs();
+      }
+      File photoFile = new File(captureDir, "lens_" + System.currentTimeMillis() + ".jpg");
+      if (!photoFile.exists()) {
+        //noinspection ResultOfMethodCallIgnored
+        photoFile.createNewFile();
+      }
+      this.pendingCameraCaptureFile = photoFile;
+      Uri outputUri = HeavenFileProvider.getUriForFile(photoFile);
+      Intent camIntent = new Intent(MediaStore.ACTION_IMAGE_CAPTURE);
+      camIntent.putExtra(MediaStore.EXTRA_OUTPUT, outputUri);
+      camIntent.addFlags(
+          Intent.FLAG_GRANT_WRITE_URI_PERMISSION | Intent.FLAG_GRANT_READ_URI_PERMISSION);
+      act.startActivityForResult(camIntent, VISUAL_CAMERA_CAPTURE_REQUEST_CODE);
+    } catch (ActivityNotFoundException e) {
+      this.pendingVisualSearchResult = null;
+      Map<String, Object> err = new HashMap<>(4);
+      err.put("ok", false);
+      err.put("error", "No camera app found");
+      cb.success(err);
+    } catch (Throwable e) {
+      this.pendingVisualSearchResult = null;
+      cb.success(Collections.singletonMap("ok", false));
+    }
+  }
+
+  @SuppressWarnings("deprecation")
+  private void handleVisualSearchActivityResult(
+      final int requestCode, final int resultCode, final Intent data) {
+    final MethodChannel.Result cb = this.pendingVisualSearchResult;
+    this.pendingVisualSearchResult = null;
+    final File capturedFile = this.pendingCameraCaptureFile;
+    this.pendingCameraCaptureFile = null;
+
+    if (cb == null) {
+      if (capturedFile != null && capturedFile.exists()) {
+        //noinspection ResultOfMethodCallIgnored
+        capturedFile.delete();
+      }
+      return;
+    }
+    if (resultCode != Activity.RESULT_OK) {
+      if (capturedFile != null && capturedFile.exists()) {
+        //noinspection ResultOfMethodCallIgnored
+        capturedFile.delete();
+      }
+      Map<String, Object> cancelled = new HashMap<>(4);
+      cancelled.put("ok", false);
+      cancelled.put("cancelled", true);
+      cb.success(cancelled);
+      return;
+    }
+
+    final Context ctx = resolveContext();
+    final Uri pickedUri = (data != null) ? data.getData() : null;
+    Bitmap extraThumb = null;
+    if (data != null && data.getExtras() != null) {
+      Object rawExtra = data.getExtras().get("data");
+      if (rawExtra instanceof Bitmap) {
+        extraThumb = (Bitmap) rawExtra;
+      }
+    }
+    final Bitmap fallbackThumb = extraThumb;
+
+    downloadPool.execute(
+        () -> {
+          Bitmap decoded = null;
+          try {
+            if (requestCode == VISUAL_CAMERA_CAPTURE_REQUEST_CODE
+                && capturedFile != null
+                && capturedFile.exists()
+                && capturedFile.length() > 64L) {
+              decoded = decodeScaledBitmapFromFile(capturedFile, 1280);
+            }
+            if (decoded == null && pickedUri != null && ctx != null) {
+              decoded = decodeScaledBitmapFromUri(ctx, pickedUri, 1280);
+            }
+            if (decoded == null && fallbackThumb != null) {
+              decoded = fallbackThumb;
+            }
+            if (decoded == null) {
+              mainHandler.post(() -> cb.success(Collections.singletonMap("ok", false)));
+              return;
+            }
+            ByteArrayOutputStream bos = new ByteArrayOutputStream(65536);
+            decoded.compress(Bitmap.CompressFormat.JPEG, 84, bos);
+            final String b64 = Base64.encodeToString(bos.toByteArray(), Base64.NO_WRAP);
+            mainHandler.post(
+                () -> {
+                  Map<String, Object> out = new HashMap<>(4);
+                  out.put("ok", true);
+                  out.put("base64Jpeg", b64);
+                  cb.success(out);
+                });
+          } catch (Throwable e) {
+            mainHandler.post(() -> cb.success(Collections.singletonMap("ok", false)));
+          } finally {
+            if (capturedFile != null && capturedFile.exists()) {
+              //noinspection ResultOfMethodCallIgnored
+              capturedFile.delete();
+            }
+          }
+        });
+  }
+
+  private static Bitmap decodeScaledBitmapFromFile(File file, int maxDim) {
+    BitmapFactory.Options bounds = new BitmapFactory.Options();
+    bounds.inJustDecodeBounds = true;
+    BitmapFactory.decodeFile(file.getAbsolutePath(), bounds);
+    int sample = 1;
+    while ((bounds.outWidth / sample) > maxDim || (bounds.outHeight / sample) > maxDim) {
+      sample *= 2;
+    }
+    BitmapFactory.Options opts = new BitmapFactory.Options();
+    opts.inSampleSize = sample;
+    Bitmap raw = BitmapFactory.decodeFile(file.getAbsolutePath(), opts);
+    return downscaleIfNeeded(raw, maxDim);
+  }
+
+  private static Bitmap decodeScaledBitmapFromUri(Context ctx, Uri uri, int maxDim)
+      throws IOException {
+    BitmapFactory.Options bounds = new BitmapFactory.Options();
+    bounds.inJustDecodeBounds = true;
+    try (InputStream is = ctx.getContentResolver().openInputStream(uri)) {
+      if (is == null) return null;
+      BitmapFactory.decodeStream(is, null, bounds);
+    }
+    int sample = 1;
+    while ((bounds.outWidth / sample) > maxDim || (bounds.outHeight / sample) > maxDim) {
+      sample *= 2;
+    }
+    BitmapFactory.Options opts = new BitmapFactory.Options();
+    opts.inSampleSize = sample;
+    try (InputStream is2 = ctx.getContentResolver().openInputStream(uri)) {
+      if (is2 == null) return null;
+      Bitmap raw = BitmapFactory.decodeStream(is2, null, opts);
+      return downscaleIfNeeded(raw, maxDim);
+    }
+  }
+
+  private static Bitmap downscaleIfNeeded(Bitmap src, int maxDim) {
+    if (src == null) return null;
+    int w = src.getWidth();
+    int h = src.getHeight();
+    if (w <= maxDim && h <= maxDim) {
+      return src;
+    }
+    float ratio = Math.min((float) maxDim / w, (float) maxDim / h);
+    int nw = Math.max(1, Math.round(w * ratio));
+    int nh = Math.max(1, Math.round(h * ratio));
+    return Bitmap.createScaledBitmap(src, nw, nh, true);
   }
 
   private boolean openDefaultBrowserSettings() {

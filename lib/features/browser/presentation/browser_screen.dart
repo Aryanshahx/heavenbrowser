@@ -11,7 +11,6 @@ import '../../../core/theme/app_theme.dart';
 import '../../../core/utils/omnibox_parser.dart';
 import '../../../core/widgets/search_engine_chip_button.dart';
 import '../../../core/widgets/site_logo.dart';
-import '../../ai/heaven_ai_sheet.dart';
 import '../../devtools/desktop_inspector_panel.dart';
 import '../../downloads/downloads_controller.dart';
 import '../../downloads/downloads_screen.dart';
@@ -31,8 +30,11 @@ import '../../vpn/vpn_screen.dart';
 import '../engine/browser_engine.dart';
 import '../site_controls_sheet.dart';
 import 'widgets/library_screen.dart';
+import 'widgets/listen_to_page_sheet.dart';
+import 'widgets/offline_pages_sheet.dart';
 import 'widgets/reader_mode_sheet.dart';
 import 'widgets/start_page.dart';
+import 'widgets/visual_search_sheet.dart';
 import 'widgets/web_context_menu_sheet.dart';
 
 class BrowserScreen extends StatefulWidget {
@@ -45,6 +47,7 @@ class BrowserScreen extends StatefulWidget {
     required this.newsService,
     required this.interests,
     required this.vpn,
+    this.promptDefaultBrowserOnFirstLaunch = false,
   });
 
   final BrowserSettingsController settings;
@@ -54,6 +57,7 @@ class BrowserScreen extends StatefulWidget {
   final HeavenNewsFeedService newsService;
   final InterestProfileController interests;
   final VpnController vpn;
+  final bool promptDefaultBrowserOnFirstLaunch;
 
   @override
   State<BrowserScreen> createState() => _BrowserScreenState();
@@ -64,6 +68,8 @@ class _BrowserScreenState extends State<BrowserScreen>
   final TextEditingController _omniboxController = TextEditingController();
   final FocusNode _omniboxFocusNode = FocusNode();
   final TextEditingController _findController = TextEditingController();
+  late final PageTtsController _pageTts;
+  late final OfflinePagesController _offlinePages;
 
   Timer? _suggestDebounce;
   Timer? _downloadPopupTimer;
@@ -86,7 +92,14 @@ class _BrowserScreenState extends State<BrowserScreen>
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    _pageTts = PageTtsController();
+    _offlinePages = OfflinePagesController(widget.settings.prefs);
     widget.downloads.onDownloadToast = _showDownloadStartedPopup;
+    NativeShieldBridge.instance.onExternalLaunchAction =
+        _handleExternalLaunchAction;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      unawaited(_bootstrapFirstLaunchAndWidgetActions());
+    });
   }
 
   @override
@@ -96,15 +109,112 @@ class _BrowserScreenState extends State<BrowserScreen>
     if (widget.downloads.onDownloadToast == _showDownloadStartedPopup) {
       widget.downloads.onDownloadToast = null;
     }
+    if (NativeShieldBridge.instance.onExternalLaunchAction ==
+        _handleExternalLaunchAction) {
+      NativeShieldBridge.instance.onExternalLaunchAction = null;
+    }
     for (final BrowserTab tab in widget.tabManager.allTabs) {
       tab.engine.onSitePermissionPrompt = null;
       tab.engine.onWebContextMenu = null;
     }
     WidgetsBinding.instance.removeObserver(this);
+    _pageTts.dispose();
+    _offlinePages.dispose();
     _omniboxController.dispose();
     _omniboxFocusNode.dispose();
     _findController.dispose();
     super.dispose();
+  }
+
+  Future<void> _bootstrapFirstLaunchAndWidgetActions() async {
+    if (!mounted) return;
+    final Map<String, Object?>? initialAction = await NativeShieldBridge
+        .instance
+        .consumeInitialLaunchAction();
+    if (!mounted) return;
+    if (initialAction != null) {
+      _handleExternalLaunchAction(initialAction);
+      return;
+    }
+    if (widget.tabManager.enablePlatformWebView ||
+        widget.promptDefaultBrowserOnFirstLaunch) {
+      await _maybePromptFirstLaunchDefaultBrowser();
+    }
+  }
+
+  void _handleExternalLaunchAction(Map<String, Object?> action) {
+    if (!mounted) return;
+    final String type = (action['type']?.toString() ?? '').trim();
+    switch (type) {
+      case 'url':
+        final String url = (action['url']?.toString() ?? '').trim();
+        if (url.isNotEmpty) {
+          _closeOmniboxOverlay();
+          if (_activeEngine.isShowingStartPage) {
+            unawaited(_activeEngine.loadUserEntry(url));
+          } else {
+            unawaited(
+              widget.tabManager.openNewTab(
+                incognito: false,
+                initialInput: url,
+                switchTo: true,
+              ),
+            );
+          }
+        }
+      case 'omnibox':
+        _beginOmniboxEdit();
+      case 'voice':
+        _closeOmniboxOverlay();
+        unawaited(_triggerVoiceSearch());
+      case 'camera':
+        _closeOmniboxOverlay();
+        unawaited(_openVisualSearchLensSheet(context, _activeEngine));
+    }
+  }
+
+  Future<void> _maybePromptFirstLaunchDefaultBrowser() async {
+    if (!mounted || widget.settings.hasPromptedDefaultBrowser) {
+      return;
+    }
+    await widget.settings.markPromptedDefaultBrowser();
+    final bool alreadyDefault = await NativeShieldBridge.instance
+        .isDefaultBrowser();
+    if (!mounted || alreadyDefault) {
+      return;
+    }
+    final bool? shouldSet = await showDialog<bool>(
+      context: context,
+      builder: (BuildContext dialogContext) {
+        return AlertDialog(
+          key: const Key('first_launch_default_browser_dialog'),
+          icon: Icon(
+            Icons.public_rounded,
+            color: Theme.of(dialogContext).colorScheme.primary,
+            size: 34,
+          ),
+          title: const Text('Set Heaven as Default Browser?'),
+          content: const Text(
+            'Open links from all your apps faster and privately with Heaven Shield adblock and built-in VPN.',
+          ),
+          actions: <Widget>[
+            TextButton(
+              key: const Key('default_browser_not_now_button'),
+              onPressed: () => Navigator.pop(dialogContext, false),
+              child: const Text('Not Now'),
+            ),
+            FilledButton(
+              key: const Key('default_browser_confirm_button'),
+              onPressed: () => Navigator.pop(dialogContext, true),
+              child: const Text('Set as Default'),
+            ),
+          ],
+        );
+      },
+    );
+    if (shouldSet == true && mounted) {
+      await NativeShieldBridge.instance.requestDefaultBrowserRole();
+    }
   }
 
   void _showDownloadStartedPopup(String message) {
@@ -445,6 +555,19 @@ class _BrowserScreenState extends State<BrowserScreen>
                           ),
                         ),
                         if (_showFindBar) _buildFindBar(colors),
+                        ListenableBuilder(
+                          listenable: _pageTts,
+                          builder: (BuildContext context, _) {
+                            if (!_pageTts.hasSession) {
+                              return const SizedBox.shrink();
+                            }
+                            return _buildActiveListenMiniBar(
+                              context,
+                              colors,
+                              engine,
+                            );
+                          },
+                        ),
                         Expanded(
                           key: const Key('browser_website_viewport_box'),
                           child: Stack(
@@ -949,6 +1072,7 @@ class _BrowserScreenState extends State<BrowserScreen>
               initialInput: url,
             ),
             onVoiceSearch: _triggerVoiceSearch,
+            onCameraSearch: () => _openVisualSearchLensSheet(context, engine),
           );
         } else if (engine.errorMessage != null) {
           overlayChild = Center(
@@ -1579,15 +1703,32 @@ class _BrowserScreenState extends State<BrowserScreen>
             ),
           ),
         ),
-        if (showMic)
+        if (showMic) ...<Widget>[
           IconButton(
             onPressed: _triggerVoiceSearch,
             icon: Icon(Icons.mic_rounded, size: 19, color: colors.primary),
             visualDensity: VisualDensity.compact,
             padding: EdgeInsets.zero,
-            constraints: const BoxConstraints(minWidth: 32, minHeight: 34),
+            constraints: const BoxConstraints(minWidth: 30, minHeight: 34),
             tooltip: 'Voice Search',
           ),
+          IconButton(
+            key: const Key('top_omnibox_camera_lens_button'),
+            onPressed: () {
+              _closeOmniboxOverlay();
+              _openVisualSearchLensSheet(context, engine);
+            },
+            icon: Icon(
+              Icons.photo_camera_outlined,
+              size: 19,
+              color: colors.primary,
+            ),
+            visualDensity: VisualDensity.compact,
+            padding: EdgeInsets.zero,
+            constraints: const BoxConstraints(minWidth: 30, minHeight: 34),
+            tooltip: 'Camera Search',
+          ),
+        ],
         if (hasText) ...<Widget>[
           IconButton(
             onPressed: () {
@@ -1692,22 +1833,6 @@ class _BrowserScreenState extends State<BrowserScreen>
             ),
           ),
         ),
-        Tooltip(
-          message: 'Heaven On-Device AI',
-          child: InkWell(
-            key: const Key('top_bar_ai_button'),
-            borderRadius: BorderRadius.circular(18),
-            onTap: () => _openHeavenAiSheet(context, engine),
-            child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 6),
-              child: Icon(
-                Icons.auto_awesome_rounded,
-                size: 16,
-                color: colors.primary,
-              ),
-            ),
-          ),
-        ),
         if (engine.isShowingStartPage) ...<Widget>[
           IconButton(
             onPressed: _triggerVoiceSearch,
@@ -1720,9 +1845,25 @@ class _BrowserScreenState extends State<BrowserScreen>
             constraints: const BoxConstraints(minWidth: 24, minHeight: 30),
             tooltip: 'Voice Search',
           ),
+          IconButton(
+            key: const Key('top_bar_camera_lens_button'),
+            onPressed: () => _openVisualSearchLensSheet(context, engine),
+            icon: Icon(
+              Icons.photo_camera_outlined,
+              size: 16.5,
+              color: colors.primary,
+            ),
+            style: IconButton.styleFrom(
+              tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+            ),
+            visualDensity: VisualDensity.compact,
+            padding: EdgeInsets.zero,
+            constraints: const BoxConstraints(minWidth: 24, minHeight: 30),
+            tooltip: 'Camera Search',
+          ),
           const SizedBox(width: 2),
         ] else
-          const SizedBox(width: 3),
+          const SizedBox(width: 5),
       ],
     );
   }
@@ -1759,7 +1900,72 @@ class _BrowserScreenState extends State<BrowserScreen>
     }
   }
 
-  Future<void> _openHeavenAiSheet(
+  Widget _buildActiveListenMiniBar(
+    BuildContext context,
+    ColorScheme colors,
+    BrowserEngine engine,
+  ) {
+    return Container(
+      key: const Key('active_tts_mini_bar'),
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+      decoration: BoxDecoration(
+        color: colors.primary.withValues(alpha: 0.12),
+        border: Border(
+          bottom: BorderSide(color: colors.primary.withValues(alpha: 0.28)),
+        ),
+      ),
+      child: Row(
+        children: <Widget>[
+          Icon(Icons.headphones_rounded, size: 17, color: colors.primary),
+          const SizedBox(width: 8),
+          Expanded(
+            child: GestureDetector(
+              behavior: HitTestBehavior.opaque,
+              onTap: () => _openListenToPageSheet(context, engine),
+              child: Text(
+                'Listening: ${_pageTts.pageTitle}',
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(
+                  fontSize: 12.5,
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+            ),
+          ),
+          IconButton(
+            tooltip: _pageTts.isPlaying ? 'Pause' : 'Resume',
+            onPressed: _pageTts.togglePlayPause,
+            icon: Icon(
+              _pageTts.isPlaying
+                  ? Icons.pause_rounded
+                  : Icons.play_arrow_rounded,
+              size: 19,
+            ),
+            style: IconButton.styleFrom(
+              tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+            ),
+            visualDensity: VisualDensity.compact,
+            padding: EdgeInsets.zero,
+            constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
+          ),
+          IconButton(
+            tooltip: 'Stop',
+            onPressed: _pageTts.stop,
+            icon: const Icon(Icons.close_rounded, size: 18),
+            style: IconButton.styleFrom(
+              tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+            ),
+            visualDensity: VisualDensity.compact,
+            padding: EdgeInsets.zero,
+            constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _openListenToPageSheet(
     BuildContext context,
     BrowserEngine engine,
   ) async {
@@ -1769,7 +1975,37 @@ class _BrowserScreenState extends State<BrowserScreen>
       showDragHandle: true,
       constraints: const BoxConstraints(maxWidth: 600),
       builder: (BuildContext _) {
-        return HeavenAiSheet(engine: engine);
+        return ListenToPageSheet(engine: engine, tts: _pageTts);
+      },
+    );
+  }
+
+  Future<void> _openOfflinePagesSheet(
+    BuildContext context,
+    BrowserEngine engine,
+  ) async {
+    await showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      showDragHandle: true,
+      constraints: const BoxConstraints(maxWidth: 600),
+      builder: (BuildContext _) {
+        return OfflinePagesSheet(engine: engine, controller: _offlinePages);
+      },
+    );
+  }
+
+  Future<void> _openVisualSearchLensSheet(
+    BuildContext context,
+    BrowserEngine engine,
+  ) async {
+    await showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      showDragHandle: true,
+      constraints: const BoxConstraints(maxWidth: 520),
+      builder: (BuildContext _) {
+        return VisualSearchLensSheet(engine: engine);
       },
     );
   }
@@ -2180,15 +2416,6 @@ class _BrowserScreenState extends State<BrowserScreen>
                           },
                         ),
                         1 => _DeckActionTile(
-                          icon: Icons.shield_moon_outlined,
-                          label: 'Incognito',
-                          accent: AppTheme.incognitoCyan,
-                          onTap: () {
-                            Navigator.pop(sheetContext);
-                            widget.tabManager.openNewTab(incognito: true);
-                          },
-                        ),
-                        2 => _DeckActionTile(
                           icon: Icons.bookmarks_outlined,
                           label: 'Bookmarks',
                           accent: AppTheme.warningAmber,
@@ -2197,7 +2424,7 @@ class _BrowserScreenState extends State<BrowserScreen>
                             _openLibraryScreen(initialTabIndex: 0);
                           },
                         ),
-                        3 => _DeckActionTile(
+                        2 => _DeckActionTile(
                           icon: Icons.history_rounded,
                           label: 'History',
                           accent: colors.primary,
@@ -2206,7 +2433,7 @@ class _BrowserScreenState extends State<BrowserScreen>
                             _openLibraryScreen(initialTabIndex: 1);
                           },
                         ),
-                        4 => _DeckActionTile(
+                        3 => _DeckActionTile(
                           tileKey: const Key('browser_menu_downloads_tile'),
                           icon: Icons.download_rounded,
                           label: widget.downloads.activeCount > 0
@@ -2218,7 +2445,7 @@ class _BrowserScreenState extends State<BrowserScreen>
                             _openDownloadsTab();
                           },
                         ),
-                        5 => _DeckActionTile(
+                        4 => _DeckActionTile(
                           tileKey: const Key('browser_menu_language_tile'),
                           icon: Icons.translate_rounded,
                           label: engine.isPageTranslated &&
@@ -2233,7 +2460,7 @@ class _BrowserScreenState extends State<BrowserScreen>
                             _openTranslateReaderSheet(context, engine);
                           },
                         ),
-                        6 => _DeckActionTile(
+                        5 => _DeckActionTile(
                           tileKey: const Key('browser_menu_clean_reader_tile'),
                           icon: Icons.auto_stories_rounded,
                           label: 'Reader',
@@ -2244,22 +2471,29 @@ class _BrowserScreenState extends State<BrowserScreen>
                             _triggerReaderMode();
                           },
                         ),
+                        6 => _DeckActionTile(
+                          tileKey: const Key('browser_menu_listen_tile'),
+                          icon: _pageTts.isPlaying
+                              ? Icons.graphic_eq_rounded
+                              : Icons.headphones_rounded,
+                          label: _pageTts.isPlaying ? 'Listening' : 'Listen',
+                          accent: _pageTts.isPlaying
+                              ? AppTheme.shieldEmerald
+                              : colors.primary,
+                          enabled: hasWebPage || _pageTts.hasSession,
+                          onTap: () {
+                            Navigator.pop(sheetContext);
+                            _openListenToPageSheet(context, engine);
+                          },
+                        ),
                         _ => _DeckActionTile(
-                          icon: Icons.settings_outlined,
-                          label: 'Settings',
+                          tileKey: const Key('browser_menu_offline_pdf_tile'),
+                          icon: Icons.offline_pin_outlined,
+                          label: 'Offline / PDF',
                           accent: colors.primary,
                           onTap: () {
                             Navigator.pop(sheetContext);
-                            unawaited(
-                              _pushSubScreen<void>(
-                                SettingsScreen(
-                                  settings: widget.settings,
-                                  tabManager: widget.tabManager,
-                                  downloads: widget.downloads,
-                                  vpn: widget.vpn,
-                                ),
-                              ),
-                            );
+                            _openOfflinePagesSheet(context, engine);
                           },
                         ),
                       };
@@ -2267,25 +2501,6 @@ class _BrowserScreenState extends State<BrowserScreen>
                   ),
                   const SizedBox(height: 8),
                   const Divider(height: 1),
-                  ListTile(
-                    key: const Key('browser_menu_ai_tile'),
-                    dense: true,
-                    contentPadding: const EdgeInsets.symmetric(horizontal: 8),
-                    leading: Icon(
-                      Icons.auto_awesome_rounded,
-                      size: 20,
-                      color: colors.primary,
-                    ),
-                    title: const Text('Heaven On-Device AI'),
-                    subtitle: const Text(
-                      'Free private page summary & chat (Gemini Nano)',
-                      style: TextStyle(fontSize: 11.5),
-                    ),
-                    onTap: () {
-                      Navigator.pop(sheetContext);
-                      _openHeavenAiSheet(context, engine);
-                    },
-                  ),
                   ListTile(
                     key: const Key('browser_menu_inspect_tile'),
                     dense: true,
@@ -2369,6 +2584,7 @@ class _BrowserScreenState extends State<BrowserScreen>
                     },
                   ),
                   ListTile(
+                    key: const Key('browser_menu_notifications_tile'),
                     dense: true,
                     contentPadding: const EdgeInsets.symmetric(horizontal: 8),
                     leading: Icon(
@@ -2382,6 +2598,30 @@ class _BrowserScreenState extends State<BrowserScreen>
                       unawaited(
                         _pushSubScreen<void>(
                           NotificationsScreen(settings: widget.settings),
+                        ),
+                      );
+                    },
+                  ),
+                  ListTile(
+                    key: const Key('browser_menu_settings_tile'),
+                    dense: true,
+                    contentPadding: const EdgeInsets.symmetric(horizontal: 8),
+                    leading: Icon(
+                      Icons.settings_outlined,
+                      size: 20,
+                      color: colors.primary,
+                    ),
+                    title: const Text('Settings'),
+                    onTap: () {
+                      Navigator.pop(sheetContext);
+                      unawaited(
+                        _pushSubScreen<void>(
+                          SettingsScreen(
+                            settings: widget.settings,
+                            tabManager: widget.tabManager,
+                            downloads: widget.downloads,
+                            vpn: widget.vpn,
+                          ),
                         ),
                       );
                     },

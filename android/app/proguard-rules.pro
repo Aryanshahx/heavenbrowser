@@ -7,10 +7,6 @@
 -dontwarn de.blinkt.openvpn.**
 -keep class id.laskarmedia.openvpn_flutter.** { *; }
 
-# Keep Google ML Kit On-Device GenAI (Gemini Nano / AICore) classes intact under R8
--keep class com.google.mlkit.genai.** { *; }
--dontwarn com.google.mlkit.genai.**
-
 # Keep Heaven Browser native bridges and @JavascriptInterface methods intact
 -keep class com.hypertechlabs.heavenbrowser.** { *; }
 -keepclassmembers class * {

@@ -80,7 +80,6 @@ class BrowserEngine extends ChangeNotifier {
 
   final BrowserSettingsController settings;
   SitePermissionPromptCallback? onSitePermissionPrompt;
-  ValueChanged<String>? onOpenCrossSiteInNewTab;
   NativeWebContextMenuCallback? onWebContextMenu;
   final bool isIncognito;
   final bool enablePlatformWebView;
@@ -106,6 +105,7 @@ class BrowserEngine extends ChangeNotifier {
   int _lastDownloadInterceptMs = 0;
   int _lastPageFinishedMs = 0;
   int _userInitiatedLoadUntilMs = 0;
+  int _lastCrossSiteNavMs = 0;
   Timer? _finishLoadingDebounceTimer;
 
   // Live Background Audio state
@@ -793,23 +793,30 @@ class BrowserEngine extends ChangeNotifier {
         );
       }
 
-      // Cross-website redirect / link navigation -> open seamlessly in a new child tab
-      // so the current website stays intact and Back returns seamlessly!
-      final bool isUserDirectLoad =
-          DateTime.now().millisecondsSinceEpoch <= _userInitiatedLoadUntilMs;
-      final String? establishedUrl = _lastCompletedWebUrl;
-      if (!isUserDirectLoad &&
-          onOpenCrossSiteInNewTab != null &&
-          isShowingWebPage &&
-          establishedUrl != null &&
-          establishedUrl.isNotEmpty &&
-          !_isOAuthOrSsoFlow(resolvedUri) &&
-          !OmniboxParser.isSameWebsite(
-            establishedUrl,
-            resolvedUri.toString(),
-          )) {
-        onOpenCrossSiteInNewTab!(resolvedUri.toString());
-        return NavigationDecision.prevent;
+      // Block pirate/streaming ad-redirect hijacks & rapid cross-site popunder bounce chains!
+      if (settings.isShieldActiveForHost(currentHost)) {
+        if (OmniboxParser.isKnownAdOrPopunderRedirect(
+          resolvedUri,
+          currentUrl: _currentUrl,
+        )) {
+          return NavigationDecision.prevent;
+        }
+        final int nowMs = DateTime.now().millisecondsSinceEpoch;
+        final bool isUserDirectLoad = nowMs <= _userInitiatedLoadUntilMs;
+        final String? establishedUrl = _lastCompletedWebUrl;
+        if (!isUserDirectLoad &&
+            establishedUrl != null &&
+            establishedUrl.isNotEmpty &&
+            !_isOAuthOrSsoFlow(resolvedUri) &&
+            !OmniboxParser.isSameWebsite(
+              establishedUrl,
+              resolvedUri.toString(),
+            )) {
+          if ((nowMs - _lastCrossSiteNavMs) < 650) {
+            return NavigationDecision.prevent;
+          }
+          _lastCrossSiteNavMs = nowMs;
+        }
       }
 
       if (resolvedUri != uri) {
@@ -1509,6 +1516,187 @@ class BrowserEngine extends ChangeNotifier {
       return null;
     }
     return null;
+  }
+
+  /// Extracts clean spoken-word paragraphs from any webpage (articles, docs,
+  /// forums, or general pages) for "Listen to This Page".
+  Future<List<String>> extractListenParagraphs() async {
+    final ReadableArticle? article = await extractReadableArticle();
+    if (article != null && article.paragraphs.isNotEmpty) {
+      return <String>[
+        if (article.title.trim().isNotEmpty) article.title.trim(),
+        ...article.paragraphs,
+      ];
+    }
+    if (!isShowingWebPage || _controller == null) {
+      return const <String>[];
+    }
+    try {
+      final Object raw = await _controller!.runJavaScriptReturningResult('''
+(function(){
+  try {
+    const out = [];
+    const seen = new Set();
+    const nodes = document.querySelectorAll('h1,h2,h3,p,li,blockquote');
+    for (let i = 0; i < nodes.length && out.length < 90; i++) {
+      const t = String(nodes[i].innerText || '').replace(/\\s+/g, ' ').trim();
+      if (t.length >= 24 && !seen.has(t)) {
+        seen.add(t);
+        out.push(t);
+      }
+    }
+    if (out.length === 0 && document.body) {
+      const lines = String(document.body.innerText || '').split(/\\n+/);
+      for (const ln of lines) {
+        const clean = ln.replace(/\\s+/g, ' ').trim();
+        if (clean.length >= 24 && out.length < 90) out.push(clean);
+      }
+    }
+    return JSON.stringify(out);
+  } catch (_) {
+    return '[]';
+  }
+})()
+''');
+      String jsonStr = raw.toString();
+      if (jsonStr.startsWith('"') && jsonStr.endsWith('"')) {
+        jsonStr = jsonDecode(jsonStr).toString();
+      }
+      final Object? parsed = jsonDecode(jsonStr);
+      if (parsed is List<Object?>) {
+        return parsed
+            .map((Object? e) => e?.toString().trim() ?? '')
+            .where((String s) => s.isNotEmpty)
+            .toList(growable: false);
+      }
+    } catch (_) {}
+    return const <String>[];
+  }
+
+  /// Uploads a captured camera/gallery JPEG directly into Google Lens Visual
+  /// Search inside the active WebView (100% free, zero API keys).
+  Future<void> loadGoogleLensImageBase64(String base64Jpeg) async {
+    final String cleanB64 = base64Jpeg.trim();
+    if (cleanB64.isEmpty) return;
+
+    _markUserInitiatedLoad();
+    _errorMessage = null;
+    if (enablePlatformWebView && _controller == null) {
+      _initializeController();
+    }
+
+    const String lensUrl = 'https://lens.google.com/search';
+    _pushVirtualLocation(lensUrl);
+    _currentUrl = lensUrl;
+    _pageTitle = 'Google Lens';
+    _isLoading = _controller != null;
+    _progress = _controller != null ? 0.2 : 0;
+    notifyListeners();
+
+    if (_controller == null) {
+      _lastCompletedWebUrl = lensUrl;
+      _userInitiatedLoadUntilMs = 0;
+      notifyListeners();
+      return;
+    }
+
+    await _applyControllerSettings(forHost: 'lens.google.com');
+    final String safeB64Json = jsonEncode(cleanB64);
+    final String uploaderHtml = '''
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <style>
+    body {
+      margin: 0;
+      background: #09111F;
+      color: #F8FAFC;
+      font-family: system-ui, -apple-system, sans-serif;
+      display: flex;
+      height: 100vh;
+      align-items: center;
+      justify-content: center;
+      flex-direction: column;
+      gap: 12px;
+    }
+    .ring {
+      width: 30px;
+      height: 30px;
+      border: 3px solid rgba(59, 130, 246, 0.25);
+      border-top-color: #3B82F6;
+      border-radius: 50%;
+      animation: s 0.75s linear infinite;
+    }
+    @keyframes s { to { transform: rotate(360deg); } }
+  </style>
+</head>
+<body>
+  <div class="ring"></div>
+  <div style="font-size:14px;font-weight:600">Searching image with Google Lens</div>
+  <form id="lensForm" action="https://lens.google.com/v3/upload" method="POST" enctype="multipart/form-data" style="display:none">
+    <input id="lensFile" type="file" name="encoded_image">
+  </form>
+  <script>
+    (function(){
+      try {
+        var b64 = $safeB64Json;
+        var bin = atob(b64);
+        var bytes = new Uint8Array(bin.length);
+        for (var i = 0; i < bin.length; i++) {
+          bytes[i] = bin.charCodeAt(i);
+        }
+        var file = new File([bytes], "heaven_lens.jpg", { type: "image/jpeg" });
+        var dt = new DataTransfer();
+        dt.items.add(file);
+        var inp = document.getElementById("lensFile");
+        inp.files = dt.files;
+        document.getElementById("lensForm").submit();
+      } catch (e) {
+        location.replace("https://lens.google.com/");
+      }
+    })();
+  </script>
+</body>
+</html>
+''';
+    await _controller!.loadHtmlString(
+      uploaderHtml,
+      baseUrl: 'https://lens.google.com',
+    );
+  }
+
+  /// Opens a saved `.mht` offline webpage archive inside the active tab even
+  /// with zero network connectivity.
+  Future<bool> loadSavedOfflineArchive({
+    required String filePath,
+    required String title,
+    required String originalUrl,
+  }) async {
+    _markUserInitiatedLoad();
+    _errorMessage = null;
+    if (enablePlatformWebView && _controller == null) {
+      _initializeController();
+    }
+    final String displayTarget = originalUrl.trim().isNotEmpty
+        ? originalUrl.trim()
+        : 'https://offline.heaven.local';
+    _pushVirtualLocation(displayTarget);
+    _currentUrl = displayTarget;
+    _pageTitle = title.trim().isNotEmpty ? title.trim() : 'Offline Page';
+    _isLoading = false;
+    _progress = 0;
+    _lastCompletedWebUrl = displayTarget;
+    notifyListeners();
+
+    if (_controller == null) {
+      return true;
+    }
+    return NativeShieldBridge.instance.loadOfflineArchive(
+      webViewId: _androidWebViewId,
+      filePath: filePath,
+    );
   }
 
   Future<void> burnBrowsingData() async {

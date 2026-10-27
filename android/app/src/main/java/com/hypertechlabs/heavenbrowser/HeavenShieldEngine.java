@@ -93,6 +93,31 @@ public final class HeavenShieldEngine {
                   "clickadu.com",
                   "adcash.com",
                   "bidvertiser.com",
+                  "tsyndicate.com",
+                  "galaksion.com",
+                  "evadav.com",
+                  "richads.com",
+                  "admaven.com",
+                  "pushground.com",
+                  "rollerads.com",
+                  "adoperator.com",
+                  "monetag.com",
+                  "acscdn.com",
+                  "alwingulla.com",
+                  "rtmark.net",
+                  "ureadit.com",
+                  "clickaine.com",
+                  "trafficstars.com",
+                  "plugrush.com",
+                  "popmyads.com",
+                  "adspyglass.com",
+                  "adtng.com",
+                  "realsrv.com",
+                  "syndication.realsrv.com",
+                  "twinrdsyn.com",
+                  "onmarshtompor.com",
+                  "whirlwealth.com",
+                  "ouo.press",
                   "adform.net",
                   "smartadserver.com",
                   "teads.tv",
@@ -622,6 +647,48 @@ public final class HeavenShieldEngine {
         || lowerPath.contains("/youtubei/v1/player/ad_break");
   }
 
+  private boolean shouldBlockMainFrameAdNavigation(long webViewId, Uri uri) {
+    if (!this.shieldEnabled || !this.blockAdsAndTrackers || uri == null) {
+      return false;
+    }
+    String pageHost = activeHostByWv.get(webViewId);
+    if (pageHost != null && isHostAllowlisted(pageHost)) {
+      return false;
+    }
+    String reqHost = uri.getHost();
+    if (reqHost == null || reqHost.isEmpty()) {
+      return false;
+    }
+    String normTarget = normalizeHost(reqHost);
+    String normPage = normalizeHost(pageHost);
+    if (!normPage.isEmpty() && (normTarget.equals(normPage) || normTarget.endsWith("." + normPage))) {
+      return false;
+    }
+    boolean blocked =
+        matchesDomainSet(normTarget, STANDARD_AD_TRACKER_DOMAINS)
+            || (!"off".equals(this.safeBrowsingMode)
+                && matchesDomainSet(normTarget, ENHANCED_THREAT_DOMAINS))
+            || (!this.customBlockedDomains.isEmpty()
+                && matchesDomainSet(normTarget, this.customBlockedDomains));
+    if (!blocked) {
+      String pathAndQuery =
+          ((uri.getPath() != null ? uri.getPath() : "")
+                  + "?"
+                  + (uri.getQuery() != null ? uri.getQuery() : ""))
+              .toLowerCase(Locale.US);
+      if (pathAndQuery.contains("/afu.php")
+          || (pathAndQuery.contains("zoneid=") && pathAndQuery.contains("clickid="))) {
+        blocked = true;
+      }
+    }
+    if (blocked) {
+      AtomicInteger pageCount = pageBlockedByWv.computeIfAbsent(webViewId, k -> new AtomicInteger(0));
+      pageCount.incrementAndGet();
+      totalBlockedCount.incrementAndGet();
+    }
+    return blocked;
+  }
+
   private WebResourceResponse interceptSubresource(long webViewId, WebResourceRequest request) {
     if (!this.shieldEnabled || request == null || request.isForMainFrame()) {
       return null;
@@ -1123,19 +1190,94 @@ public final class HeavenShieldEngine {
               + "}catch(_){}})();");
     }
 
-    // Unrequested Popup & Tab-Under Guard
-    if (this.blockPopups) {
+    // Hardened Pirate/Streaming Popunder, Clickjacking Overlay & Unrequested Popup Shield
+    if (this.blockPopups || this.blockAdsAndTrackers) {
       sb.append(
           "(function(){"
               + "var lastTap=0;"
-              + "var markTap=function(){lastTap=Date.now();};"
-              + "window.addEventListener('pointerdown',markTap,{capture:true,passive:true});"
-              + "window.addEventListener('touchend',markTap,{capture:true,passive:true});"
-              + "window.addEventListener('keydown',markTap,{capture:true,passive:true});"
+              + "var lastTrustedAnchorHref='';"
+              + "function regDom(h){"
+              + "  if(!h)return '';"
+              + "  var p=h.toLowerCase().replace(/^www\\./,'').split('.');"
+              + "  if(p.length<=2)return p.join('.');"
+              + "  var t2=p[p.length-2];"
+              + "  if(p[p.length-1].length===2&&(t2==='co'||t2==='com'||t2==='org'||t2==='net'||t2==='ac'||t2==='gov'))return p.slice(-3).join('.');"
+              + "  return p.slice(-2).join('.');"
+              + "}"
+              + "var pageDom=regDom(location.hostname);"
+              + "function isOAuthUrl(u){"
+              + "  return /(\\/oauth|\\/authorize|\\/auth\\/|accounts\\.google\\.com|appleid\\.apple\\.com|login\\.microsoftonline\\.com|github\\.com\\/login)/i.test(u||'');"
+              + "}"
+              + "function isAdRedirectPattern(u){"
+              + "  return /(\\/afu\\.php|\\bzoneid=\\d+|\\bpopunder\\b|\\bclickid=|\\/pop\\/|\\badredirect\\b)/i.test(u||'');"
+              + "}"
+              + "function isInvisibleHijackOverlay(el){"
+              + "  try{"
+              + "    if(!el||el===document.body||el===document.documentElement)return false;"
+              + "    var tag=(el.tagName||'').toUpperCase();"
+              + "    if(tag==='VIDEO'||tag==='BUTTON'||tag==='INPUT'||tag==='SELECT'||tag==='TEXTAREA')return false;"
+              + "    var st=window.getComputedStyle(el);"
+              + "    if(!st||(st.position!=='fixed'&&st.position!=='absolute'))return false;"
+              + "    var r=el.getBoundingClientRect();"
+              + "    if(r.width<window.innerWidth*0.55||r.height<window.innerHeight*0.45)return false;"
+              + "    var op=parseFloat(st.opacity||'1');"
+              + "    var z=parseInt(st.zIndex||'0',10);"
+              + "    if(op<0.12)return true;"
+              + "    if(z>=999&&tag==='A'&&!(el.innerText||'').trim()&&!el.querySelector('img,svg,video,canvas'))return true;"
+              + "    if(z>=99999&&(st.backgroundColor==='rgba(0, 0, 0, 0)'||st.backgroundColor==='transparent')&&!(el.innerText||'').trim()&&!el.querySelector('video,iframe,button,input'))return true;"
+              + "  }catch(_){}"
+              + "  return false;"
+              + "}"
+              + "window.addEventListener('pointerdown',function(ev){"
+              + "  if(ev&&ev.isTrusted){"
+              + "    lastTap=Date.now();"
+              + "    try{"
+              + "      var t=ev.target;"
+              + "      if(isInvisibleHijackOverlay(t)){ev.preventDefault();ev.stopImmediatePropagation();t.remove();return;}"
+              + "      var a=t&&t.closest?t.closest('a[href]'):null;"
+              + "      if(a&&isInvisibleHijackOverlay(a)){ev.preventDefault();ev.stopImmediatePropagation();a.remove();return;}"
+              + "      lastTrustedAnchorHref=(a&&a.href)?String(a.href):'';"
+              + "    }catch(_){}"
+              + "  }"
+              + "},{capture:true,passive:false});"
+              + "window.addEventListener('click',function(ev){"
+              + "  try{"
+              + "    var t=ev&&ev.target;"
+              + "    if(isInvisibleHijackOverlay(t)){ev.preventDefault();ev.stopImmediatePropagation();t.remove();return;}"
+              + "    var a=t&&t.closest?t.closest('a[href]'):null;"
+              + "    if(a){"
+              + "      if(isInvisibleHijackOverlay(a)){ev.preventDefault();ev.stopImmediatePropagation();a.remove();return;}"
+              + "      var href=String(a.href||'');"
+              + "      if(href&&(!ev.isTrusted||isAdRedirectPattern(href))){"
+              + "        var td=regDom((new URL(href,location.href)).hostname);"
+              + "        if((td&&td!==pageDom)||isAdRedirectPattern(href)){ev.preventDefault();ev.stopImmediatePropagation();return;}"
+              + "      }"
+              + "    }"
+              + "  }catch(_){}"
+              + "},true);"
+              + "var origClick=HTMLElement.prototype.click;"
+              + "if(origClick){HTMLElement.prototype.click=function(){"
+              + "  try{"
+              + "    if(this&&this.tagName==='A'&&this.href){"
+              + "      var h=String(this.href);"
+              + "      var td=regDom((new URL(h,location.href)).hostname);"
+              + "      if(h!==lastTrustedAnchorHref&&((td&&td!==pageDom)||this.target==='_blank'||isAdRedirectPattern(h)))return;"
+              + "    }"
+              + "  }catch(_){}"
+              + "  return origClick.apply(this,arguments);"
+              + "};}"
               + "var origOpen=window.open;"
               + "window.open=function(u){"
-              + "if(Date.now()-lastTap>1800)return null;"
-              + "return origOpen?origOpen.apply(window,arguments):null;"
+              + "  try{"
+              + "    var s=String(u||'').trim();"
+              + "    if(!s||s==='about:blank'||s.indexOf('javascript:')===0)return null;"
+              + "    if(Date.now()-lastTap>1200)return null;"
+              + "    if(isAdRedirectPattern(s))return null;"
+              + "    var parsed=new URL(s,location.href);"
+              + "    var targetDom=regDom(parsed.hostname);"
+              + "    if(targetDom&&pageDom&&targetDom!==pageDom&&!isOAuthUrl(s))return null;"
+              + "  }catch(_){return null;}"
+              + "  return origOpen?origOpen.apply(window,arguments):null;"
               + "};"
               + "})();");
     }
@@ -1187,12 +1329,18 @@ public final class HeavenShieldEngine {
 
     @Override
     public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
+      if (request != null && request.isForMainFrame() && shouldBlockMainFrameAdNavigation(webViewId, request.getUrl())) {
+        return true;
+      }
       return delegate.shouldOverrideUrlLoading(view, request);
     }
 
     @Override
     @SuppressWarnings("deprecation")
     public boolean shouldOverrideUrlLoading(WebView view, String url) {
+      if (url != null && shouldBlockMainFrameAdNavigation(webViewId, Uri.parse(url))) {
+        return true;
+      }
       return delegate.shouldOverrideUrlLoading(view, url);
     }
 

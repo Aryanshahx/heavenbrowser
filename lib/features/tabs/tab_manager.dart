@@ -266,7 +266,6 @@ class TabManagerController extends ChangeNotifier {
                     : null,
                 previewBytes: restoredPreview,
               );
-              _attachTabEngineCallbacks(restoredTab);
               _lastEngineSummaryByTab[id] = _engineSummary(engine);
               _tabs.add(restoredTab);
             }
@@ -502,20 +501,6 @@ class TabManagerController extends ChangeNotifier {
     }
   }
 
-  void _attachTabEngineCallbacks(BrowserTab tab) {
-    tab.engine.onOpenCrossSiteInNewTab = (String targetUrl) {
-      unawaited(
-        openNewTab(
-          incognito: tab.isIncognito,
-          initialInput: targetUrl,
-          switchTo: true,
-          openerTabId: tab.id,
-          groupId: tab.groupId,
-        ),
-      );
-    };
-  }
-
   BrowserTab _spawnTab({
     required bool incognito,
     required bool switchTo,
@@ -538,7 +523,6 @@ class TabManagerController extends ChangeNotifier {
       openerTabId: openerTabId,
       groupId: groupId,
     );
-    _attachTabEngineCallbacks(tab);
     _lastEngineSummaryByTab[id] = _engineSummary(engine);
     if (openerTabId != null) {
       final int parentIdx = _tabs.indexWhere(

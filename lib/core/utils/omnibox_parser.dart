@@ -1,6 +1,6 @@
 enum SearchEngine {
   google(
-    label: 'Google Search',
+    label: 'Google',
     shortLabel: 'Google',
     badge: 'G',
     logoAssetPath: 'assets/images/engines/google.png',
@@ -631,5 +631,69 @@ class OmniboxParser {
 
     final String dom = cleanDomain(currentUrl);
     return dom;
+  }
+
+  static const Set<String> _knownAdAndPopunderDomains = <String>{
+    'onclickads.net',
+    'popads.net',
+    'popcash.net',
+    'propellerads.com',
+    'adsterra.com',
+    'exoclick.com',
+    'exosrv.com',
+    'tsyndicate.com',
+    'galaksion.com',
+    'hilltopads.net',
+    'clickadu.com',
+    'adcash.com',
+    'juicyads.com',
+    'trafficjunky.net',
+    'bidvertiser.com',
+    'evadav.com',
+    'richads.com',
+    'admaven.com',
+    'pushground.com',
+    'rollerads.com',
+    'adoperator.com',
+    'monetag.com',
+    'acscdn.com',
+    'alwingulla.com',
+    'rtmark.net',
+    'ureadit.com',
+    'clickaine.com',
+    'trafficstars.com',
+    'plugrush.com',
+    'popmyads.com',
+    'adspyglass.com',
+    'adtng.com',
+    'realsrv.com',
+    'twinrdsyn.com',
+    'onmarshtompor.com',
+    'whirlwealth.com',
+    'ouo.press',
+    'doubleclick.net',
+    'googlesyndication.com',
+    'googleadservices.com',
+  };
+
+  /// Returns true when [uri] points to a known popunder / pirate-site ad-hijack
+  /// redirect domain or ad-bounce script (`/afu.php`, `zoneid=...&clickid=...`).
+  static bool isKnownAdOrPopunderRedirect(Uri uri, {String? currentUrl}) {
+    final String reg = registrableDomain(uri.toString());
+    if (reg.isEmpty) return false;
+    if (currentUrl != null &&
+        currentUrl.isNotEmpty &&
+        isSameWebsite(currentUrl, uri.toString())) {
+      return false;
+    }
+    if (_knownAdAndPopunderDomains.contains(reg)) {
+      return true;
+    }
+    final String pq = '${uri.path}?${uri.query}'.toLowerCase();
+    if (pq.contains('/afu.php') ||
+        (pq.contains('zoneid=') && pq.contains('clickid='))) {
+      return true;
+    }
+    return false;
   }
 }

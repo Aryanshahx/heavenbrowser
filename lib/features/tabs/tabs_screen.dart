@@ -140,7 +140,7 @@ class _TabsScreenState extends State<TabsScreen> {
                 ),
                 titleSpacing: 0,
                 title: Padding(
-                  padding: const EdgeInsets.only(right: 4),
+                  padding: const EdgeInsets.only(right: 12),
                   child: Align(
                     alignment: Alignment.centerLeft,
                     child: ConstrainedBox(
@@ -149,90 +149,6 @@ class _TabsScreenState extends State<TabsScreen> {
                     ),
                   ),
                 ),
-                actions: <Widget>[
-                  if (!incognitoLocked)
-                    PopupMenuButton<String>(
-                      key: const Key('tabs_appbar_more_button'),
-                      tooltip: 'More tab options',
-                      icon: const Icon(Icons.more_vert_rounded),
-                      onSelected: (String action) async {
-                        if (action == 'add_to_new_group') {
-                          final BrowserTab targetTab =
-                              (!_viewingIncognito &&
-                                  !widget.tabManager.activeTab.isIncognito)
-                              ? widget.tabManager.activeTab
-                              : (tabs.isNotEmpty
-                                    ? tabs.first
-                                    : widget.tabManager.activeTab);
-                          await TabsScreen.showCreateGroupDialog(
-                            context,
-                            tabManager: widget.tabManager,
-                            tabId: targetTab.id,
-                          );
-                        } else if (action == 'new_tab') {
-                          await widget.tabManager.openNewTab(
-                            incognito: _viewingIncognito,
-                          );
-                          if (context.mounted) {
-                            Navigator.pop(context);
-                          }
-                        } else if (action == 'close_all') {
-                          await widget.tabManager.closeAllTabsByMode(
-                            incognito: _viewingIncognito,
-                          );
-                        }
-                      },
-                      itemBuilder: (BuildContext context) =>
-                          <PopupMenuEntry<String>>[
-                            if (!_viewingIncognito && tabs.isNotEmpty)
-                              const PopupMenuItem<String>(
-                                key: Key('tabs_appbar_add_new_group_item'),
-                                value: 'add_to_new_group',
-                                child: Row(
-                                  children: <Widget>[
-                                    Icon(Icons.workspaces_outline, size: 19),
-                                    SizedBox(width: 10),
-                                    Expanded(
-                                      child: Text('Add tab to new group'),
-                                    ),
-                                  ],
-                                ),
-                              ),
-                            PopupMenuItem<String>(
-                              value: 'new_tab',
-                              child: Row(
-                                children: <Widget>[
-                                  Icon(
-                                    _viewingIncognito
-                                        ? Icons.shield_moon_rounded
-                                        : Icons.add_rounded,
-                                    size: 19,
-                                  ),
-                                  const SizedBox(width: 10),
-                                  Expanded(
-                                    child: Text(
-                                      _viewingIncognito
-                                          ? 'New Incognito tab'
-                                          : 'New tab',
-                                    ),
-                                  ),
-                                ],
-                              ),
-                            ),
-                            if (tabs.isNotEmpty)
-                              const PopupMenuItem<String>(
-                                value: 'close_all',
-                                child: Row(
-                                  children: <Widget>[
-                                    Icon(Icons.delete_sweep_outlined, size: 19),
-                                    SizedBox(width: 10),
-                                    Expanded(child: Text('Close all tabs')),
-                                  ],
-                                ),
-                              ),
-                          ],
-                    ),
-                ],
               ),
               body: SafeArea(
                 child: Column(

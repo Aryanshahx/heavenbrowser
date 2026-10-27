@@ -74,9 +74,7 @@ class SettingsScreen extends StatelessWidget {
                       borderRadius: 7,
                     ),
                     title: Text(
-                      engine == SearchEngine.google
-                          ? '${engine.label} (Default)'
-                          : engine.label,
+                      engine.label,
                       style: TextStyle(
                         fontWeight: settings.searchEngine == engine
                             ? FontWeight.w800
@@ -174,6 +172,68 @@ class SettingsScreen extends StatelessWidget {
                         ],
                       ),
                       onTap: () => _pickSearchEngine(context),
+                    ),
+                    _thinDivider(colors),
+                    ListTile(
+                      key: const Key('settings_default_browser_tile'),
+                      dense: true,
+                      leading: Icon(
+                        Icons.public_rounded,
+                        size: 20,
+                        color: colors.primary,
+                      ),
+                      title: const Text('Default Browser'),
+                      subtitle: const Text(
+                        'Open web links automatically in Heaven',
+                        style: TextStyle(fontSize: 11.5),
+                      ),
+                      trailing: Icon(
+                        Icons.chevron_right_rounded,
+                        size: 18,
+                        color: colors.onSurfaceVariant,
+                      ),
+                      onTap: () {
+                        unawaited(
+                          NativeShieldBridge.instance
+                              .requestDefaultBrowserRole(),
+                        );
+                      },
+                    ),
+                    _thinDivider(colors),
+                    ListTile(
+                      key: const Key('settings_add_widget_tile'),
+                      dense: true,
+                      leading: Icon(
+                        Icons.widgets_outlined,
+                        size: 20,
+                        color: colors.primary,
+                      ),
+                      title: const Text('Add Search Widget'),
+                      subtitle: const Text(
+                        'Pin Heaven Search bar widget to your Home Screen',
+                        style: TextStyle(fontSize: 11.5),
+                      ),
+                      trailing: Icon(
+                        Icons.add_circle_outline_rounded,
+                        size: 18,
+                        color: colors.primary,
+                      ),
+                      onTap: () async {
+                        final ScaffoldMessengerState? messenger =
+                            ScaffoldMessenger.maybeOf(context);
+                        final bool pinned = await NativeShieldBridge.instance
+                            .requestPinSearchWidget();
+                        if (!pinned) {
+                          messenger?.showSnackBar(
+                            const SnackBar(
+                              content: Text(
+                                'Long-press your Home Screen → Widgets → select "Heaven Search"',
+                              ),
+                              behavior: SnackBarBehavior.floating,
+                            ),
+                          );
+                        }
+                      },
                     ),
                     _thinDivider(colors),
                     ListTile(

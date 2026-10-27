@@ -9,9 +9,11 @@ import 'package:heavenbrowser/core/l10n/app_strings.dart';
 import 'package:heavenbrowser/core/theme/app_theme.dart';
 import 'package:heavenbrowser/core/utils/omnibox_parser.dart';
 import 'package:heavenbrowser/core/widgets/search_engine_chip_button.dart';
-import 'package:heavenbrowser/features/ai/heaven_ai_sheet.dart';
 import 'package:heavenbrowser/features/browser/page_translate_reader_service.dart';
 import 'package:heavenbrowser/features/browser/presentation/browser_screen.dart';
+import 'package:heavenbrowser/features/browser/presentation/widgets/listen_to_page_sheet.dart';
+import 'package:heavenbrowser/features/browser/presentation/widgets/offline_pages_sheet.dart';
+import 'package:heavenbrowser/features/browser/presentation/widgets/visual_search_sheet.dart';
 import 'package:heavenbrowser/features/browser/presentation/widgets/web_context_menu_sheet.dart';
 import 'package:heavenbrowser/features/browser/site_controls_sheet.dart';
 import 'package:heavenbrowser/features/devtools/desktop_inspector_panel.dart';
@@ -802,13 +804,15 @@ void main() {
       expect(find.text('United Kingdom'), findsOneWidget);
       expect(find.byKey(const Key('omnibox_shield_badge_button')), findsNothing);
 
-      // 2. Submit search -> resolves to Google Search; scrolling down glides floating search bar upward WITH ZERO WEBSITE PULL (viewport Rect stays 100% constant!)
+      // 2. Submit search -> resolves to Google; scrolling down glides floating search bar upward WITH ZERO WEBSITE PULL (viewport Rect stays 100% constant!)
+      expect(find.byKey(const Key('home_search_icon_button')), findsNothing);
+      expect(find.byKey(const Key('home_camera_lens_button')), findsOneWidget);
       await tester.enterText(
         find.byKey(const Key('home_search_textfield')),
         'flutter',
       );
       await tester.pump();
-      await tester.tap(find.byKey(const Key('home_search_icon_button')));
+      await tester.testTextInput.receiveAction(TextInputAction.search);
       await tester.pumpAndSettle();
       expect(find.textContaining('google.com'), findsWidgets);
 
@@ -1209,7 +1213,11 @@ void main() {
       // 8. Settings Screen exposes Heaven Web Store tile (ZERO Brave Shields switches!), switches to Perplexity, and opens Privacy Policy!
       await tester.tap(find.byTooltip('Browser Menu'));
       await tester.pumpAndSettle();
-      await tester.tap(find.text('Settings'));
+      await tester.ensureVisible(
+        find.byKey(const Key('browser_menu_settings_tile')),
+      );
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('browser_menu_settings_tile')));
       await tester.pumpAndSettle();
       expect(find.byType(SettingsScreen), findsOneWidget);
       expect(find.text('Ultra Data Saver'), findsNothing);
@@ -1621,11 +1629,8 @@ void main() {
           equals(<String>[thirdTab.id, firstTabId, secondTab.id]),
         );
 
-        // 2. Tap 3-dots menu button on tab card -> 'Add tab to new group' -> Create Group!
-        expect(
-          find.byKey(const Key('tabs_appbar_more_button')),
-          findsOneWidget,
-        );
+        // 2. Top AppBar 3-dots menu removed; tap 3-dots menu button on tab card -> 'Add tab to new group' -> Create Group!
+        expect(find.byKey(const Key('tabs_appbar_more_button')), findsNothing);
         await tester.tap(
           find.byKey(ValueKey<String>('tab_more_button_${thirdTab.id}')),
         );
@@ -1797,7 +1802,11 @@ void main() {
         await tester.pumpAndSettle();
         await tester.tap(find.byTooltip('Browser Menu'));
         await tester.pumpAndSettle();
-        await tester.tap(find.text('Settings'));
+        await tester.ensureVisible(
+          find.byKey(const Key('browser_menu_settings_tile')),
+        );
+        await tester.pumpAndSettle();
+        await tester.tap(find.byKey(const Key('browser_menu_settings_tile')));
         await tester.pumpAndSettle();
         expect(find.byType(SettingsScreen), findsOneWidget);
         expect(find.byKey(const Key('settings_vpn_tile')), findsOneWidget);
@@ -1908,9 +1917,9 @@ void main() {
     );
 
     testWidgets(
-      'Step 25: On-Device AI (Model Download Prompt), Real Engine Images, Instant Re-Search on Engine Switch, Chrome/Brave Context Menu, & Cross-Website New-Tab + Seamless Back',
+      'Step 25: Real Engine Images, Instant Re-Search on Engine Switch, & Chrome/Brave Context Menu + Seamless Child-Tab Back',
       (WidgetTester tester) async {
-        // 1. Verify all 6 Search Engine real PNG brand assets exist & Native AI files are wired
+        // 1. Verify all 6 Search Engine real PNG brand assets exist
         for (final SearchEngine engine in SearchEngine.values) {
           final File iconFile = File(engine.logoAssetPath);
           expect(
@@ -1920,31 +1929,10 @@ void main() {
           );
           final Uint8List bytes = iconFile.readAsBytesSync();
           expect(bytes.length, greaterThan(1500));
-          // PNG signature: 89 50 4E 47
           expect(bytes.sublist(0, 4), <int>[0x89, 0x50, 0x4E, 0x47]);
         }
 
-        final String aiManagerJava = File(
-          'android/app/src/main/java/com/hypertechlabs/heavenbrowser/HeavenAiManager.java',
-        ).readAsStringSync();
-        expect(
-          aiManagerJava,
-          contains('com.google.mlkit.genai.summarization.Summarization'),
-        );
-        expect(
-          aiManagerJava,
-          contains('com.google.mlkit.genai.prompt.Generation'),
-        );
-        expect(
-          File('android/app/build.gradle.kts').readAsStringSync(),
-          contains('com.google.mlkit:genai-prompt:1.0.0-beta2'),
-        );
-        expect(
-          File('android/app/proguard-rules.pro').readAsStringSync(),
-          contains('com.google.mlkit.genai.**'),
-        );
-
-        // 2. Domain / Cross-website equivalence & Search Query Extraction unit checks
+        // 2. Domain equivalence & Search Query Extraction unit checks
         expect(
           OmniboxParser.isSameWebsite(
             'https://m.youtube.com/watch?v=123',
@@ -1967,39 +1955,12 @@ void main() {
           isFalse,
         );
 
-        bool modelDownloaded = false;
-        int downloadModelCalls = 0;
         const MethodChannel nativeChannel = MethodChannel(
           'com.hypertechlabs.heavenbrowser/native_shield',
         );
         TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
             .setMockMethodCallHandler(nativeChannel, (MethodCall call) async {
               switch (call.method) {
-                case 'checkOnDeviceAiStatus':
-                  return <String, Object?>{
-                    'status': modelDownloaded ? 'available' : 'downloadable',
-                    'modelName': 'Gemini Nano',
-                  };
-                case 'downloadOnDeviceAiModel':
-                  downloadModelCalls += 1;
-                  modelDownloaded = true;
-                  return <String, Object?>{
-                    'ok': true,
-                    'status': 'available',
-                  };
-                case 'promptOnDeviceAi':
-                  return <String, Object?>{
-                    'ok': true,
-                    'engine': 'gemini-nano',
-                    'text':
-                        'Gemini Nano on-device answer: Flutter builds fast native apps.',
-                  };
-                case 'summarizeWithOnDeviceAi':
-                  return <String, Object?>{
-                    'ok': true,
-                    'engine': 'gemini-nano',
-                    'text': '• Bullet 1\n• Bullet 2\n• Bullet 3',
-                  };
                 case 'startDownload':
                   return <String, Object?>{
                     'downloadId': 777,
@@ -2064,7 +2025,6 @@ void main() {
         );
         await tester.pumpAndSettle();
 
-        // Verify SearchEngineChipButton renders real SearchEngineLogo AssetImage!
         expect(find.byType(SearchEngineLogo), findsWidgets);
         final Image chipLogo = tester.widget<Image>(
           find
@@ -2094,7 +2054,6 @@ void main() {
           contains('google.com/search?q=raspberry+pi+5'),
         );
 
-        // Tap search bar engine switcher -> select Perplexity -> searches immediately!
         await tester.tap(
           find.byKey(const Key('tiny_search_engine_switcher')).first,
         );
@@ -2107,7 +2066,6 @@ void main() {
           'https://www.perplexity.ai/search?q=raspberry+pi+5',
         );
 
-        // Even on a non-search website (e.g. Wikipedia), switching engine immediately searches!
         await tabManager.activeEngine.loadUserEntry(
           'https://en.wikipedia.org/wiki/Quantum_computing',
         );
@@ -2124,93 +2082,14 @@ void main() {
           startsWith('https://search.brave.com/search?q='),
         );
 
-        // 4. On-Device AI: asks user permission to download Gemini Nano model when downloadable!
-        await tester.tap(find.byKey(const Key('top_bar_ai_button')));
-        await tester.pumpAndSettle();
-        expect(find.byType(HeavenAiSheet), findsOneWidget);
-        expect(find.byKey(const Key('ai_download_prompt_card')), findsOneWidget);
-        expect(
-          find.byKey(const Key('ai_download_model_button')),
-          findsOneWidget,
-        );
-
-        await tester.enterText(
-          find.byKey(const Key('ai_prompt_textfield')),
-          'What makes Flutter fast?',
-        );
-        await tester.tap(find.byKey(const Key('ai_send_prompt_button')));
-        await tester.pumpAndSettle();
-
-        // Confirmation dialog asks user to download the model first!
-        expect(
-          find.byKey(const Key('ai_confirm_download_dialog')),
-          findsOneWidget,
-        );
-        await tester.tap(find.byKey(const Key('ai_confirm_download_yes')));
-        await tester.pumpAndSettle();
-
-        expect(downloadModelCalls, 1);
-        expect(find.byKey(const Key('ai_response_card')), findsOneWidget);
-        expect(
-          find.textContaining('Gemini Nano on-device answer'),
-          findsOneWidget,
-        );
-
-        // Close AI sheet
-        await tester.tap(find.byTooltip('Close'));
-        await tester.pumpAndSettle();
-
-        // 5. Cross-Website Redirects Open in New Tab + Seamless Back to Opener Tab!
+        // 4. Chrome / Brave-Style Web Context Menu for Linked Images + Seamless Back!
         await tabManager.closeAllTabsByMode(incognito: false);
         await tester.pumpAndSettle();
-        expect(tabManager.totalTabCount, 1);
-
-        final String openerId = tabManager.activeTab.id;
         await tabManager.activeEngine.loadUserEntry(
           'https://news.ycombinator.com',
         );
         await tester.pumpAndSettle();
-        expect(
-          tabManager.activeEngine.currentUrl,
-          'https://news.ycombinator.com',
-        );
 
-        // Same-website navigation stays in the same tab
-        final sameSiteDecision = await tabManager.activeEngine
-            .handleWebsiteNavigationOrRedirect(
-              'https://news.ycombinator.com/newest',
-            );
-        expect(sameSiteDecision.name, 'navigate');
-        expect(tabManager.totalTabCount, 1);
-
-        // Cross-website redirect opens in a new child tab automatically!
-        final crossSiteDecision = await tabManager.activeEngine
-            .handleWebsiteNavigationOrRedirect(
-              'https://flutter.dev/multi-platform',
-            );
-        await tester.pumpAndSettle();
-        expect(crossSiteDecision.name, 'prevent');
-        expect(tabManager.totalTabCount, 2);
-        expect(tabManager.activeTab.openerTabId, openerId);
-        expect(
-          tabManager.activeEngine.currentUrl,
-          'https://flutter.dev/multi-platform',
-        );
-        expect(tabManager.canReturnToOpenerTab, isTrue);
-        // Entry page of spawned child tab has canGoBack == false so Back returns straight to opener!
-        expect(tabManager.activeEngine.canGoBack, isFalse);
-
-        // Press Back -> seamlessly closes child tab and lands back on https://news.ycombinator.com!
-        await tester.tap(find.byKey(const Key('tablet_bar_back_button')));
-        await tester.pumpAndSettle();
-        expect(tabManager.totalTabCount, 1);
-        expect(tabManager.activeTab.id, openerId);
-        expect(
-          tabManager.activeEngine.currentUrl,
-          'https://news.ycombinator.com',
-        );
-
-        // 6. Chrome / Brave-Style Web Context Menu for Linked Images!
         tabManager.activeEngine.onWebContextMenu?.call(
           const WebContextMenuData(
             webViewId: 1,
@@ -2237,7 +2116,6 @@ void main() {
         );
         expect(find.byKey(const Key('ctx_copy_image_url')), findsOneWidget);
 
-        // Tapping "Open in new tab" opens the link as a child tab and Back returns seamlessly!
         await tester.tap(find.byKey(const Key('ctx_open_new_tab')));
         await tester.pumpAndSettle();
         expect(tabManager.totalTabCount, 2);
@@ -2251,6 +2129,362 @@ void main() {
           tabManager.activeEngine.currentUrl,
           'https://news.ycombinator.com',
         );
+
+        vpn.dispose();
+        downloads.dispose();
+        interests.dispose();
+        settings.dispose();
+      },
+    );
+
+    testWidgets(
+      'Step 26: Pirate-Site Ad/Popunder Blocking, 3-Dots Menu (Listen + Offline/PDF + Settings Below Notifications, No Incognito), Zero AI, "Google" Label, Camera Lens Next to Mic, Home Widget, & First-Launch Default Browser Prompt',
+      (WidgetTester tester) async {
+        // 1. Verify AI files/dependencies are 100% deleted & Android Home Screen Search Widget is registered!
+        expect(
+          File(
+            'android/app/src/main/java/com/hypertechlabs/heavenbrowser/HeavenAiManager.java',
+          ).existsSync(),
+          isFalse,
+        );
+        expect(Directory('lib/features/ai').existsSync(), isFalse);
+        expect(
+          File('android/app/build.gradle.kts').readAsStringSync(),
+          isNot(contains('com.google.mlkit:genai')),
+        );
+        expect(
+          File(
+            'android/app/src/main/java/com/hypertechlabs/heavenbrowser/HeavenSearchWidgetProvider.java',
+          ).existsSync(),
+          isTrue,
+        );
+        expect(
+          File('android/app/src/main/AndroidManifest.xml').readAsStringSync(),
+          contains('android.appwidget.action.APPWIDGET_UPDATE'),
+        );
+        expect(
+          File(
+            'android/app/src/main/res/xml/heaven_search_widget_info.xml',
+          ).existsSync(),
+          isTrue,
+        );
+
+        // 2. Verify "Google" label (never "Google (Default)" or "Google Search")
+        expect(SearchEngine.google.label, 'Google');
+        expect(SearchEngine.google.shortLabel, 'Google');
+
+        // 3. Verify Pirate / Streaming Site Ad & Popunder Redirect Blocking + Single-Tab Navigation!
+        expect(
+          OmniboxParser.isKnownAdOrPopunderRedirect(
+            Uri.parse('https://syndication.exoclick.com/splash.php?idzone=99'),
+          ),
+          isTrue,
+        );
+        expect(
+          OmniboxParser.isKnownAdOrPopunderRedirect(
+            Uri.parse('https://serve.popads.net/c?p=1234'),
+          ),
+          isTrue,
+        );
+        expect(
+          OmniboxParser.isKnownAdOrPopunderRedirect(
+            Uri.parse('https://flutter.dev/multi-platform'),
+          ),
+          isFalse,
+        );
+
+        int defaultBrowserRoleCalls = 0;
+        int pinWidgetCalls = 0;
+        int savePdfCalls = 0;
+        final List<String> ttsSpokenChunks = <String>[];
+        String lastCameraSource = '';
+
+        const MethodChannel nativeChannel = MethodChannel(
+          'com.hypertechlabs.heavenbrowser/native_shield',
+        );
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+            .setMockMethodCallHandler(nativeChannel, (MethodCall call) async {
+              switch (call.method) {
+                case 'consumeInitialLaunchAction':
+                  return null;
+                case 'isDefaultBrowser':
+                  return false;
+                case 'requestDefaultBrowserRole':
+                  defaultBrowserRoleCalls += 1;
+                  return true;
+                case 'requestPinSearchWidget':
+                  pinWidgetCalls += 1;
+                  return true;
+                case 'refreshSearchWidgets':
+                  return null;
+                case 'captureVisualSearchImage':
+                  final Map<Object?, Object?> args =
+                      call.arguments as Map<Object?, Object?>;
+                  lastCameraSource = args['source']?.toString() ?? '';
+                  return <String, Object?>{
+                    'ok': true,
+                    'base64Jpeg': base64Encode(<int>[0xFF, 0xD8, 0xFF, 0xD9]),
+                  };
+                case 'ttsSpeak':
+                  final Map<Object?, Object?> args =
+                      call.arguments as Map<Object?, Object?>;
+                  ttsSpokenChunks.add(args['text']?.toString() ?? '');
+                  return true;
+                case 'ttsStop':
+                  return null;
+                case 'saveOfflinePage':
+                  return <String, Object?>{
+                    'ok': true,
+                    'filePath': '/tmp/flutter_docs_offline.mht',
+                    'sizeBytes': 48120,
+                  };
+                case 'loadOfflineArchive':
+                  return true;
+                case 'deleteOfflinePage':
+                  return true;
+                case 'saveWebPageAsPdf':
+                  savePdfCalls += 1;
+                  return true;
+                default:
+                  return null;
+              }
+            });
+        addTearDown(() {
+          TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+              .setMockMethodCallHandler(nativeChannel, null);
+        });
+
+        tester.view.physicalSize = const Size(412, 915);
+        tester.view.devicePixelRatio = 1.0;
+        addTearDown(() {
+          tester.view.resetPhysicalSize();
+          tester.view.resetDevicePixelRatio();
+        });
+
+        SharedPreferences.setMockInitialValues(<String, Object>{});
+        final SharedPreferences prefs = await SharedPreferences.getInstance();
+        final BrowserSettingsController settings = BrowserSettingsController(
+          prefs,
+        );
+        final DownloadsController downloads = DownloadsController(
+          prefs,
+          enableNativePolling: false,
+        );
+        final InterestProfileController interests = InterestProfileController(
+          prefs,
+        );
+        final HeavenNewsFeedService newsService = _createMockNewsService(
+          prefs,
+          interests,
+        );
+        final VpnController vpn = VpnController(
+          prefs,
+          enableNativePolling: false,
+          client: MockClient(
+            (_) async =>
+                http.Response('ip=89.187.173.169\nloc=US\nwarp=off\n', 200),
+          ),
+        );
+
+        await tester.pumpWidget(
+          HeavenBrowserApp(
+            settings: settings,
+            downloads: downloads,
+            interests: interests,
+            newsService: newsService,
+            searchService: _createMockSearchService(),
+            vpn: vpn,
+            enablePlatformWebView: false,
+            promptDefaultBrowserOnFirstLaunch: true,
+          ),
+        );
+        await tester.pumpAndSettle();
+
+        // 4. First-Launch Default Browser Prompt appears once and calls requestDefaultBrowserRole!
+        expect(
+          find.byKey(const Key('first_launch_default_browser_dialog')),
+          findsOneWidget,
+        );
+        expect(settings.hasPromptedDefaultBrowser, isTrue);
+        await tester.tap(
+          find.byKey(const Key('default_browser_confirm_button')),
+        );
+        await tester.pumpAndSettle();
+        expect(defaultBrowserRoleCalls, 1);
+
+        // Zero AI buttons anywhere in top bar!
+        expect(find.byKey(const Key('top_bar_ai_button')), findsNothing);
+
+        // 5. Home Screen Search Bar: Search icon button removed, Camera button right next to Mic button!
+        expect(find.byKey(const Key('home_search_icon_button')), findsNothing);
+        final Finder homeMic = find.byKey(const Key('home_voice_mic_button'));
+        final Finder homeCamera = find.byKey(
+          const Key('home_camera_lens_button'),
+        );
+        expect(homeMic, findsOneWidget);
+        expect(homeCamera, findsOneWidget);
+        expect(
+          tester.getCenter(homeCamera).dx,
+          greaterThan(tester.getCenter(homeMic).dx),
+        );
+        expect(
+          (tester.getCenter(homeCamera).dy - tester.getCenter(homeMic).dy)
+              .abs(),
+          lessThan(2.0),
+        );
+
+        // Search engine picker displays "Google", NEVER "Google (Default)"!
+        await tester.tap(
+          find.byKey(const Key('tiny_search_engine_switcher')).first,
+        );
+        await tester.pumpAndSettle();
+        expect(find.text('Google'), findsWidgets);
+        expect(find.textContaining('Google (Default)'), findsNothing);
+        expect(find.textContaining('Google Search'), findsNothing);
+        await tester.tap(find.text('Google').last);
+        await tester.pumpAndSettle();
+
+        // 6. Camera button next to Mic opens VisualSearchLensSheet & searches with Google Lens!
+        await tester.tap(homeCamera);
+        await tester.pumpAndSettle();
+        expect(find.byType(VisualSearchLensSheet), findsOneWidget);
+        await tester.tap(find.byKey(const Key('lens_take_photo_tile')));
+        await tester.pumpAndSettle();
+        expect(lastCameraSource, 'camera');
+
+        final TabManagerController tabManager = tester
+            .widget<BrowserScreen>(find.byType(BrowserScreen))
+            .tabManager;
+        expect(
+          tabManager.activeEngine.currentUrl,
+          'https://lens.google.com/search',
+        );
+        expect(tabManager.totalTabCount, 1);
+
+        // 7. Pirate-site multi-link / popunder redirects NEVER spawn extra tabs & ad domains are blocked!
+        await tabManager.activeEngine.loadUserEntry('https://stream-example.tv');
+        await tester.pumpAndSettle();
+        expect(tabManager.totalTabCount, 1);
+
+        // Ad/popunder main-frame redirect is blocked completely!
+        final adDecision = await tabManager.activeEngine
+            .handleWebsiteNavigationOrRedirect(
+              'https://syndication.exoclick.com/popunder?zone=1',
+            );
+        expect(adDecision.name, 'prevent');
+        expect(tabManager.totalTabCount, 1);
+
+        // Legitimate cross-site navigation stays inside the SAME tab (zero multi-tab spam!)
+        await tester.runAsync(
+          () => Future<void>.delayed(const Duration(milliseconds: 700)),
+        );
+        final legitDecision = await tabManager.activeEngine
+            .handleWebsiteNavigationOrRedirect(
+              'https://flutter.dev/docs',
+            );
+        expect(legitDecision.name, 'navigate');
+        expect(tabManager.totalTabCount, 1);
+
+        // Rapid (<650ms) second cross-site redirect bounce is blocked!
+        final bounceDecision = await tabManager.activeEngine
+            .handleWebsiteNavigationOrRedirect(
+              'https://spam-tracker-redirect.xyz/jump',
+            );
+        expect(bounceDecision.name, 'prevent');
+        expect(tabManager.totalTabCount, 1);
+
+        // 8. 3-Dots Menu: No Incognito, No AI, Listen + Offline/PDF in grid, Settings right below Notifications!
+        await tester.tap(find.byTooltip('Browser Menu'));
+        await tester.pumpAndSettle();
+        expect(find.text('Incognito'), findsNothing);
+        expect(find.byKey(const Key('browser_menu_ai_tile')), findsNothing);
+        expect(
+          find.byKey(const Key('browser_menu_listen_tile')),
+          findsOneWidget,
+        );
+        expect(
+          find.byKey(const Key('browser_menu_offline_pdf_tile')),
+          findsOneWidget,
+        );
+
+        await tester.ensureVisible(
+          find.byKey(const Key('browser_menu_settings_tile')),
+        );
+        await tester.pumpAndSettle();
+        final double notificationsDy = tester
+            .getCenter(find.byKey(const Key('browser_menu_notifications_tile')))
+            .dy;
+        final double settingsDy = tester
+            .getCenter(find.byKey(const Key('browser_menu_settings_tile')))
+            .dy;
+        expect(settingsDy, greaterThan(notificationsDy));
+        expect(settingsDy - notificationsDy, lessThan(80.0));
+
+        // 9. Listen to This Page (TTS) from 3-dots menu!
+        await tester.ensureVisible(
+          find.byKey(const Key('browser_menu_listen_tile')),
+        );
+        await tester.pumpAndSettle();
+        await tester.tap(find.byKey(const Key('browser_menu_listen_tile')));
+        await tester.pumpAndSettle();
+        expect(find.byType(ListenToPageSheet), findsOneWidget);
+        expect(ttsSpokenChunks, isNotEmpty);
+
+        // Change speed to 1.5x and close sheet -> active Listen mini bar stays above viewport!
+        await tester.tap(find.byKey(const Key('tts_rate_1.5x')));
+        await tester.pumpAndSettle();
+        await tester.tap(find.byTooltip('Close'));
+        await tester.pumpAndSettle();
+        expect(find.byKey(const Key('active_tts_mini_bar')), findsOneWidget);
+
+        // Stop TTS from mini bar
+        await tester.tap(
+          find.descendant(
+            of: find.byKey(const Key('active_tts_mini_bar')),
+            matching: find.byTooltip('Stop'),
+          ),
+        );
+        await tester.pumpAndSettle();
+        expect(find.byKey(const Key('active_tts_mini_bar')), findsNothing);
+
+        // 10. Offline Pages & Save Webpage as PDF from 3-dots menu!
+        await tester.tap(find.byTooltip('Browser Menu'));
+        await tester.pumpAndSettle();
+        await tester.tap(
+          find.byKey(const Key('browser_menu_offline_pdf_tile')),
+        );
+        await tester.pumpAndSettle();
+        expect(find.byType(OfflinePagesSheet), findsOneWidget);
+
+        await tester.tap(find.byKey(const Key('save_offline_page_button')));
+        await tester.pumpAndSettle();
+        expect(find.textContaining('stream-example.tv'), findsWidgets);
+        expect(find.textContaining('47 KB'), findsOneWidget);
+
+        await tester.tap(find.byKey(const Key('save_webpage_pdf_button')));
+        await tester.pumpAndSettle();
+        expect(savePdfCalls, 1);
+
+        // 11. Settings -> Add Search Widget tile triggers 1-tap widget pin!
+        await tester.tap(find.byTooltip('Browser Menu'));
+        await tester.pumpAndSettle();
+        await tester.ensureVisible(
+          find.byKey(const Key('browser_menu_settings_tile')),
+        );
+        await tester.pumpAndSettle();
+        await tester.tap(find.byKey(const Key('browser_menu_settings_tile')));
+        await tester.pumpAndSettle();
+        expect(
+          find.byKey(const Key('settings_default_browser_tile')),
+          findsOneWidget,
+        );
+        expect(
+          find.byKey(const Key('settings_add_widget_tile')),
+          findsOneWidget,
+        );
+        await tester.tap(find.byKey(const Key('settings_add_widget_tile')));
+        await tester.pumpAndSettle();
+        expect(pinWidgetCalls, 1);
 
         vpn.dispose();
         downloads.dispose();

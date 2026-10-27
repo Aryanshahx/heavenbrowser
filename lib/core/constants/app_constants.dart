@@ -2,7 +2,7 @@ class AppConstants {
   const AppConstants._();
 
   static const String appName = 'Heaven';
-  static const String searchEngineName = 'Google Search';
+  static const String searchEngineName = 'Google';
   static const String appVersion = '0.0.1';
   static const String packageName = 'com.hypertechlabs.heavenbrowser';
   static const String supportEmail = 'techlabs.hyper@gmail.com';

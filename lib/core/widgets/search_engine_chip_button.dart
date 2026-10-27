@@ -61,7 +61,7 @@ class SearchEngineLogo extends StatelessWidget {
 }
 
 /// Search Engine Quick-Switcher button placed directly inside the Search Bar
-/// showing the real brand image of Google (Default), Perplexity, DuckDuckGo,
+/// showing the real brand image of Google, Perplexity, DuckDuckGo,
 /// Brave, Bing, or Startpage.
 class SearchEngineChipButton extends StatelessWidget {
   const SearchEngineChipButton({
@@ -94,9 +94,7 @@ class SearchEngineChipButton extends StatelessWidget {
                 const SizedBox(width: 10),
                 Expanded(
                   child: Text(
-                    engine == SearchEngine.google
-                        ? '${engine.label} (Default)'
-                        : engine.label,
+                    engine.label,
                     style: TextStyle(
                       fontSize: 13.5,
                       fontWeight: active ? FontWeight.w800 : FontWeight.w600,

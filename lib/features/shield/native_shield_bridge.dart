@@ -11,13 +11,10 @@ typedef NativeConsoleMessageCallback =
 typedef NativeMediaPlaybackChangedCallback =
     void Function(bool playing, String title);
 typedef NativeWebScrollNavBarCallback = void Function(bool visible);
-typedef NativeAiDownloadProgressCallback =
-    void Function(
-      String state,
-      int bytesDownloaded,
-      int totalBytes,
-      String? error,
-    );
+typedef NativeTtsEventCallback =
+    void Function(String event, String utteranceId);
+typedef NativeExternalLaunchCallback =
+    void Function(Map<String, Object?> action);
 
 class WebContextMenuData {
   const WebContextMenuData({
@@ -84,7 +81,8 @@ class NativeShieldBridge {
       <int, NativeWebContextMenuCallback>{};
 
   NativeDownloadStartedCallback? onDownloadStarted;
-  NativeAiDownloadProgressCallback? onAiDownloadProgress;
+  NativeTtsEventCallback? onTtsEvent;
+  NativeExternalLaunchCallback? onExternalLaunchAction;
   NativeWebContextMenuCallback? onGlobalWebContextMenu;
 
   Future<dynamic> _handleNativeCall(MethodCall call) async {
@@ -156,14 +154,20 @@ class NativeShieldBridge {
           onGlobalWebContextMenu?.call(data);
         }
       }
-    } else if (call.method == 'onAiDownloadProgress' &&
+    } else if (call.method == 'onTtsEvent' &&
         rawArgs is Map<Object?, Object?>) {
-      final String state = (rawArgs['state']?.toString() ?? 'downloading')
-          .trim();
-      final int downloaded = (rawArgs['bytesDownloaded'] as num?)?.toInt() ?? 0;
-      final int total = (rawArgs['totalBytes'] as num?)?.toInt() ?? 0;
-      final String? err = rawArgs['error']?.toString();
-      onAiDownloadProgress?.call(state, downloaded, total, err);
+      final String event = (rawArgs['event']?.toString() ?? '').trim();
+      final String uttId = (rawArgs['utteranceId']?.toString() ?? '').trim();
+      if (event.isNotEmpty) {
+        onTtsEvent?.call(event, uttId);
+      }
+    } else if (call.method == 'onExternalLaunchAction' &&
+        rawArgs is Map<Object?, Object?>) {
+      final Map<String, Object?> action = <String, Object?>{
+        for (final MapEntry<Object?, Object?> e in rawArgs.entries)
+          if (e.key != null) e.key.toString(): e.value,
+      };
+      onExternalLaunchAction?.call(action);
     }
     return null;
   }
@@ -1057,52 +1061,72 @@ class NativeShieldBridge {
     }
   }
 
-  Future<Map<String, Object?>> checkOnDeviceAiStatus() async {
+  Future<bool> isDefaultBrowser() async {
     try {
-      final Map<Object?, Object?>? raw = await _channel
-          .invokeMethod<Map<Object?, Object?>>('checkOnDeviceAiStatus');
-      if (raw == null) {
-        return const <String, Object?>{'status': 'unavailable'};
-      }
-      return <String, Object?>{
-        for (final MapEntry<Object?, Object?> e in raw.entries)
-          if (e.key != null) e.key.toString(): e.value,
-      };
+      return await _channel.invokeMethod<bool>('isDefaultBrowser') ?? false;
     } on MissingPluginException {
-      return const <String, Object?>{'status': 'unavailable'};
+      return false;
     } on PlatformException {
-      return const <String, Object?>{'status': 'unavailable'};
+      return false;
     }
   }
 
-  Future<Map<String, Object?>> downloadOnDeviceAiModel() async {
+  Future<bool> requestDefaultBrowserRole() async {
+    try {
+      return await _channel.invokeMethod<bool>('requestDefaultBrowserRole') ??
+          false;
+    } on MissingPluginException {
+      return false;
+    } on PlatformException {
+      return false;
+    }
+  }
+
+  Future<Map<String, Object?>?> consumeInitialLaunchAction() async {
     try {
       final Map<Object?, Object?>? raw = await _channel
-          .invokeMethod<Map<Object?, Object?>>('downloadOnDeviceAiModel');
-      if (raw == null) {
-        return const <String, Object?>{'ok': false, 'status': 'unavailable'};
-      }
+          .invokeMethod<Map<Object?, Object?>>('consumeInitialLaunchAction');
+      if (raw == null) return null;
       return <String, Object?>{
         for (final MapEntry<Object?, Object?> e in raw.entries)
           if (e.key != null) e.key.toString(): e.value,
       };
     } on MissingPluginException {
-      return const <String, Object?>{'ok': false, 'status': 'unavailable'};
-    } on PlatformException catch (e) {
-      return <String, Object?>{
-        'ok': false,
-        'status': 'unavailable',
-        'error': e.message ?? 'Download failed',
-      };
+      return null;
+    } on PlatformException {
+      return null;
     }
   }
 
-  Future<Map<String, Object?>> summarizeWithOnDeviceAi(String text) async {
+  Future<bool> requestPinSearchWidget() async {
+    try {
+      return await _channel.invokeMethod<bool>('requestPinSearchWidget') ??
+          false;
+    } on MissingPluginException {
+      return false;
+    } on PlatformException {
+      return false;
+    }
+  }
+
+  Future<void> refreshSearchWidgets() async {
+    try {
+      await _channel.invokeMethod<bool>('refreshSearchWidgets');
+    } on MissingPluginException {
+      // No-op in desktop/unit tests
+    } on PlatformException {
+      // Ignore
+    }
+  }
+
+  Future<Map<String, Object?>> captureVisualSearchImage({
+    required String source,
+  }) async {
     try {
       final Map<Object?, Object?>? raw = await _channel
           .invokeMethod<Map<Object?, Object?>>(
-            'summarizeWithOnDeviceAi',
-            <String, Object>{'text': text},
+            'captureVisualSearchImage',
+            <String, Object>{'source': source},
           );
       if (raw == null) {
         return const <String, Object?>{'ok': false};
@@ -1114,19 +1138,63 @@ class NativeShieldBridge {
     } on MissingPluginException {
       return const <String, Object?>{'ok': false};
     } on PlatformException catch (e) {
-      return <String, Object?>{
-        'ok': false,
-        'error': e.message ?? 'Summarization failed',
-      };
+      return <String, Object?>{'ok': false, 'error': e.message};
     }
   }
 
-  Future<Map<String, Object?>> promptOnDeviceAi(String prompt) async {
+  Future<bool> ttsSpeak({
+    required String text,
+    double rate = 1.0,
+    String utteranceId = 'hb_utt',
+  }) async {
+    try {
+      return await _channel.invokeMethod<bool>('ttsSpeak', <String, Object>{
+            'text': text,
+            'rate': rate,
+            'utteranceId': utteranceId,
+          }) ??
+          false;
+    } on MissingPluginException {
+      return false;
+    } on PlatformException {
+      return false;
+    }
+  }
+
+  Future<void> ttsStop() async {
+    try {
+      await _channel.invokeMethod<bool>('ttsStop');
+    } on MissingPluginException {
+      // No-op in tests
+    } on PlatformException {
+      // Ignore
+    }
+  }
+
+  Future<bool> ttsIsSpeaking() async {
+    try {
+      return await _channel.invokeMethod<bool>('ttsIsSpeaking') ?? false;
+    } on MissingPluginException {
+      return false;
+    } on PlatformException {
+      return false;
+    }
+  }
+
+  Future<Map<String, Object?>> saveOfflinePage({
+    int? webViewId,
+    required String title,
+    required String url,
+  }) async {
     try {
       final Map<Object?, Object?>? raw = await _channel
           .invokeMethod<Map<Object?, Object?>>(
-            'promptOnDeviceAi',
-            <String, Object>{'prompt': prompt},
+            'saveOfflinePage',
+            <String, Object?>{
+              'webViewId': webViewId,
+              'title': title,
+              'url': url,
+            },
           );
       if (raw == null) {
         return const <String, Object?>{'ok': false};
@@ -1137,11 +1205,53 @@ class NativeShieldBridge {
       };
     } on MissingPluginException {
       return const <String, Object?>{'ok': false};
-    } on PlatformException catch (e) {
-      return <String, Object?>{
-        'ok': false,
-        'error': e.message ?? 'AI prompt failed',
-      };
+    } on PlatformException {
+      return const <String, Object?>{'ok': false};
+    }
+  }
+
+  Future<bool> loadOfflineArchive({
+    int? webViewId,
+    required String filePath,
+  }) async {
+    try {
+      return await _channel.invokeMethod<bool>(
+            'loadOfflineArchive',
+            <String, Object?>{'webViewId': webViewId, 'filePath': filePath},
+          ) ??
+          false;
+    } on MissingPluginException {
+      return false;
+    } on PlatformException {
+      return false;
+    }
+  }
+
+  Future<bool> deleteOfflinePage({required String filePath}) async {
+    try {
+      return await _channel.invokeMethod<bool>(
+            'deleteOfflinePage',
+            <String, Object>{'filePath': filePath},
+          ) ??
+          false;
+    } on MissingPluginException {
+      return false;
+    } on PlatformException {
+      return false;
+    }
+  }
+
+  Future<bool> saveWebPageAsPdf({int? webViewId, required String title}) async {
+    try {
+      return await _channel.invokeMethod<bool>(
+            'saveWebPageAsPdf',
+            <String, Object?>{'webViewId': webViewId, 'title': title},
+          ) ??
+          false;
+    } on MissingPluginException {
+      return false;
+    } on PlatformException {
+      return false;
     }
   }
 }

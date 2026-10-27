@@ -99,8 +99,6 @@ dependencies {
     coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.5")
     implementation("androidx.webkit:webkit:1.15.0")
     implementation("com.wireguard.android:tunnel:1.0.20260102")
-    implementation("com.google.mlkit:genai-summarization:1.0.0-beta1")
-    implementation("com.google.mlkit:genai-prompt:1.0.0-beta2")
 }
 
 flutter {

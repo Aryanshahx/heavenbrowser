@@ -24,6 +24,7 @@ class StartPage extends StatefulWidget {
     required this.onOpenInNewTab,
     required this.onOpenInIncognitoTab,
     required this.onVoiceSearch,
+    required this.onCameraSearch,
     this.topOverlayInset = 0,
   });
 
@@ -36,6 +37,7 @@ class StartPage extends StatefulWidget {
   final ValueChanged<String> onOpenInNewTab;
   final ValueChanged<String> onOpenInIncognitoTab;
   final VoidCallback onVoiceSearch;
+  final VoidCallback onCameraSearch;
   final double topOverlayInset;
 
   @override
@@ -124,15 +126,6 @@ class _StartPageState extends State<StartPage> {
         setState(() => _suggestions = fetched);
       }
     });
-  }
-
-  void _onSearchIconTap() {
-    final String query = _homeSearchController.text.trim();
-    if (query.isEmpty) {
-      _homeSearchFocus.requestFocus();
-      return;
-    }
-    _submitHomeSearch(query);
   }
 
   void _submitHomeSearch([String? overrideValue]) {
@@ -402,16 +395,7 @@ class _StartPageState extends State<StartPage> {
               }
             },
           ),
-          // Clickable Search Icon submits query (or focuses when empty)!
-          IconButton(
-            key: const Key('home_search_icon_button'),
-            onPressed: _onSearchIconTap,
-            icon: Icon(Icons.search_rounded, color: colors.primary, size: 21),
-            tooltip: 'Search',
-            visualDensity: VisualDensity.compact,
-            padding: EdgeInsets.zero,
-            constraints: const BoxConstraints(minWidth: 34, minHeight: 38),
-          ),
+          const SizedBox(width: 10),
           Expanded(
             child: TextField(
               key: const Key('home_search_textfield'),
@@ -443,15 +427,36 @@ class _StartPageState extends State<StartPage> {
               },
               icon: const Icon(Icons.cancel_rounded, size: 18),
             )
-          else
+          else ...<Widget>[
             IconButton(
+              key: const Key('home_voice_mic_button'),
               onPressed: widget.onVoiceSearch,
               icon: Icon(Icons.mic_rounded, color: colors.primary, size: 20),
               tooltip: 'Voice Search',
+              style: IconButton.styleFrom(
+                tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+              ),
               visualDensity: VisualDensity.compact,
               padding: EdgeInsets.zero,
-              constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
+              constraints: const BoxConstraints(minWidth: 34, minHeight: 36),
             ),
+            IconButton(
+              key: const Key('home_camera_lens_button'),
+              onPressed: widget.onCameraSearch,
+              icon: Icon(
+                Icons.photo_camera_outlined,
+                color: colors.primary,
+                size: 20,
+              ),
+              tooltip: 'Camera Search',
+              style: IconButton.styleFrom(
+                tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+              ),
+              visualDensity: VisualDensity.compact,
+              padding: EdgeInsets.zero,
+              constraints: const BoxConstraints(minWidth: 34, minHeight: 36),
+            ),
+          ],
         ],
       ),
     );

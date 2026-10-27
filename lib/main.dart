@@ -49,6 +49,7 @@ class HeavenBrowserApp extends StatefulWidget {
     this.newsService,
     this.vpn,
     this.enablePlatformWebView = true,
+    this.promptDefaultBrowserOnFirstLaunch = false,
     this.searchService,
   });
 
@@ -58,6 +59,7 @@ class HeavenBrowserApp extends StatefulWidget {
   final HeavenNewsFeedService? newsService;
   final VpnController? vpn;
   final bool enablePlatformWebView;
+  final bool promptDefaultBrowserOnFirstLaunch;
   final HeavenSearchService? searchService;
 
   @override
@@ -311,6 +313,8 @@ class _HeavenBrowserAppState extends State<HeavenBrowserApp>
       newsService: _effectiveNews,
       interests: _effectiveInterests,
       vpn: _effectiveVpn,
+      promptDefaultBrowserOnFirstLaunch:
+          widget.promptDefaultBrowserOnFirstLaunch,
     );
   }
 
