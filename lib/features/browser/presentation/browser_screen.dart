@@ -152,8 +152,11 @@ class _BrowserScreenState extends State<BrowserScreen>
   void _handleWindowFocusedForKeyboard() {
     if (!mounted) return;
     // Native says the window just gained focus while a guaranteed keyboard
-    // popup is pending — re-assert the soft keyboard no matter which search
-    // field (top omnibox or Home start page) currently owns the input client.
+    // popup is pending — re-assert focus + Flutter's own text input.
+    // NEVER echo a native keyboard request back from here: the native side
+    // already re-asserted the keyboard before sending this event, and echoing
+    // re-armed its retry wave in an infinite exponentially growing loop that
+    // hung the whole app!
     unawaited(
       SystemChannels.textInput
           .invokeMethod<void>('TextInput.show')
@@ -162,7 +165,6 @@ class _BrowserScreenState extends State<BrowserScreen>
     if (_isEditingOmnibox) {
       _omniboxFocusNode.requestFocus();
     }
-    unawaited(NativeShieldBridge.instance.showSoftKeyboard());
   }
 
   void _forceShowKeyboardForActiveField() {

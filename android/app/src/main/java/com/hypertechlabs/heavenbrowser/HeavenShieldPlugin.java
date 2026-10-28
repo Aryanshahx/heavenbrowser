@@ -552,8 +552,16 @@ public class HeavenShieldPlugin
 
   public void onWindowFocusChanged(boolean hasFocus) {
     if (hasFocus && this.pendingShowKeyboardOnWindowFocus) {
+      // ONE-SHOT: clear the pending flag the moment it is satisfied. Without
+      // this, every retry re-notified Flutter, which echoed showSoftKeyboard
+      // back into requestGuaranteedSoftKeyboard(), re-arming a fresh retry
+      // wave each time (7 -> 49 -> 343 ...) until the app hung completely!
+      this.pendingShowKeyboardOnWindowFocus = false;
       showSoftKeyboardNow();
       mainHandler.postDelayed(this::showSoftKeyboardNow, 65L);
+      // Never leave SOFT_INPUT_STATE_ALWAYS_VISIBLE sticky on the window —
+      // it would force the keyboard open again on every later focus gain!
+      mainHandler.postDelayed(this::restoreSoftInputMode, 1100L);
       MethodChannel ch = this.channel;
       if (ch != null) {
         ch.invokeMethod("onWindowFocusedForKeyboard", null);
@@ -575,6 +583,7 @@ public class HeavenShieldPlugin
     }
   }
 
+  @SuppressWarnings("deprecation")
   private void showSoftKeyboardNow() {
     Activity act = this.activity;
     if (act == null) {
@@ -582,7 +591,9 @@ public class HeavenShieldPlugin
     }
     try {
       act.getWindow()
-          .setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_VISIBLE);
+          .setSoftInputMode(
+              WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_VISIBLE
+                  | WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE);
       InputMethodManager imm =
           (InputMethodManager) act.getSystemService(Context.INPUT_METHOD_SERVICE);
       if (imm == null) {
@@ -2127,11 +2138,34 @@ public class HeavenShieldPlugin
    * gains focus (cold app start) or after the launch transition.
    */
   private void requestGuaranteedSoftKeyboard() {
+    long now = SystemClock.elapsedRealtime();
+    if (this.pendingShowKeyboardOnWindowFocus
+        && (this.pendingShowKeyboardUntilMs - now) > 2500L) {
+      // Already armed recently — NEVER stack another retry wave on top (a
+      // Flutter echo once multiplied these waves exponentially and hung the
+      // whole app). Just re-assert the keyboard once.
+      showSoftKeyboardNow();
+      return;
+    }
     this.pendingShowKeyboardOnWindowFocus = true;
-    this.pendingShowKeyboardUntilMs = SystemClock.elapsedRealtime() + 4000L;
+    this.pendingShowKeyboardUntilMs = now + 4000L;
     showSoftKeyboardNow();
     for (long delay : KEYBOARD_RETRY_DELAY_MS) {
       mainHandler.postDelayed(this::triggerKeyboardIfWindowFocused, delay);
+    }
+  }
+
+  @SuppressWarnings("deprecation")
+  private void restoreSoftInputMode() {
+    try {
+      Activity act = this.activity;
+      if (act != null && act.getWindow() != null) {
+        act.getWindow()
+            .setSoftInputMode(
+                WindowManager.LayoutParams.SOFT_INPUT_STATE_UNSPECIFIED
+                    | WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE);
+      }
+    } catch (Throwable ignored) {
     }
   }
 

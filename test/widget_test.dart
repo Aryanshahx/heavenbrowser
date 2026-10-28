@@ -3187,6 +3187,11 @@ void main() {
           expect(pluginJava, contains('flushCookiesAsyncThrottled'));
           expect(pluginJava, contains('requestGuaranteedSoftKeyboard'));
           expect(pluginJava, contains('KEYBOARD_RETRY_DELAY_MS'));
+          // Hang fix invariants: one-shot clear, no stacked retry waves, and
+          // the soft-input mode never stays sticky (keyboard always returning)!
+          expect(pluginJava, contains('restoreSoftInputMode'));
+          expect(pluginJava, contains('SOFT_INPUT_ADJUST_RESIZE'));
+          expect(pluginJava, contains('this.pendingShowKeyboardOnWindowFocus = false;'));
 
           engine.dispose();
           settings.dispose();
@@ -3338,6 +3343,128 @@ void main() {
           await tester.pump(const Duration(milliseconds: 200));
 
           tabManager.dispose();
+          settings.dispose();
+        },
+      );
+
+      testWidgets(
+        'Guaranteed keyboard popup NEVER re-arms itself in an infinite loop (app hang regression)',
+        (WidgetTester tester) async {
+          tester.view.physicalSize = const Size(412, 915);
+          tester.view.devicePixelRatio = 1.0;
+          addTearDown(() {
+            tester.view.resetPhysicalSize();
+            tester.view.resetDevicePixelRatio();
+          });
+
+          int showSoftKeyboardCalls = 0;
+          const MethodChannel nativeChannel = MethodChannel(
+            'com.hypertechlabs.heavenbrowser/native_shield',
+          );
+          TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+              .setMockMethodCallHandler(nativeChannel, (MethodCall call) async {
+                switch (call.method) {
+                  case 'consumeInitialLaunchAction':
+                    return null;
+                  case 'showSoftKeyboard':
+                    showSoftKeyboardCalls += 1;
+                    return true;
+                }
+                return null;
+              });
+          addTearDown(() {
+            TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+                .setMockMethodCallHandler(nativeChannel, null);
+          });
+
+          SharedPreferences.setMockInitialValues(<String, Object>{});
+          final SharedPreferences prefs = await SharedPreferences.getInstance();
+          final BrowserSettingsController settings = BrowserSettingsController(
+            prefs,
+          );
+          final DownloadsController downloads = DownloadsController(
+            prefs,
+            enableNativePolling: false,
+          );
+          final InterestProfileController interests =
+              InterestProfileController(prefs);
+          final HeavenNewsFeedService newsService = _createMockNewsService(
+            prefs,
+            interests,
+          );
+          final VpnController vpn = VpnController(
+            prefs,
+            enableNativePolling: false,
+            client: MockClient(
+              (_) async =>
+                  http.Response('ip=89.187.173.169\nloc=US\nwarp=off\n', 200),
+            ),
+          );
+
+          await tester.pumpWidget(
+            HeavenBrowserApp(
+              settings: settings,
+              downloads: downloads,
+              interests: interests,
+              newsService: newsService,
+              searchService: _createMockSearchService(),
+              vpn: vpn,
+              enablePlatformWebView: false,
+            ),
+          );
+          await tester.pumpAndSettle();
+
+          // Home Screen Widget tap -> omnibox edit overlay opens with the
+          // guaranteed keyboard flow!
+          NativeShieldBridge.instance.onExternalLaunchAction?.call(
+            const <String, Object?>{'type': 'omnibox'},
+          );
+          await tester.pump();
+          await tester.pump(const Duration(milliseconds: 500));
+          await tester.pumpAndSettle();
+          expect(
+            find.byKey(const Key('top_omnibox_textfield')),
+            findsOneWidget,
+          );
+          expect(showSoftKeyboardCalls, greaterThanOrEqualTo(1));
+
+          // The native window-focus event must NEVER echo back into another
+          // native showSoftKeyboard request — the old echo re-armed the retry
+          // wave exponentially (7 -> 49 -> 343 ...) and hung the whole app!
+          final int beforeFocusEvents = showSoftKeyboardCalls;
+          for (int i = 0; i < 6; i++) {
+            NativeShieldBridge.instance.onWindowFocusedForKeyboard?.call();
+            await tester.pump();
+          }
+          expect(showSoftKeyboardCalls, beforeFocusEvents);
+
+          // The omnibox stays focused and usable after the focus events.
+          expect(
+            find.byKey(const Key('top_omnibox_textfield')),
+            findsOneWidget,
+          );
+
+          // Dart source invariant: _handleWindowFocusedForKeyboard contains
+          // no NativeShieldBridge.showSoftKeyboard() echo!
+          final String browserScreen = File(
+            'lib/features/browser/presentation/browser_screen.dart',
+          ).readAsStringSync();
+          final int fnStart = browserScreen.indexOf(
+            'void _handleWindowFocusedForKeyboard()',
+          );
+          final int fnEnd = browserScreen.indexOf(
+            'void _forceShowKeyboardForActiveField()',
+            fnStart,
+          );
+          expect(fnStart, greaterThanOrEqualTo(0));
+          expect(fnEnd, greaterThan(fnStart));
+          final String fnBody = browserScreen.substring(fnStart, fnEnd);
+          expect(fnBody, isNot(contains('showSoftKeyboard')));
+
+          vpn.dispose();
+          newsService.dispose();
+          downloads.dispose();
+          interests.dispose();
           settings.dispose();
         },
       );
