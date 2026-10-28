@@ -7,8 +7,10 @@
 -dontwarn de.blinkt.openvpn.**
 -keep class id.laskarmedia.openvpn_flutter.** { *; }
 
-# Keep Heaven Browser native bridges and @JavascriptInterface methods intact
+# Keep Heaven Browser native bridges, WebView multi-window ChromeClient parent, and @JavascriptInterface methods intact
 -keep class com.hypertechlabs.heavenbrowser.** { *; }
+-keep class io.flutter.plugins.webviewflutter.** { *; }
+-dontwarn io.flutter.plugins.webviewflutter.**
 -keepclassmembers class * {
     @android.webkit.JavascriptInterface <methods>;
 }

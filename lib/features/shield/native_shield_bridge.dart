@@ -41,6 +41,7 @@ class WebContextMenuData {
 
 typedef NativeWebContextMenuCallback = void Function(WebContextMenuData data);
 typedef NativeOpenNewTabCallback = void Function(String url);
+typedef NativeWebUserInteractionCallback = void Function(String url);
 
 class HeavenShieldStats {
   const HeavenShieldStats({
@@ -82,6 +83,8 @@ class NativeShieldBridge {
       <int, NativeWebContextMenuCallback>{};
   final Map<int, NativeOpenNewTabCallback> _openNewTabListeners =
       <int, NativeOpenNewTabCallback>{};
+  final Map<int, NativeWebUserInteractionCallback> _userInteractionListeners =
+      <int, NativeWebUserInteractionCallback>{};
 
   NativeDownloadStartedCallback? onDownloadStarted;
   NativeTtsEventCallback? onTtsEvent;
@@ -186,6 +189,13 @@ class NativeShieldBridge {
         } else {
           onGlobalOpenNewTabRequest?.call(targetUrl);
         }
+      }
+    } else if (call.method == 'onWebUserInteraction' &&
+        rawArgs is Map<Object?, Object?>) {
+      final int webViewId = (rawArgs['webViewId'] as num?)?.toInt() ?? -1;
+      final String interactedUrl = (rawArgs['url']?.toString() ?? '').trim();
+      if (interactedUrl.isNotEmpty) {
+        _userInteractionListeners[webViewId]?.call(interactedUrl);
       }
     }
     return null;
@@ -318,6 +328,7 @@ class NativeShieldBridge {
   Future<void> attachWebView({
     required int webViewId,
     required bool desktopMode,
+    bool incognito = false,
     String? pageHost,
     required NativePullProgressCallback onPullProgress,
     required NativePullRefreshCallback onPullRefresh,
@@ -327,6 +338,7 @@ class NativeShieldBridge {
     NativeWebScrollNavBarCallback? onScrollNavBarChanged,
     NativeWebContextMenuCallback? onContextMenu,
     NativeOpenNewTabCallback? onOpenNewTabRequest,
+    NativeWebUserInteractionCallback? onUserInteraction,
   }) async {
     _pullProgressListeners[webViewId] = onPullProgress;
     _pullRefreshListeners[webViewId] = onPullRefresh;
@@ -348,11 +360,15 @@ class NativeShieldBridge {
     if (onOpenNewTabRequest != null) {
       _openNewTabListeners[webViewId] = onOpenNewTabRequest;
     }
+    if (onUserInteraction != null) {
+      _userInteractionListeners[webViewId] = onUserInteraction;
+    }
     try {
       await _channel.invokeMethod<bool>('attachToWebView', <String, Object?>{
         'webViewId': webViewId,
         'pageHost': pageHost,
         'desktopMode': desktopMode,
+        'incognito': incognito,
       });
     } on MissingPluginException {
       // Expected in widget tests.
@@ -429,6 +445,7 @@ class NativeShieldBridge {
     _scrollNavListeners.remove(webViewId);
     _contextMenuListeners.remove(webViewId);
     _openNewTabListeners.remove(webViewId);
+    _userInteractionListeners.remove(webViewId);
   }
 
   Future<bool> isBiometricAvailable() async {
@@ -1296,6 +1313,23 @@ class NativeShieldBridge {
     if (webViewId == null || url.isEmpty) return;
     try {
       await _channel.invokeMethod<bool>('recordWebUrlCommit', <String, Object>{
+        'webViewId': webViewId,
+        'url': url,
+      });
+    } on MissingPluginException {
+      // Expected in unit/widget tests
+    } on PlatformException {
+      // Ignore
+    }
+  }
+
+  Future<void> markUrlUserVisited({
+    required int? webViewId,
+    required String url,
+  }) async {
+    if (webViewId == null || url.isEmpty) return;
+    try {
+      await _channel.invokeMethod<bool>('markUrlUserVisited', <String, Object>{
         'webViewId': webViewId,
         'url': url,
       });

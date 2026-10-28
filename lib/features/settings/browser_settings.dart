@@ -604,8 +604,8 @@ class BrowserSettingsController extends ChangeNotifier {
       'system' => ThemeMode.system,
       _ => ThemeMode.dark,
     };
-    _httpsUpgradeMode = HeavenHttpsUpgradeMode.standard;
-    _httpsUpgrade = _prefs.getBool(_keyHttpsUpgrade) ?? true;
+    _httpsUpgradeMode = HeavenHttpsUpgradeMode.disabled;
+    _httpsUpgrade = false;
     _cookiePolicy = HeavenCookiePolicy.allowAll;
     _blockThirdPartyCookies = false;
 

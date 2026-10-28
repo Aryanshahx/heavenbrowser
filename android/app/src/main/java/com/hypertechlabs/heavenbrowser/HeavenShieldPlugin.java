@@ -53,8 +53,10 @@ import android.util.Base64;
 import android.view.HapticFeedbackConstants;
 import android.view.MotionEvent;
 import android.view.View;
+import android.view.ViewGroup;
 import android.view.WindowManager;
 import android.view.inputmethod.InputMethodManager;
+import android.widget.FrameLayout;
 import android.webkit.ConsoleMessage;
 import android.webkit.CookieManager;
 import android.webkit.GeolocationPermissions;
@@ -81,6 +83,7 @@ import io.flutter.embedding.engine.plugins.activity.ActivityPluginBinding;
 import io.flutter.plugin.common.MethodCall;
 import io.flutter.plugin.common.MethodChannel;
 import io.flutter.plugin.common.PluginRegistry;
+import io.flutter.plugins.webviewflutter.WebChromeClientProxyApi;
 import io.flutter.plugins.webviewflutter.WebViewFlutterAndroidExternalApi;
 import java.io.ByteArrayOutputStream;
 import java.io.File;
@@ -173,6 +176,24 @@ public class HeavenShieldPlugin
   private static final String BG_AUDIO_AND_SCROLL_SCRIPT =
       "(function(){"
           + "try{"
+          + "var h=(location.hostname||'').toLowerCase();"
+          + "var isStandaloneSearchEngine="
+          + "h.indexOf('google.')!==-1||"
+          + "h==='perplexity.ai'||h.endsWith('.perplexity.ai')||"
+          + "h==='startpage.com'||h.endsWith('.startpage.com')||"
+          + "h==='duckduckgo.com'||h.endsWith('.duckduckgo.com')||"
+          + "h==='brave.com'||h.endsWith('.brave.com')||"
+          + "h==='bing.com'||h.endsWith('.bing.com');"
+          + "if(isStandaloneSearchEngine){"
+          + "  var lastTop=true;"
+          + "  window.addEventListener('pointerdown',function(){"
+          + "    try{"
+          + "      var nowT=((window.scrollY||0)<=6);"
+          + "      if(nowT!==lastTop){lastTop=nowT;if(window.HeavenMediaBridge&&window.HeavenMediaBridge.onPageAtTop){window.HeavenMediaBridge.onPageAtTop(nowT);}}"
+          + "    }catch(_e){}"
+          + "  },{passive:true,capture:true});"
+          + "  return;"
+          + "}"
           + "if(window.__heavenMediaHookV16)return;"
           + "window.__heavenMediaHookV16=true;"
           + "window.__hbInBg=window.__hbInBg||false;"
@@ -182,8 +203,7 @@ public class HeavenShieldPlugin
           + "    Notification.requestPermission=function(cb){if(typeof cb==='function')cb('denied');return Promise.resolve('denied');};"
           + "  }catch(e){}"
           + "}"
-          + "var isGoogleSerp=(location.hostname||'').indexOf('www.google.')===0&&location.pathname==='/search';"
-          + "if(window.__heavenBgMediaEnabled&&!isGoogleSerp){"
+          + "if(window.__heavenBgMediaEnabled){"
           + "  try{"
           + "    var origHiddenDesc=Object.getOwnPropertyDescriptor(Document.prototype,'hidden');"
           + "    var origVisDesc=Object.getOwnPropertyDescriptor(Document.prototype,'visibilityState');"
@@ -379,6 +399,7 @@ public class HeavenShieldPlugin
         }
       };
   private final Map<Long, Boolean> lastDesktopApplied = new ConcurrentHashMap<>();
+  private final Map<Long, Boolean> incognitoByWv = new ConcurrentHashMap<>();
   private final Map<Long, ScriptHandler> docStartHandlers = new ConcurrentHashMap<>();
   private final Map<Long, Float> lastTouchXByWv = new ConcurrentHashMap<>();
   private final Map<Long, Float> lastTouchYByWv = new ConcurrentHashMap<>();
@@ -386,6 +407,11 @@ public class HeavenShieldPlugin
   private final Map<Long, String> lastObservedUrlByWv = new ConcurrentHashMap<>();
   private final Map<Long, Long> lastObservedUrlMsByWv = new ConcurrentHashMap<>();
   private final Map<Long, Set<String>> transientRedirectUrlsByWv = new ConcurrentHashMap<>();
+  private final Map<Long, Set<String>> userVisitedUrlsByWv = new ConcurrentHashMap<>();
+  private volatile String cachedCleanMobileUa = null;
+  private volatile long lastCookieFlushMs = 0L;
+  private View activeCustomFullscreenView = null;
+  private WebChromeClient.CustomViewCallback activeCustomFullscreenCallback = null;
 
   private HeavenLensCameraManager lensCameraManager;
   private MethodChannel.Result pendingLensCameraStartResult;
@@ -1065,7 +1091,26 @@ public class HeavenShieldPlugin
         Object commitWvObj = call.argument("webViewId");
         String committedUrl = call.argument("url");
         if (commitWvObj instanceof Number && committedUrl != null) {
-          recordWebViewUrlObservation(((Number) commitWvObj).longValue(), committedUrl);
+          long commitWvId = ((Number) commitWvObj).longValue();
+          recordWebViewUrlObservation(commitWvId, committedUrl);
+          if (pluginBinding != null) {
+            try {
+              WebView cWv = WebViewFlutterAndroidExternalApi.getWebView(pluginBinding, commitWvId);
+              if (cWv != null) {
+                installMultiWindowTabSupport(cWv, commitWvId);
+              }
+            } catch (Throwable ignored) {
+            }
+          }
+        }
+        result.success(true);
+        break;
+
+      case "markUrlUserVisited":
+        Object visitWvObj = call.argument("webViewId");
+        String visitedUrl = call.argument("url");
+        if (visitWvObj instanceof Number && visitedUrl != null) {
+          markWebViewUrlUserVisited(((Number) visitWvObj).longValue(), visitedUrl);
         }
         result.success(true);
         break;
@@ -1183,6 +1228,7 @@ public class HeavenShieldPlugin
       case "attachToWebView":
         Object idObj = call.argument("webViewId");
         Boolean initDesktop = call.argument("desktopMode");
+        Boolean initIncognito = call.argument("incognito");
         String initHost = call.argument("pageHost");
         if (initDesktop != null) {
           this.desktopMode = initDesktop;
@@ -1190,6 +1236,7 @@ public class HeavenShieldPlugin
         if (idObj instanceof Number) {
           long wvId = ((Number) idObj).longValue();
           this.activeFocusedWebViewId = wvId;
+          incognitoByWv.put(wvId, initIncognito != null && initIncognito);
           pageAtTopByWv.put(wvId, Boolean.TRUE);
           boolean attached = attachShieldToWebView(wvId, initHost);
           result.success(attached);
@@ -1226,6 +1273,7 @@ public class HeavenShieldPlugin
             if (wv != null) {
               wv.onResume();
               wv.resumeTimers();
+              installMultiWindowTabSupport(wv, fWvId);
             }
             for (Long otherId : new ArrayList<>(docStartHandlers.keySet())) {
               if (otherId == null || otherId == fWvId) continue;
@@ -1304,6 +1352,15 @@ public class HeavenShieldPlugin
           pageAtTopByWv.put(id, Boolean.TRUE);
           accumulatedScrollDyByWv.put(id, 0);
           emitNavBarVisibility(id, true);
+          if (pluginBinding != null) {
+            try {
+              WebView uWv = WebViewFlutterAndroidExternalApi.getWebView(pluginBinding, id);
+              if (uWv != null) {
+                installMultiWindowTabSupport(uWv, id);
+              }
+            } catch (Throwable ignored) {
+            }
+          }
         }
         result.success(true);
         break;
@@ -1651,12 +1708,48 @@ public class HeavenShieldPlugin
         });
   }
 
-  private void applyCookieAndSafeBrowsingToWebView(WebView webView) {
+  @SuppressWarnings("deprecation")
+  private static void enableWebStorageCompat(WebSettings ws) {
+    if (ws == null) return;
+    ws.setDomStorageEnabled(true);
+    ws.setDatabaseEnabled(true);
+  }
+
+  private String resolveCleanMobileUserAgent(Context ctx) {
+    String cached = this.cachedCleanMobileUa;
+    if (cached != null && !cached.isEmpty()) {
+      return cached;
+    }
+    try {
+      Context targetCtx = ctx != null ? ctx : resolveContext();
+      if (targetCtx != null) {
+        String raw = WebSettings.getDefaultUserAgent(targetCtx);
+        if (raw != null && !raw.trim().isEmpty()) {
+          String cleaned =
+              raw.replace("; wv)", ")")
+                  .replace("; wv;", ";")
+                  .replace("(wv; ", "(")
+                  .replaceAll("\\s*Version/\\d+\\.\\d+\\s*", " ")
+                  .replaceAll("\\s{2,}", " ")
+                  .trim();
+          if (!cleaned.isEmpty()) {
+            this.cachedCleanMobileUa = cleaned;
+            return cleaned;
+          }
+        }
+      }
+    } catch (Throwable ignored) {
+    }
+    return MOBILE_CHROME_ANDROID_UA;
+  }
+
+  private void applyCookieAndSafeBrowsingToWebView(WebView webView, long webViewId) {
     if (webView == null) return;
+    boolean isIncog = Boolean.TRUE.equals(incognitoByWv.get(webViewId));
     try {
       CookieManager cm = CookieManager.getInstance();
       cm.setAcceptCookie(true);
-      cm.setAcceptThirdPartyCookies(webView, true);
+      cm.setAcceptThirdPartyCookies(webView, !isIncog);
     } catch (Throwable ignored) {
     }
     try {
@@ -1709,7 +1802,7 @@ public class HeavenShieldPlugin
       try {
         WebView wv = WebViewFlutterAndroidExternalApi.getWebView(pluginBinding, id);
         if (wv != null) {
-          applyCookieAndSafeBrowsingToWebView(wv);
+          applyCookieAndSafeBrowsingToWebView(wv, id);
           installOrRefreshDocumentStartShield(wv, id);
         } else {
           docStartHandlers.remove(id);
@@ -1744,12 +1837,16 @@ public class HeavenShieldPlugin
         settings.setUserAgentString(DESKTOP_CHROME_WIN_UA);
         webView.setInitialScale(0);
         webView.evaluateJavascript(DESKTOP_VIEWPORT_SCRIPT, null);
-      } else if (prev != null && prev) {
-        // Only reset UA/scale when actually transitioning back from Desktop -> Mobile!
-        settings.setUserAgentString(MOBILE_CHROME_ANDROID_UA);
-        webView.setInitialScale(0);
-        webView.evaluateJavascript(MOBILE_VIEWPORT_RESET_SCRIPT, null);
+      } else {
+        // Always set the real device Chromium User-Agent (without "; wv" or "Version/x.y")
+        // so HTTP User-Agent, TLS JA4, and navigator.userAgentData match 100% natively!
+        settings.setUserAgentString(resolveCleanMobileUserAgent(webView.getContext()));
+        if (prev != null && prev) {
+          webView.setInitialScale(0);
+          webView.evaluateJavascript(MOBILE_VIEWPORT_RESET_SCRIPT, null);
+        }
       }
+      installMultiWindowTabSupport(webView, webViewId);
     } catch (Throwable ignored) {
     }
   }
@@ -1860,7 +1957,8 @@ public class HeavenShieldPlugin
       ws.setMediaPlaybackRequiresUserGesture(false);
       ws.setJavaScriptCanOpenWindowsAutomatically(true);
       ws.setSupportMultipleWindows(true);
-      ws.setDomStorageEnabled(true);
+      enableWebStorageCompat(ws);
+      ws.setAllowContentAccess(true);
       ws.setCacheMode(WebSettings.LOAD_DEFAULT);
       ws.setMixedContentMode(WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE);
       ws.setBlockNetworkImage(false);
@@ -1893,9 +1991,11 @@ public class HeavenShieldPlugin
             });
       }
 
-      applyCookieAndSafeBrowsingToWebView(webView);
-      applyDesktopSettingsToWebView(webView, webViewId, this.desktopMode, false);
+      applyCookieAndSafeBrowsingToWebView(webView, webViewId);
+      applyDesktopSettingsToWebView(webView, webViewId, this.desktopMode, true);
       installMultiWindowTabSupport(webView, webViewId);
+      mainHandler.postDelayed(() -> installMultiWindowTabSupport(webView, webViewId), 80L);
+      mainHandler.postDelayed(() -> installMultiWindowTabSupport(webView, webViewId), 300L);
       installOrRefreshDocumentStartShield(webView, webViewId);
       installPullToRefreshListener(webView, webViewId);
       installContextMenuListener(webView, webViewId);
@@ -1928,6 +2028,9 @@ public class HeavenShieldPlugin
       return;
     }
     try {
+      WebSettings ws = webView.getSettings();
+      ws.setJavaScriptCanOpenWindowsAutomatically(true);
+      ws.setSupportMultipleWindows(true);
       WebChromeClient existing = null;
       if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
         existing = webView.getWebChromeClient();
@@ -1940,13 +2043,52 @@ public class HeavenShieldPlugin
     }
   }
 
-  private final class HeavenTabWebChromeClient extends WebChromeClient {
+  private boolean exitNativeFullscreenCustomView() {
+    View fsView = this.activeCustomFullscreenView;
+    WebChromeClient.CustomViewCallback cb = this.activeCustomFullscreenCallback;
+    if (fsView == null) {
+      return false;
+    }
+    this.activeCustomFullscreenView = null;
+    this.activeCustomFullscreenCallback = null;
+    try {
+      if (fsView.getParent() instanceof ViewGroup) {
+        ((ViewGroup) fsView.getParent()).removeView(fsView);
+      }
+    } catch (Throwable ignored) {
+    }
+    try {
+      if (cb != null) {
+        cb.onCustomViewHidden();
+      }
+    } catch (Throwable ignored) {
+    }
+    try {
+      if (this.activity != null && this.activity.getWindow() != null) {
+        this.activity.getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+      }
+    } catch (Throwable ignored) {
+    }
+    return true;
+  }
+
+  private final class HeavenTabWebChromeClient
+      extends WebChromeClientProxyApi.SecureWebChromeClient {
     private final WebChromeClient delegate;
     private final long webViewId;
 
     HeavenTabWebChromeClient(WebChromeClient delegate, long webViewId) {
       this.delegate = delegate;
       this.webViewId = webViewId;
+    }
+
+    @Override
+    public void setWebViewClient(WebViewClient webViewClient) {
+      super.setWebViewClient(webViewClient);
+      if (delegate instanceof WebChromeClientProxyApi.SecureWebChromeClient) {
+        ((WebChromeClientProxyApi.SecureWebChromeClient) delegate)
+            .setWebViewClient(webViewClient);
+      }
     }
 
     @Override
@@ -1959,9 +2101,31 @@ public class HeavenShieldPlugin
             && delegate.onCreateWindow(view, isDialog, isUserGesture, resultMsg);
       }
       try {
+        String openerUrl = view.getUrl();
+        if (openerUrl != null && !openerUrl.isEmpty()) {
+          markWebViewUrlUserVisited(webViewId, openerUrl);
+          emitWebUserInteraction(webViewId, openerUrl);
+        }
+
         final WebView transportWv = new WebView(view.getContext());
-        transportWv.getSettings().setJavaScriptEnabled(true);
-        transportWv.getSettings().setDomStorageEnabled(true);
+        WebSettings tws = transportWv.getSettings();
+        tws.setJavaScriptEnabled(true);
+        enableWebStorageCompat(tws);
+        try {
+          String openerUa = view.getSettings().getUserAgentString();
+          if (openerUa != null && !openerUa.isEmpty()) {
+            tws.setUserAgentString(openerUa);
+          }
+        } catch (Throwable ignored) {
+        }
+        try {
+          CookieManager cm = CookieManager.getInstance();
+          cm.setAcceptCookie(true);
+          cm.setAcceptThirdPartyCookies(
+              transportWv, !Boolean.TRUE.equals(incognitoByWv.get(webViewId)));
+        } catch (Throwable ignored) {
+        }
+
         final AtomicBoolean dispatched = new AtomicBoolean(false);
         final Runnable cleanup =
             () -> {
@@ -1994,7 +2158,7 @@ public class HeavenShieldPlugin
               @Override
               public boolean shouldOverrideUrlLoading(
                   WebView wv, WebResourceRequest request) {
-                if (request != null && request.getUrl() != null) {
+                if (request != null && request.isForMainFrame() && request.getUrl() != null) {
                   forwardTargetUrl(request.getUrl().toString());
                 }
                 return true;
@@ -2010,6 +2174,23 @@ public class HeavenShieldPlugin
               @Override
               public void onPageStarted(WebView wv, String url, Bitmap favicon) {
                 forwardTargetUrl(url);
+              }
+
+              @Override
+              public void doUpdateVisitedHistory(WebView wv, String url, boolean isReload) {
+                forwardTargetUrl(url);
+              }
+
+              @Override
+              public void onLoadResource(WebView wv, String resUrl) {
+                if (wv != null) {
+                  String mainUrl = wv.getUrl();
+                  if (mainUrl != null
+                      && (mainUrl.regionMatches(true, 0, "https://", 0, 8)
+                          || mainUrl.regionMatches(true, 0, "http://", 0, 7))) {
+                    forwardTargetUrl(mainUrl);
+                  }
+                }
               }
             });
 
@@ -2068,6 +2249,32 @@ public class HeavenShieldPlugin
 
     @Override
     public void onShowCustomView(View view, CustomViewCallback callback) {
+      Activity act = activity;
+      if (view != null
+          && act != null
+          && act.getWindow() != null
+          && act.getWindow().getDecorView() instanceof ViewGroup) {
+        exitNativeFullscreenCustomView();
+        try {
+          ViewGroup decor = (ViewGroup) act.getWindow().getDecorView();
+          FrameLayout container = new FrameLayout(act);
+          container.setBackgroundColor(Color.BLACK);
+          container.setClickable(true);
+          container.addView(
+              view,
+              new FrameLayout.LayoutParams(
+                  ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+          decor.addView(
+              container,
+              new FrameLayout.LayoutParams(
+                  ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+          act.getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+          activeCustomFullscreenView = container;
+          activeCustomFullscreenCallback = callback;
+          return;
+        } catch (Throwable ignored) {
+        }
+      }
       if (delegate != null) {
         delegate.onShowCustomView(view, callback);
       }
@@ -2075,6 +2282,9 @@ public class HeavenShieldPlugin
 
     @Override
     public void onHideCustomView() {
+      if (exitNativeFullscreenCustomView()) {
+        return;
+      }
       if (delegate != null) {
         delegate.onHideCustomView();
       }
@@ -2219,6 +2429,18 @@ public class HeavenShieldPlugin
                 lastTouchXByWv.put(webViewId, event.getX());
                 lastTouchYByWv.put(webViewId, event.getY());
                 lastUserTouchMsByWv.put(webViewId, SystemClock.elapsedRealtime());
+                String touchedUrl = webView.getUrl();
+                if (touchedUrl != null
+                    && !touchedUrl.isEmpty()
+                    && !"about:blank".equalsIgnoreCase(touchedUrl)) {
+                  markWebViewUrlUserVisited(webViewId, touchedUrl);
+                  emitWebUserInteraction(webViewId, touchedUrl);
+                }
+                String lastObs = lastObservedUrlByWv.get(webViewId);
+                if (lastObs != null && !lastObs.isEmpty()) {
+                  markWebViewUrlUserVisited(webViewId, lastObs);
+                }
+                installMultiWindowTabSupport(webView, webViewId);
                 if (isWebPageAtTop() && !isVideoPlayerTouchZone(event.getY())) {
                   startY = event.getRawY();
                   startX = event.getRawX();
@@ -4998,10 +5220,73 @@ public class HeavenShieldPlugin
     return lower;
   }
 
-  private void recordWebViewUrlObservation(long webViewId, String url) {
-    if (url == null || url.isEmpty() || "about:blank".equals(url)) {
+  private static String extractNormalizedHostFromUrl(String rawUrl) {
+    if (rawUrl == null || rawUrl.isEmpty()) {
+      return "";
+    }
+    try {
+      Uri parsed = Uri.parse(rawUrl);
+      String h = parsed.getHost();
+      return normalizeHost(h);
+    } catch (Throwable ignored) {
+      return "";
+    }
+  }
+
+  private void markWebViewUrlUserVisited(long webViewId, String url) {
+    if (webViewId < 0 || url == null || url.isEmpty() || "about:blank".equalsIgnoreCase(url)) {
       return;
     }
+    String clean = stripUrlFragment(url.trim());
+    if (clean.isEmpty()) {
+      return;
+    }
+    Set<String> visited =
+        userVisitedUrlsByWv.computeIfAbsent(webViewId, k -> ConcurrentHashMap.newKeySet());
+    visited.add(clean);
+    Set<String> hops = transientRedirectUrlsByWv.get(webViewId);
+    if (hops != null) {
+      hops.remove(clean);
+    }
+  }
+
+  private void emitWebUserInteraction(final long webViewId, final String url) {
+    if (url == null || url.trim().isEmpty()) {
+      return;
+    }
+    final String cleanUrl = url.trim();
+    mainHandler.post(
+        () -> {
+          MethodChannel ch = this.channel;
+          if (ch != null) {
+            Map<String, Object> payload = new HashMap<>(4);
+            payload.put("webViewId", webViewId);
+            payload.put("url", cleanUrl);
+            ch.invokeMethod("onWebUserInteraction", payload);
+          }
+        });
+  }
+
+  private void flushCookiesAsyncThrottled() {
+    long now = SystemClock.elapsedRealtime();
+    if ((now - this.lastCookieFlushMs) < 900L) {
+      return;
+    }
+    this.lastCookieFlushMs = now;
+    downloadPool.execute(
+        () -> {
+          try {
+            CookieManager.getInstance().flush();
+          } catch (Throwable ignored) {
+          }
+        });
+  }
+
+  private void recordWebViewUrlObservation(long webViewId, String url) {
+    if (url == null || url.isEmpty() || "about:blank".equalsIgnoreCase(url)) {
+      return;
+    }
+    flushCookiesAsyncThrottled();
     long now = SystemClock.elapsedRealtime();
     String prevUrl = lastObservedUrlByWv.put(webViewId, url);
     Long prevMs = lastObservedUrlMsByWv.put(webViewId, now);
@@ -5009,11 +5294,14 @@ public class HeavenShieldPlugin
       long dwellMs = now - prevMs;
       Long lastTouch = lastUserTouchMsByWv.get(webViewId);
       boolean userTouchedDuringDwell = lastTouch != null && lastTouch >= prevMs;
-      if (dwellMs < 1700L && !userTouchedDuringDwell) {
+      String prevNoFrag = stripUrlFragment(prevUrl);
+      Set<String> visited = userVisitedUrlsByWv.get(webViewId);
+      boolean wasUserVisited = visited != null && visited.contains(prevNoFrag);
+      if (dwellMs < 15000L && !userTouchedDuringDwell && !wasUserVisited) {
         Set<String> hops =
             transientRedirectUrlsByWv.computeIfAbsent(
                 webViewId, k -> ConcurrentHashMap.newKeySet());
-        hops.add(stripUrlFragment(prevUrl));
+        hops.add(prevNoFrag);
       }
     }
   }
@@ -5022,31 +5310,55 @@ public class HeavenShieldPlugin
     Map<String, Object> out = new HashMap<>(6);
     out.put("navigated", false);
     out.put("exhaustedRedirectChain", false);
+    if (exitNativeFullscreenCustomView()) {
+      out.put("navigated", true);
+      return out;
+    }
     if (pluginBinding == null || webViewId < 0) {
       return out;
     }
     try {
       WebView wv = WebViewFlutterAndroidExternalApi.getWebView(pluginBinding, webViewId);
-      if (wv == null || !wv.canGoBack()) {
+      if (wv == null) {
+        return out;
+      }
+      // Halt any in-progress JS/HTTP ad redirect immediately before stepping back!
+      try {
+        wv.stopLoading();
+      } catch (Throwable ignored) {
+      }
+      if (!wv.canGoBack()) {
+        out.put("exhaustedRedirectChain", true);
         return out;
       }
       WebBackForwardList bfl = wv.copyBackForwardList();
       int curIdx = bfl.getCurrentIndex();
       if (curIdx <= 0) {
+        out.put("exhaustedRedirectChain", true);
         return out;
       }
       WebHistoryItem curItem = bfl.getItemAtIndex(curIdx);
       String curUrl = curItem != null && curItem.getUrl() != null ? curItem.getUrl() : "";
+      if (curUrl.isEmpty() && wv.getUrl() != null) {
+        curUrl = wv.getUrl();
+      }
       String curNoFrag = stripUrlFragment(curUrl);
+      String curHost = extractNormalizedHostFromUrl(curUrl);
       Set<String> redirectHops = transientRedirectUrlsByWv.get(webViewId);
+      Set<String> visitedSet = userVisitedUrlsByWv.get(webViewId);
 
       int targetIdx = curIdx - (skipPredecessor ? 2 : 1);
       while (targetIdx >= 0) {
         WebHistoryItem candidate = bfl.getItemAtIndex(targetIdx);
         String candUrl = candidate != null && candidate.getUrl() != null ? candidate.getUrl() : "";
+        String candOrig =
+            candidate != null && candidate.getOriginalUrl() != null
+                ? candidate.getOriginalUrl()
+                : "";
         String candNoFrag = stripUrlFragment(candUrl);
+        String candOrigNoFrag = stripUrlFragment(candOrig);
 
-        if ("about:blank".equals(candUrl)) {
+        if (candUrl.isEmpty() || "about:blank".equalsIgnoreCase(candUrl)) {
           targetIdx--;
           continue;
         }
@@ -5055,9 +5367,26 @@ public class HeavenShieldPlugin
           targetIdx--;
           continue;
         }
-        // Skip intermediate redirect bounce hops that lasted <1.7s without user interaction
-        // (including index 0 so we exit to StartPage instead of re-entering a redirect loop!)
-        if (redirectHops != null && redirectHops.contains(candNoFrag)) {
+        String candHost = extractNormalizedHostFromUrl(candUrl);
+        // If user bounced right back onto the same spam domain within 5s, escape the whole domain!
+        if (skipPredecessor && !curHost.isEmpty() && curHost.equals(candHost)) {
+          targetIdx--;
+          continue;
+        }
+        boolean isUserVisited =
+            visitedSet != null
+                && (visitedSet.contains(candNoFrag)
+                    || (!candOrigNoFrag.isEmpty() && visitedSet.contains(candOrigNoFrag)));
+        // Skip untouched intermediate redirect bounce hops (fast or slow up to 15s)
+        if (!isUserVisited
+            && redirectHops != null
+            && (redirectHops.contains(candNoFrag)
+                || (!candOrigNoFrag.isEmpty() && redirectHops.contains(candOrigNoFrag)))) {
+          targetIdx--;
+          continue;
+        }
+        // Defeat pirated-site / ad-page history.pushState back-button traps on the same host
+        if (!isUserVisited && !curHost.isEmpty() && curHost.equals(candHost)) {
           targetIdx--;
           continue;
         }

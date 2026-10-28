@@ -664,11 +664,16 @@ class TabManagerController extends ChangeNotifier {
   /// Navigates back inside the active tab if possible; otherwise closes the
   /// spawned child tab and seamlessly switches back to its opener tab.
   Future<bool> navigateBackSeamlessly() async {
+    final bool hasOpener = canReturnToOpenerTab;
     if (activeEngine.canGoBack) {
-      await activeEngine.goBack();
-      return true;
+      final bool movedInTab = await activeEngine.goBack(
+        hasOpenerTab: hasOpener,
+      );
+      if (movedInTab) {
+        return true;
+      }
     }
-    if (canReturnToOpenerTab) {
+    if (hasOpener) {
       await closeTab(activeTab.id);
       return true;
     }

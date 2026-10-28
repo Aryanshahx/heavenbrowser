@@ -9,6 +9,7 @@ import 'package:heavenbrowser/core/l10n/app_strings.dart';
 import 'package:heavenbrowser/core/theme/app_theme.dart';
 import 'package:heavenbrowser/core/utils/omnibox_parser.dart';
 import 'package:heavenbrowser/core/widgets/search_engine_chip_button.dart';
+import 'package:heavenbrowser/features/browser/engine/browser_engine.dart';
 import 'package:heavenbrowser/features/browser/page_translate_reader_service.dart';
 import 'package:heavenbrowser/features/browser/presentation/browser_screen.dart';
 import 'package:heavenbrowser/features/browser/presentation/widgets/listen_to_page_sheet.dart';
@@ -33,6 +34,7 @@ import 'package:heavenbrowser/features/vpn/vpn_screen.dart';
 import 'package:heavenbrowser/main.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
+import 'package:webview_flutter/webview_flutter.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 final Uint8List _kSamplePreviewPng = base64Decode(
@@ -2899,6 +2901,192 @@ void main() {
           await tester.tap(grpChip);
           await tester.pumpAndSettle();
           expect(tabManager.normalTabs.length, 12);
+
+          tabManager.dispose();
+          settings.dispose();
+        },
+      );
+    },
+  );
+
+  group(
+    'Step 29: True Standalone Search Engine Parity, SecureWebChromeClient Multi-Tab Fix & Pirated-Site Redirect Back Recovery',
+    () {
+      test(
+        'HeavenTabWebChromeClient extends SecureWebChromeClient, search engines skip DOM prototype hooks, and HTTP redirects are never hijacked',
+        () async {
+          SharedPreferences.setMockInitialValues(<String, Object>{
+            'hb.httpsUpgrade': true,
+          });
+          final SharedPreferences prefs = await SharedPreferences.getInstance();
+          final BrowserSettingsController settings = BrowserSettingsController(
+            prefs,
+          );
+          expect(settings.httpsUpgrade, isFalse);
+
+          final BrowserEngine engine = BrowserEngine(
+            settings: settings,
+            isIncognito: false,
+            enablePlatformWebView: false,
+          );
+          final NavigationDecision httpDecision = await engine
+              .handleWebsiteNavigationOrRedirect('http://mirror.site/movie');
+          expect(httpDecision, NavigationDecision.navigate);
+
+          final String pluginJava = File(
+            'android/app/src/main/java/com/hypertechlabs/heavenbrowser/HeavenShieldPlugin.java',
+          ).readAsStringSync();
+          expect(
+            pluginJava,
+            contains(
+              'extends WebChromeClientProxyApi.SecureWebChromeClient',
+            ),
+          );
+          expect(pluginJava, contains('resolveCleanMobileUserAgent'));
+          expect(pluginJava, contains('isStandaloneSearchEngine'));
+          expect(pluginJava, contains("h.indexOf('google.')!==-1"));
+          expect(pluginJava, contains("h==='perplexity.ai'"));
+          expect(pluginJava, contains("h==='startpage.com'"));
+          expect(pluginJava, contains("h==='duckduckgo.com'"));
+          expect(pluginJava, contains("h==='brave.com'"));
+          expect(pluginJava, contains("h==='bing.com'"));
+          expect(pluginJava, contains('CookieManager.getInstance().flush()'));
+          expect(pluginJava, contains('wv.stopLoading()'));
+
+          final String proguard = File(
+            'android/app/proguard-rules.pro',
+          ).readAsStringSync();
+          expect(
+            proguard,
+            contains('-keep class io.flutter.plugins.webviewflutter.** { *; }'),
+          );
+
+          engine.dispose();
+          settings.dispose();
+        },
+      );
+
+      test(
+        'Pirated-site popup redirect tab closes on 1 Back press back to pirated site, and same-tab multi-hop ad redirects recover cleanly on Back',
+        () async {
+          SharedPreferences.setMockInitialValues(<String, Object>{});
+          final SharedPreferences prefs = await SharedPreferences.getInstance();
+          final BrowserSettingsController settings = BrowserSettingsController(
+            prefs,
+          );
+          final TabManagerController tabManager = TabManagerController(
+            settings: settings,
+            enablePlatformWebView: false,
+          );
+
+          // Part A: Pirated site spawns window.open / target="_blank" popup redirect chain in Tab 2
+          await tabManager.activeEngine.loadUserEntry(
+            'https://vegamovies.example/movie-1080p',
+          );
+          final String pirateTabId = tabManager.activeTab.id;
+          expect(tabManager.totalTabCount, 1);
+
+          tabManager.activeEngine.requestNewTabFromEngine(
+            'https://onclick-ad1.example/jump',
+          );
+          await Future<void>.delayed(const Duration(milliseconds: 20));
+          expect(tabManager.totalTabCount, 2);
+          expect(tabManager.activeTab.openerTabId, pirateTabId);
+
+          // Popup Tab 2 auto-redirects through multiple ad hops without user interaction
+          tabManager.activeEngine.recordHeadlessWebsiteRedirect(
+            'https://tracker-ad2.example/bounce',
+            isTransientHop: true,
+          );
+          tabManager.activeEngine.recordHeadlessWebsiteRedirect(
+            'https://rummy-casino.example/play',
+            isTransientHop: false,
+          );
+          expect(
+            tabManager.activeEngine.currentUrl,
+            'https://rummy-casino.example/play',
+          );
+          // Meanwhile Tab 1 is still intact on the pirated site!
+          expect(
+            tabManager.allTabs.first.engine.currentUrl,
+            'https://vegamovies.example/movie-1080p',
+          );
+
+          // Pressing Back ONCE closes the spawned ad popup tab and returns directly to the pirated site!
+          final bool closedPopupBack =
+              await tabManager.navigateBackSeamlessly();
+          expect(closedPopupBack, isTrue);
+          expect(tabManager.totalTabCount, 1);
+          expect(tabManager.activeTab.id, pirateTabId);
+          expect(
+            tabManager.activeEngine.currentUrl,
+            'https://vegamovies.example/movie-1080p',
+          );
+
+          // Part B: Same-tab pirated-site redirect chain + pushState trap after user tap
+          tabManager.activeEngine.simulateUserTapOnCurrentWebPageForTest();
+          tabManager.activeEngine.recordHeadlessWebsiteRedirect(
+            'https://onclick-ad1.example/hop1',
+            isTransientHop: true,
+          );
+          tabManager.activeEngine.recordHeadlessWebsiteRedirect(
+            'https://slow-redirect-ad2.example/hop2',
+            isTransientHop: true,
+          );
+          tabManager.activeEngine.recordHeadlessWebsiteRedirect(
+            'https://spam-bet.example/landing',
+            isTransientHop: true,
+          );
+          tabManager.activeEngine.recordHeadlessWebsiteRedirect(
+            'https://spam-bet.example/trap-step-2',
+            isTransientHop: false,
+          );
+          expect(
+            tabManager.activeEngine.currentUrl,
+            'https://spam-bet.example/trap-step-2',
+          );
+
+          // Pressing Back ONCE skips all transient ad hops & pushState traps back to vegamovies!
+          final bool recoveredSameTab =
+              await tabManager.navigateBackSeamlessly();
+          expect(recoveredSameTab, isTrue);
+          expect(
+            tabManager.activeEngine.currentUrl,
+            'https://vegamovies.example/movie-1080p',
+          );
+
+          // Standalone search engine result in new tab: navigates in child tab, then closes back to SERP
+          await settings.setSearchEngine(SearchEngine.duckDuckGo);
+          await tabManager.activeEngine.loadUserEntry('flutter engine');
+          final String serpUrl = tabManager.activeEngine.currentUrl!;
+          expect(serpUrl, 'https://duckduckgo.com/?q=flutter+engine');
+
+          tabManager.activeEngine.requestNewTabFromEngine(
+            'https://docs.flutter.dev/overview',
+          );
+          await Future<void>.delayed(const Duration(milliseconds: 20));
+          expect(tabManager.totalTabCount, 2);
+          tabManager.activeEngine.simulateUserTapOnCurrentWebPageForTest();
+          await tabManager.activeEngine.loadUserEntry(
+            'https://api.flutter.dev/index.html',
+          );
+          expect(
+            tabManager.activeEngine.currentUrl,
+            'https://api.flutter.dev/index.html',
+          );
+
+          // Back #1 inside child tab -> returns to docs.flutter.dev/overview
+          expect(await tabManager.navigateBackSeamlessly(), isTrue);
+          expect(
+            tabManager.activeEngine.currentUrl,
+            'https://docs.flutter.dev/overview',
+          );
+          expect(tabManager.totalTabCount, 2);
+
+          // Back #2 on child tab's initial page -> closes child tab and returns to DuckDuckGo SERP!
+          expect(await tabManager.navigateBackSeamlessly(), isTrue);
+          expect(tabManager.totalTabCount, 1);
+          expect(tabManager.activeEngine.currentUrl, serpUrl);
 
           tabManager.dispose();
           settings.dispose();

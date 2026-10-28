@@ -196,9 +196,7 @@ class BrowserEngine extends ChangeNotifier {
   bool get isLoading => _isLoading;
 
   bool get canGoBack =>
-      (isShowingWebPage &&
-          (_webViewCanGoBack || _settledSiteBackStack.isNotEmpty)) ||
-      _virtualIndex > 0;
+      isShowingWebPage || _webViewCanGoBack || _virtualIndex > 0;
 
   bool get canGoForward =>
       (isShowingWebPage && _webViewCanGoForward) ||
@@ -221,20 +219,20 @@ class BrowserEngine extends ChangeNotifier {
   }
 
   Map<String, String> _headersForTarget({String? host, String? fullUrl}) {
+    if (!settings.desktopMode) {
+      // Pure standalone Android Chrome parity: send zero synthetic Client-Hints
+      // or Accept-Language overrides in mobile mode so every search engine uses
+      // real device Chromium Client-Hints and respects its own saved cookies.
+      return const <String, String>{};
+    }
     final String acceptLang = settings.language.acceptLanguageHeader;
-    return settings.desktopMode
-        ? <String, String>{
-            'Sec-CH-UA':
-                '"Chromium";v="134", "Not:A-Brand";v="24", "Google Chrome";v="134"',
-            'Sec-CH-UA-Mobile': '?0',
-            'Sec-CH-UA-Platform': '"Windows"',
-            'Accept-Language': acceptLang,
-          }
-        : <String, String>{
-            'Sec-CH-UA-Mobile': '?1',
-            'Sec-CH-UA-Platform': '"Android"',
-            'Accept-Language': acceptLang,
-          };
+    return <String, String>{
+      'Sec-CH-UA':
+          '"Chromium";v="134", "Not:A-Brand";v="24", "Google Chrome";v="134"',
+      'Sec-CH-UA-Mobile': '?0',
+      'Sec-CH-UA-Platform': '"Windows"',
+      'Accept-Language': acceptLang,
+    };
   }
 
   void _resetCachedControllerFlags() {
@@ -324,42 +322,53 @@ class BrowserEngine extends ChangeNotifier {
     _cachedWebViewWidget = null;
     final WebViewController webController = WebViewController();
     _controller = webController;
+    if (webController.platform
+        case final AndroidWebViewController androidCtrl) {
+      _androidWebViewId = androidCtrl.webViewIdentifier;
+    }
 
-    unawaited(_applyControllerSettings());
     unawaited(_prewarmGoogleSearchConnection());
+    unawaited(_configureControllerAndAttach(webController));
+  }
 
-    unawaited(
-      webController.addJavaScriptChannel(
+  Future<void> _configureControllerAndAttach(
+    WebViewController webController,
+  ) async {
+    await _applyControllerSettings();
+    if (_controller != webController) {
+      return;
+    }
+
+    try {
+      await webController.addJavaScriptChannel(
         'HeavenDevToolsChannel',
         onMessageReceived: (JavaScriptMessage msg) {
           _handleDevToolsChannelMessage(msg.message);
         },
-      ),
-    );
+      );
+    } catch (_) {}
 
-    unawaited(
-      webController
-          .setOnConsoleMessage((JavaScriptConsoleMessage msg) {
-            if (msg.message.startsWith('__hb_')) return;
-            _appendConsoleEntry(
-              DevToolsConsoleEntry(
-                timestamp: DateTime.now(),
-                level: msg.level.name.toLowerCase(),
-                message: msg.message,
-              ),
-            );
-          })
-          .catchError((Object _) {}),
-    );
+    try {
+      await webController.setOnConsoleMessage((JavaScriptConsoleMessage msg) {
+        if (msg.message.startsWith('__hb_')) return;
+        _appendConsoleEntry(
+          DevToolsConsoleEntry(
+            timestamp: DateTime.now(),
+            level: msg.level.name.toLowerCase(),
+            message: msg.message,
+          ),
+        );
+      });
+    } catch (_) {}
 
-    unawaited(
-      webController.platform
-          .setOnPlatformPermissionRequest(_handleWebPermissionRequest)
-          .catchError((Object _) {}),
-    );
+    try {
+      await webController.platform.setOnPlatformPermissionRequest(
+        _handleWebPermissionRequest,
+      );
+    } catch (_) {}
 
-    unawaited(
-      webController.setNavigationDelegate(
+    try {
+      await webController.setNavigationDelegate(
         NavigationDelegate(
           onNavigationRequest: _handleNavigationRequest,
           onPageStarted: (String url) {
@@ -398,12 +407,19 @@ class BrowserEngine extends ChangeNotifier {
             _syncVirtualEntryWithWebUrl(url);
             if (_androidWebViewId != null) {
               unawaited(
+                NativeShieldBridge.instance.recordWebUrlCommit(
+                  webViewId: _androidWebViewId,
+                  url: url,
+                ),
+              );
+              unawaited(
                 NativeShieldBridge.instance.updatePageHost(
                   webViewId: _androidWebViewId!,
                   pageHost: nextHost,
                 ),
               );
             }
+            unawaited(_refreshNavigationState());
             notifyListeners();
           },
           onProgress: (int value) {
@@ -525,79 +541,91 @@ class BrowserEngine extends ChangeNotifier {
             }
           },
         ),
-      ),
-    );
+      );
+    } catch (_) {}
+
+    if (_controller != webController) {
+      return;
+    }
 
     if (webController.platform
         case final AndroidWebViewController androidCtrl) {
       _androidWebViewId = androidCtrl.webViewIdentifier;
-      unawaited(
-        androidCtrl
-            .setGeolocationPermissionsPromptCallbacks(
-              onShowPrompt: _handleGeolocationPrompt,
-              onHidePrompt: () {},
-            )
-            .catchError((Object _) {}),
-      );
-      unawaited(
-        NativeShieldBridge.instance.attachWebView(
-          webViewId: androidCtrl.webViewIdentifier,
-          desktopMode: settings.desktopMode,
-          pageHost: currentHost,
-          onPullProgress: (double value) {
-            if ((_pullProgress - value).abs() >= 0.025 || value == 0.0) {
-              _pullProgress = value;
-              notifyListeners();
-            }
-          },
-          onPullRefresh: () {
-            _pullProgress = 0;
-            unawaited(reloadFullPage());
-          },
-          onDownloadIntercepted: (bool wasEmptyPage) {
-            _lastDownloadInterceptMs = DateTime.now().millisecondsSinceEpoch;
-            _isLoading = false;
-            _progress = 0;
-            _errorMessage = null;
-            if (wasEmptyPage && _lastCompletedWebUrl == null) {
-              openDownloadsPage();
-              return;
-            } else if (_lastCompletedWebUrl != null) {
-              _currentUrl = _lastCompletedWebUrl;
-              _syncVirtualEntryWithWebUrl(_lastCompletedWebUrl!);
-            }
+      try {
+        await androidCtrl.setGeolocationPermissionsPromptCallbacks(
+          onShowPrompt: _handleGeolocationPrompt,
+          onHidePrompt: () {},
+        );
+      } catch (_) {}
+
+      if (_controller != webController) {
+        return;
+      }
+
+      await NativeShieldBridge.instance.attachWebView(
+        webViewId: androidCtrl.webViewIdentifier,
+        desktopMode: settings.desktopMode,
+        incognito: isIncognito,
+        pageHost: currentHost,
+        onPullProgress: (double value) {
+          if ((_pullProgress - value).abs() >= 0.025 || value == 0.0) {
+            _pullProgress = value;
             notifyListeners();
-          },
-          onConsoleMessage:
-              (String level, String message, String sourceId, int line) {
-                if (message.startsWith('__hb_')) return;
-                _appendConsoleEntry(
-                  DevToolsConsoleEntry(
-                    timestamp: DateTime.now(),
-                    level: level,
-                    message: message,
-                    source: sourceId,
-                    line: line,
-                  ),
-                );
-              },
-          onMediaPlaybackChanged: (bool playing, String title) {
-            if (_isMediaPlaying != playing || _playingMediaTitle != title) {
-              _isMediaPlaying = playing;
-              _playingMediaTitle = title;
-              notifyListeners();
-            }
-          },
-          onScrollNavBarChanged: (bool visible) {
-            setNavBarVisible(visible);
-          },
-          onContextMenu: (WebContextMenuData data) {
-            onWebContextMenu?.call(data);
-          },
-          onOpenNewTabRequest: (String targetUrl) {
-            requestNewTabFromEngine(targetUrl);
-          },
-        ),
+          }
+        },
+        onPullRefresh: () {
+          _pullProgress = 0;
+          unawaited(reloadFullPage());
+        },
+        onDownloadIntercepted: (bool wasEmptyPage) {
+          _lastDownloadInterceptMs = DateTime.now().millisecondsSinceEpoch;
+          _isLoading = false;
+          _progress = 0;
+          _errorMessage = null;
+          if (wasEmptyPage && _lastCompletedWebUrl == null) {
+            openDownloadsPage();
+            return;
+          } else if (_lastCompletedWebUrl != null) {
+            _currentUrl = _lastCompletedWebUrl;
+            _syncVirtualEntryWithWebUrl(_lastCompletedWebUrl!);
+          }
+          notifyListeners();
+        },
+        onConsoleMessage:
+            (String level, String message, String sourceId, int line) {
+              if (message.startsWith('__hb_')) return;
+              _appendConsoleEntry(
+                DevToolsConsoleEntry(
+                  timestamp: DateTime.now(),
+                  level: level,
+                  message: message,
+                  source: sourceId,
+                  line: line,
+                ),
+              );
+            },
+        onMediaPlaybackChanged: (bool playing, String title) {
+          if (_isMediaPlaying != playing || _playingMediaTitle != title) {
+            _isMediaPlaying = playing;
+            _playingMediaTitle = title;
+            notifyListeners();
+          }
+        },
+        onScrollNavBarChanged: (bool visible) {
+          setNavBarVisible(visible);
+        },
+        onContextMenu: (WebContextMenuData data) {
+          onWebContextMenu?.call(data);
+        },
+        onOpenNewTabRequest: (String targetUrl) {
+          requestNewTabFromEngine(targetUrl);
+        },
+        onUserInteraction: (String interactedUrl) {
+          if (interactedUrl.startsWith('http://') ||
+              interactedUrl.startsWith('https://')) {
+            _lastSettledWebUrl = interactedUrl;
+          }
+        },
       );
     }
   }
@@ -916,12 +944,22 @@ class BrowserEngine extends ChangeNotifier {
       );
     }
 
-    final String desiredUa = effectiveDesktop
-        ? AppConstants.desktopUserAgent
-        : AppConstants.mobileUserAgent;
-    if (force || _appliedUserAgent != desiredUa) {
-      _appliedUserAgent = desiredUa;
-      await webController.setUserAgent(desiredUa);
+    final bool isAndroidPlatform =
+        webController.platform is AndroidWebViewController;
+    if (!isAndroidPlatform) {
+      final String desiredUa = effectiveDesktop
+          ? AppConstants.desktopUserAgent
+          : AppConstants.mobileUserAgent;
+      if (force || _appliedUserAgent != desiredUa) {
+        _appliedUserAgent = desiredUa;
+        await webController.setUserAgent(desiredUa);
+      }
+    } else if (effectiveDesktop &&
+        (force || _appliedUserAgent != AppConstants.desktopUserAgent)) {
+      _appliedUserAgent = AppConstants.desktopUserAgent;
+      await webController.setUserAgent(AppConstants.desktopUserAgent);
+    } else if (!effectiveDesktop && _appliedUserAgent != 'native_mobile') {
+      _appliedUserAgent = 'native_mobile';
     }
 
     if (webController.platform
@@ -1120,6 +1158,21 @@ class BrowserEngine extends ChangeNotifier {
     }
 
     final String targetUrl = finalUri.toString();
+    final String? prevWebUrl = isShowingWebPage ? _currentUrl : null;
+    if (!replaceInitialBlankHistory &&
+        prevWebUrl != null &&
+        prevWebUrl.isNotEmpty) {
+      _lastSettledWebUrl = prevWebUrl;
+      _onWebUrlTransition(targetUrl);
+      if (_androidWebViewId != null) {
+        unawaited(
+          NativeShieldBridge.instance.markUrlUserVisited(
+            webViewId: _androidWebViewId,
+            url: prevWebUrl,
+          ),
+        );
+      }
+    }
     if (replaceInitialBlankHistory &&
         _virtualHistory.length == 1 &&
         _virtualHistory.first.isEmpty) {
@@ -1154,7 +1207,9 @@ class BrowserEngine extends ChangeNotifier {
     if (_controller == null) {
       _onWebUrlTransition(targetUrl);
       _lastCompletedWebUrl = targetUrl;
-      _lastSettledWebUrl = targetUrl;
+      if (!replaceInitialBlankHistory) {
+        _lastSettledWebUrl = targetUrl;
+      }
       _isLoading = false;
       _progress = 0;
       if (!isIncognito &&
@@ -1187,7 +1242,7 @@ class BrowserEngine extends ChangeNotifier {
     notifyListeners();
   }
 
-  Future<void> goBack() async {
+  Future<bool> goBack({bool hasOpenerTab = false}) async {
     _markUserInitiatedLoad();
     final int nowMs = DateTime.now().millisecondsSinceEpoch;
     _isGoingBackUntilMs = nowMs + 2800;
@@ -1220,7 +1275,7 @@ class BrowserEngine extends ChangeNotifier {
           }
         }
         await _refreshNavigationState();
-        return;
+        return true;
       }
 
       // Only call raw WebView.goBack() if smartGoBack did NOT exhaust a redirect
@@ -1230,12 +1285,12 @@ class BrowserEngine extends ChangeNotifier {
           await _controller!.canGoBack()) {
         await _controller!.goBack();
         await _refreshNavigationState();
-        return;
+        return true;
       }
     }
 
     // Fallback when a website redirected via location.replace() or exhausted a
-    // redirect chain at index 0: step back to previous settled website or StartPage!
+    // redirect chain at index 0: step back to previous settled website!
     if (isShowingWebPage && _settledSiteBackStack.isNotEmpty) {
       String previousSiteUrl = _settledSiteBackStack.removeLast();
       if (bouncedBackToSameSite &&
@@ -1248,7 +1303,7 @@ class BrowserEngine extends ChangeNotifier {
         _lastSettledWebUrl = previousSiteUrl;
         _syncVirtualEntryWithWebUrl(previousSiteUrl);
         await _restoreVirtualLocation(previousSiteUrl);
-        return;
+        return true;
       }
     }
 
@@ -1260,14 +1315,23 @@ class BrowserEngine extends ChangeNotifier {
           ? target
           : null;
       await _restoreVirtualLocation(target);
-      return;
+      return true;
     }
 
-    // If tab started directly on a web URL (initialInput) whose redirect chain
-    // was exhausted, return cleanly to StartPage instead of getting stuck!
+    // If this tab was spawned from an opener tab (e.g. search engine result in
+    // new tab or pirated-site popup redirect tab), let TabManagerController
+    // close this child tab and return directly to the opener tab!
+    if (hasOpenerTab) {
+      return false;
+    }
+
+    // Root tab started directly on a web URL whose redirect chain was exhausted:
+    // return cleanly to StartPage instead of getting stuck!
     if (isShowingWebPage) {
       await goHome();
+      return true;
     }
+    return false;
   }
 
   Future<void> goForward() async {
@@ -1295,8 +1359,12 @@ class BrowserEngine extends ChangeNotifier {
       _pageTitle = isIncognito ? 'Incognito Tab' : 'New Tab';
       _isLoading = false;
       _progress = 0;
+      _isMediaPlaying = false;
       _webViewCanGoBack = false;
       _webViewCanGoForward = false;
+      if (_controller != null) {
+        unawaited(_controller!.loadRequest(Uri.parse('about:blank')));
+      }
       notifyListeners();
       return;
     }
@@ -1640,7 +1708,15 @@ class BrowserEngine extends ChangeNotifier {
     return const <String>[];
   }
 
-  ///Simulates a same-tab website redirect chain in headless tests (where there
+  /// Simulates user physical interaction (tap) on the current webpage in headless
+  /// tests so subsequent same-tab redirects preserve this page on Back.
+  void simulateUserTapOnCurrentWebPageForTest() {
+    if (isShowingWebPage && _currentUrl != null && _currentUrl!.isNotEmpty) {
+      _lastSettledWebUrl = _currentUrl;
+    }
+  }
+
+  /// Simulates a same-tab website redirect chain in headless tests (where there
   /// is no platform WebView) so Back navigation over transient hops can be verified.
   void recordHeadlessWebsiteRedirect(
     String targetUrl, {
