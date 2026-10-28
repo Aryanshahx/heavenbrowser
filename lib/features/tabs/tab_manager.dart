@@ -127,7 +127,7 @@ class TabManagerController extends ChangeNotifier {
   int lastTransitionDirection = 0;
   int tabTransitionEpoch = 0;
 
-  static const int _maxLiveBackgroundWebViews = 2;
+  static const int _maxLiveBackgroundWebViews = 6;
 
   void _bumpViewport() {
     viewportRevision.value += 1;
@@ -266,6 +266,16 @@ class TabManagerController extends ChangeNotifier {
                     : null,
                 previewBytes: restoredPreview,
               );
+              engine.onNewTabRequested = (String targetUrl) {
+                unawaited(
+                  openNewTab(
+                    incognito: restoredTab.isIncognito,
+                    initialInput: targetUrl,
+                    openerTabId: restoredTab.id,
+                    groupId: restoredTab.groupId,
+                  ),
+                );
+              };
               _lastEngineSummaryByTab[id] = _engineSummary(engine);
               _tabs.add(restoredTab);
             }
@@ -523,6 +533,16 @@ class TabManagerController extends ChangeNotifier {
       openerTabId: openerTabId,
       groupId: groupId,
     );
+    engine.onNewTabRequested = (String targetUrl) {
+      unawaited(
+        openNewTab(
+          incognito: tab.isIncognito,
+          initialInput: targetUrl,
+          openerTabId: tab.id,
+          groupId: tab.groupId,
+        ),
+      );
+    };
     _lastEngineSummaryByTab[id] = _engineSummary(engine);
     if (openerTabId != null) {
       final int parentIdx = _tabs.indexWhere(

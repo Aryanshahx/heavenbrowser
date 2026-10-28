@@ -21,7 +21,6 @@ import '../../settings/help_screen.dart';
 import '../../settings/languages_screen.dart';
 import '../../settings/notifications_screen.dart';
 import '../../settings/settings_screen.dart';
-import '../../shield/heaven_shield_screen.dart';
 import '../../shield/native_shield_bridge.dart';
 import '../../tabs/tab_manager.dart';
 import '../../tabs/tabs_screen.dart';
@@ -231,7 +230,7 @@ class _BrowserScreenState extends State<BrowserScreen>
           ),
           title: const Text('Set Heaven as Default Browser?'),
           content: const Text(
-            'Open links from all your apps faster and privately with Heaven Shield adblock and built-in VPN.',
+            'Open links from all your apps faster with your favorite search engines and built-in VPN.',
           ),
           actions: <Widget>[
             TextButton(
@@ -1724,6 +1723,8 @@ class _BrowserScreenState extends State<BrowserScreen>
           currentEngine: widget.settings.searchEngine,
           onSelected: (SearchEngine sel) =>
               _handleSearchEngineChanged(sel, engine),
+          onOpenEngineSettings: (SearchEngine sel) =>
+              _openSearchEngineOwnSettings(sel, engine),
         ),
         const SizedBox(width: 6),
         Expanded(
@@ -1803,40 +1804,13 @@ class _BrowserScreenState extends State<BrowserScreen>
                 currentEngine: widget.settings.searchEngine,
                 onSelected: (SearchEngine sel) =>
                     _handleSearchEngineChanged(sel, engine),
+                onOpenEngineSettings: (SearchEngine sel) =>
+                    _openSearchEngineOwnSettings(sel, engine),
               ),
             ),
           ),
         ),
-        if (engine.isShowingWebPage)
-          ListenableBuilder(
-            listenable: widget.settings,
-            builder: (BuildContext context, _) {
-              final bool shieldOn = widget.settings.isShieldActiveForHost(
-                engine.currentHost,
-              );
-              return InkWell(
-                key: const Key('top_bar_shield_button'),
-                borderRadius: BorderRadius.circular(18),
-                onTap: () => _openHeavenShieldQuickSheet(context, engine),
-                child: Padding(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 5,
-                    vertical: 6,
-                  ),
-                  child: Icon(
-                    shieldOn
-                        ? Icons.verified_user_rounded
-                        : Icons.shield_outlined,
-                    size: 16,
-                    color: shieldOn
-                        ? AppTheme.shieldEmerald
-                        : colors.onSurfaceVariant,
-                  ),
-                ),
-              );
-            },
-          ),
-        const SizedBox(width: 4),
+        const SizedBox(width: 6),
         Expanded(
           child: GestureDetector(
             key: const Key('omnibox_display_pill'),
@@ -1877,6 +1851,17 @@ class _BrowserScreenState extends State<BrowserScreen>
           const SizedBox(width: 5),
       ],
     );
+  }
+
+  Future<void> _openSearchEngineOwnSettings(
+    SearchEngine selected,
+    BrowserEngine engine,
+  ) async {
+    await widget.settings.setSearchEngine(selected);
+    if (_isEditingOmnibox || _showLinkActionsCard) {
+      _closeOmniboxOverlay();
+    }
+    await engine.loadUri(Uri.parse(selected.settingsUrl));
   }
 
   Future<void> _handleSearchEngineChanged(
@@ -2152,49 +2137,6 @@ class _BrowserScreenState extends State<BrowserScreen>
 
   void _openVpnScreen() {
     unawaited(_pushSubScreen<void>(HeavenVpnScreen(vpn: widget.vpn)));
-  }
-
-  void _openHeavenShieldScreen() {
-    final BrowserEngine engine = _activeEngine;
-    unawaited(
-      _pushSubScreen<void>(
-        HeavenShieldScreen(
-          settings: widget.settings,
-          tabManager: widget.tabManager,
-          currentHost: engine.currentHost,
-          activeWebViewId: engine.androidWebViewId,
-          onShieldChangedForActivePage: () {
-            if (engine.isShowingWebPage) {
-              unawaited(engine.reloadFullPage());
-            }
-          },
-        ),
-      ),
-    );
-  }
-
-  Future<void> _openHeavenShieldQuickSheet(
-    BuildContext context,
-    BrowserEngine engine,
-  ) async {
-    await showModalBottomSheet<void>(
-      context: context,
-      isScrollControlled: true,
-      showDragHandle: true,
-      builder: (BuildContext _) {
-        return HeavenShieldQuickSheet(
-          settings: widget.settings,
-          currentHost: engine.currentHost,
-          activeWebViewId: engine.androidWebViewId,
-          onReloadActivePage: () {
-            if (engine.isShowingWebPage) {
-              unawaited(engine.reloadFullPage());
-            }
-          },
-          onOpenFullShieldSettings: _openHeavenShieldScreen,
-        );
-      },
-    );
   }
 
   Future<void> _openTranslateReaderSheet(

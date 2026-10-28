@@ -25,7 +25,6 @@ import 'package:heavenbrowser/features/settings/browser_settings.dart';
 import 'package:heavenbrowser/features/settings/help_screen.dart';
 import 'package:heavenbrowser/features/settings/notifications_screen.dart';
 import 'package:heavenbrowser/features/settings/settings_screen.dart';
-import 'package:heavenbrowser/features/shield/heaven_shield_screen.dart';
 import 'package:heavenbrowser/features/shield/native_shield_bridge.dart';
 import 'package:heavenbrowser/features/tabs/tab_manager.dart';
 import 'package:heavenbrowser/features/tabs/tabs_screen.dart';
@@ -261,37 +260,60 @@ void main() {
       );
 
       test(
-        'Home Discover dynamically adapts country tab & localized RSS queries to user locale (US, UK, Germany, Japan, India)',
+        'Home Discover has no country-wise filter and rotates fresh stories on every refresh',
         () async {
-          addTearDown(() {
-            DiscoverRegionConfig.debugLocaleOverride = null;
+          expect(
+            NewsCategoryTab.values.map((NewsCategoryTab t) => t.name).toList(),
+            equals(<String>[
+              'forYou',
+              'tech',
+              'entertainment',
+              'sports',
+              'gaming',
+              'business',
+              'science',
+            ]),
+          );
+
+          SharedPreferences.setMockInitialValues(<String, Object>{});
+          final SharedPreferences prefs = await SharedPreferences.getInstance();
+          final InterestProfileController interests = InterestProfileController(
+            prefs,
+          );
+          final MockClient client = MockClient((http.Request req) async {
+            expect(req.url.queryParameters.containsKey('cc'), isFalse);
+            final String itemsXml = List<String>.generate(12, (int idx) {
+              final int n = idx + 1;
+              return '''
+                <item>
+                  <title>Global Technology Story Number $n Launches Worldwide</title>
+                  <link>https://news.example.org/story-$n</link>
+                  <pubDate>Wed, 28 Oct 2026 10:${(59 - idx).toString().padLeft(2, '0')}:00 GMT</pubDate>
+                  <source url="https://news.example.org">GlobalTech</source>
+                  <media:content url="https://cdn.example.org/cover-$n.jpg" medium="image" />
+                </item>
+              ''';
+            }).join('\n');
+            return http.Response('<rss><channel>$itemsXml</channel></rss>', 200);
           });
-
-          DiscoverRegionConfig.debugLocaleOverride = const Locale('en', 'US');
-          expect(DiscoverRegionConfig.detect().countryCode, 'US');
-          expect(
-            NewsCategoryTab.localCountry.resolvedLabel(),
-            'United States',
+          final HeavenNewsFeedService service = HeavenNewsFeedService(
+            prefs: prefs,
+            interests: interests,
+            client: client,
           );
 
-          DiscoverRegionConfig.debugLocaleOverride = const Locale('en', 'GB');
-          expect(DiscoverRegionConfig.detect().countryCode, 'GB');
-          expect(
-            NewsCategoryTab.localCountry.resolvedLabel(),
-            'United Kingdom',
+          final List<PersonalizedNewsItem> initial = await service.fetchFeed(
+            NewsCategoryTab.tech,
           );
-
-          DiscoverRegionConfig.debugLocaleOverride = const Locale('de', 'DE');
-          expect(DiscoverRegionConfig.detect().countryCode, 'DE');
-          expect(NewsCategoryTab.localCountry.resolvedLabel(), 'Germany');
-
-          DiscoverRegionConfig.debugLocaleOverride = const Locale('ja', 'JP');
-          expect(DiscoverRegionConfig.detect().countryCode, 'JP');
-          expect(NewsCategoryTab.localCountry.resolvedLabel(), 'Japan');
-
-          DiscoverRegionConfig.debugLocaleOverride = const Locale('en', 'IN');
-          expect(DiscoverRegionConfig.detect().countryCode, 'IN');
-          expect(NewsCategoryTab.localCountry.resolvedLabel(), 'India');
+          final List<PersonalizedNewsItem> refreshed = await service.fetchFeed(
+            NewsCategoryTab.tech,
+            forceRefresh: true,
+          );
+          expect(initial, isNotEmpty);
+          expect(refreshed, isNotEmpty);
+          expect(refreshed.first.url, isNot(equals(initial.first.url)));
+          service.dispose();
+          interests.dispose();
         },
       );
 
@@ -517,14 +539,15 @@ void main() {
           prefs,
         );
 
-        // Verify Heaven Shield default customizable state
-        expect(settings.shieldEnabled, isTrue);
-        expect(settings.shieldMode, HeavenShieldMode.standard);
-        expect(settings.shieldBlockAds, isTrue);
-        expect(settings.shieldBlockCookieBanners, isTrue);
-        expect(settings.shieldCleanUrls, isTrue);
-        expect(settings.shieldAntiFingerprinting, isTrue);
-        expect(settings.shieldBlockPopups, isTrue);
+        // Verify Heaven Shield & tab/cookie restrictions are 100% disabled by default
+        expect(settings.shieldEnabled, isFalse);
+        expect(settings.shieldBlockAds, isFalse);
+        expect(settings.shieldBlockCookieBanners, isFalse);
+        expect(settings.shieldCleanUrls, isFalse);
+        expect(settings.shieldAntiFingerprinting, isFalse);
+        expect(settings.shieldBlockPopups, isFalse);
+        expect(settings.blockThirdPartyCookies, isFalse);
+        expect(settings.cookiePolicy, HeavenCookiePolicy.allowAll);
 
         // Verify URL tracking parameter stripping & top-level bounce URL unwrapping
         final Uri dirty = Uri.parse(
@@ -588,35 +611,52 @@ void main() {
           'https://ud.me/heaven.crypto',
         );
 
-        // Verify extended Heaven Shield & Privacy defaults match screenshot features
-        expect(settings.shieldAutoRedirectAmp, isTrue);
-        expect(settings.shieldPreventLangFp, isTrue);
+        // Verify unrestricted search engine & browser defaults (Heaven Shield removed)
+        expect(settings.shieldAutoRedirectAmp, isFalse);
+        expect(settings.shieldPreventLangFp, isFalse);
         expect(settings.allowFacebookEmbeds, isTrue);
         expect(settings.allowTwitterEmbeds, isTrue);
-        expect(settings.allowLinkedinEmbeds, isFalse);
+        expect(settings.allowLinkedinEmbeds, isTrue);
         expect(settings.safeBrowsingMode, HeavenSafeBrowsingMode.standard);
         expect(settings.webrtcPolicy, HeavenWebrtcPolicy.defaultPolicy);
-        expect(settings.blockSwitchToAppNotices, isTrue);
+        expect(settings.blockSwitchToAppNotices, isFalse);
         expect(settings.sendDntAndGpc, isFalse);
         expect(settings.closeTabsOnExit, isFalse);
-
-        // Verify per-site exceptions & subdomain matching
-        expect(settings.isShieldActiveForHost('example.org'), isTrue);
-        await settings.addShieldDisabledHost('https://www.example.org/news');
-        expect(settings.shieldDisabledHosts, contains('example.org'));
         expect(settings.isShieldActiveForHost('example.org'), isFalse);
-        expect(settings.isShieldActiveForHost('sub.example.org'), isFalse);
-        await settings.removeShieldDisabledHost('example.org');
-        expect(settings.isShieldActiveForHost('example.org'), isTrue);
 
-        // Verify Strict mode + Restore Defaults
-        await settings.setShieldMode(HeavenShieldMode.strict);
-        await settings.setShieldBlockAds(false);
-        expect(settings.shieldMode, HeavenShieldMode.strict);
-        expect(settings.shieldBlockAds, isFalse);
-        await settings.resetHeavenShieldDefaults();
-        expect(settings.shieldMode, HeavenShieldMode.standard);
-        expect(settings.shieldBlockAds, isTrue);
+        // Verify each search engine preserves its own native query URL & exposes its own settings URL
+        expect(
+          SearchEngine.google.settingsUrl,
+          'https://www.google.com/preferences',
+        );
+        expect(
+          SearchEngine.perplexity.settingsUrl,
+          'https://www.perplexity.ai/settings',
+        );
+        expect(
+          SearchEngine.duckDuckGo.settingsUrl,
+          'https://duckduckgo.com/settings',
+        );
+        expect(
+          SearchEngine.duckDuckGo.queryPrefix.contains('kp='),
+          isFalse,
+        );
+        expect(
+          SearchEngine.brave.settingsUrl,
+          'https://search.brave.com/settings',
+        );
+        expect(
+          SearchEngine.bing.settingsUrl,
+          'https://www.bing.com/account/general',
+        );
+        expect(
+          SearchEngine.bing.queryPrefix.contains('adlt='),
+          isFalse,
+        );
+        expect(
+          SearchEngine.startpage.settingsUrl,
+          'https://www.startpage.com/do/settings',
+        );
 
         // Verify VpnController heals cached :0 WARP endpoint on load
         final VpnController vpnCheck = VpnController(
@@ -667,27 +707,12 @@ void main() {
       );
       Map<Object?, Object?>? capturedShortcutArgs;
       bool testNotificationSent = false;
-      int shieldTotalBlocked = 14;
-
-      DiscoverRegionConfig.debugLocaleOverride = const Locale('en', 'GB');
-      addTearDown(() {
-        DiscoverRegionConfig.debugLocaleOverride = null;
-      });
 
       TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
           .setMockMethodCallHandler(nativeChannel, (MethodCall call) async {
             switch (call.method) {
               case 'createHomeScreenShortcut':
                 capturedShortcutArgs = call.arguments as Map<Object?, Object?>?;
-                return true;
-              case 'getHeavenShieldStats':
-                return <String, Object>{
-                  'pageBlocked': 4,
-                  'totalBlocked': shieldTotalBlocked,
-                  'enabled': true,
-                };
-              case 'resetHeavenShieldStats':
-                shieldTotalBlocked = 0;
                 return true;
               case 'getNotificationStatus':
                 return <String, Object>{
@@ -796,13 +821,14 @@ void main() {
           .widget<BrowserScreen>(find.byType(BrowserScreen))
           .tabManager;
 
-      // 1. Dynamic Country in Home Discover shows 'United Kingdom' (en_GB) & ZERO Shield UI exists
+      // 1. Home Discover has ZERO country-wise filter & ZERO Shield UI exists
       expect(
         find.byKey(const Key('discover_tab_localCountry')),
-        findsOneWidget,
+        findsNothing,
       );
-      expect(find.text('United Kingdom'), findsOneWidget);
+      expect(find.byKey(const Key('discover_tab_forYou')), findsOneWidget);
       expect(find.byKey(const Key('omnibox_shield_badge_button')), findsNothing);
+      expect(find.byKey(const Key('top_bar_shield_button')), findsNothing);
 
       // 2. Submit search -> resolves to Google; scrolling down glides floating search bar upward WITH ZERO WEBSITE PULL (viewport Rect stays 100% constant!)
       expect(find.byKey(const Key('home_search_icon_button')), findsNothing);
@@ -929,207 +955,22 @@ void main() {
       await tester.tap(find.byIcon(Icons.close_rounded));
       await tester.pumpAndSettle();
 
-      // 4b. Tap top-bar Heaven Shield icon -> Quick Sheet -> verify 'Block trackers & ads' mode selector
-      //     (Aggressive / Standard / Allow all) right inside the search-bar Shield sheet!
-      expect(find.byKey(const Key('top_bar_shield_button')), findsOneWidget);
-      await tester.tap(find.byKey(const Key('top_bar_shield_button')));
+      // 4b. Top bar has ZERO Heaven Shield icon, and Search Engine chip opens the engine's own settings!
+      expect(find.byKey(const Key('top_bar_shield_button')), findsNothing);
+      await tester.tap(find.byKey(const Key('tiny_search_engine_switcher')).first);
       await tester.pumpAndSettle();
-      expect(find.byType(HeavenShieldQuickSheet), findsOneWidget);
-      expect(find.byKey(const Key('quick_shield_site_switch')), findsOneWidget);
       expect(
-        find.byKey(const Key('quick_shield_mode_aggressive')),
+        find.byKey(const Key('popup_current_engine_settings_item')),
         findsOneWidget,
-      );
-      expect(
-        find.byKey(const Key('quick_shield_mode_standard')),
-        findsOneWidget,
-      );
-      expect(
-        find.byKey(const Key('quick_shield_mode_disabled')),
-        findsOneWidget,
-      );
-      await tester.tap(find.byKey(const Key('quick_shield_mode_aggressive')));
-      await tester.pumpAndSettle();
-      expect(settings.shieldMode, HeavenShieldMode.strict);
-      expect(settings.shieldBlockAds, isTrue);
-
-      await tester.tap(find.byKey(const Key('quick_shield_mode_disabled')));
-      await tester.pumpAndSettle();
-      expect(settings.shieldBlockAds, isFalse);
-
-      await tester.tap(find.byKey(const Key('quick_shield_mode_standard')));
-      await tester.pumpAndSettle();
-      expect(settings.shieldMode, HeavenShieldMode.standard);
-      expect(settings.shieldBlockAds, isTrue);
-
-      expect(
-        find.byKey(const Key('quick_shield_block_element_button')),
-        findsNothing,
-      );
-      expect(
-        find.byKey(const Key('quick_shield_shred_site_button')),
-        findsNothing,
-      );
-      expect(
-        find.byKey(const Key('quick_shield_report_broken_button')),
-        findsNothing,
-      );
-      expect(find.text('Block element'), findsNothing);
-      expect(find.text('Shred data'), findsNothing);
-      expect(find.text('Report a broken site'), findsNothing);
-      await tester.ensureVisible(
-        find.byKey(const Key('quick_shield_customize_button')),
-      );
-      await tester.pumpAndSettle();
-      await tester.tap(find.byKey(const Key('quick_shield_customize_button')));
-      await tester.pumpAndSettle();
-
-      expect(find.byType(HeavenShieldScreen), findsOneWidget);
-      expect(find.byKey(const Key('shield_row_shred')), findsNothing);
-      expect(
-        find.byKey(const Key('shield_switch_store_report_contact')),
-        findsNothing,
-      );
-      expect(
-        find.byKey(const Key('shield_switch_private_element_block')),
-        findsNothing,
-      );
-      expect(
-        find.byKey(const Key('heaven_shield_blocked_counter')),
-        findsOneWidget,
-      );
-      expect(find.textContaining('Blocked: 14'), findsOneWidget);
-
-      // Open 'Block trackers & ads' selector -> choose Aggressive (Strict)
-      await tester.tap(find.byKey(const Key('shield_row_trackers_ads')));
-      await tester.pumpAndSettle();
-      await tester.tap(find.byKey(const Key('heaven_shield_mode_strict')));
-      await tester.pumpAndSettle();
-      expect(settings.shieldMode, HeavenShieldMode.strict);
-
-      // Open 'Content filtering' sub-screen and add a custom rule
-      final Finder shieldScrollable = find
-          .descendant(
-            of: find.byType(HeavenShieldScreen),
-            matching: find.byType(Scrollable),
-          )
-          .first;
-      await tester.scrollUntilVisible(
-        find.byKey(const Key('shield_row_content_filtering')),
-        140,
-        scrollable: shieldScrollable,
-      );
-      await tester.pumpAndSettle();
-      await tester.tap(find.byKey(const Key('shield_row_content_filtering')));
-      await tester.pumpAndSettle();
-      expect(find.byType(HeavenContentFilteringScreen), findsOneWidget);
-      await tester.scrollUntilVisible(
-        find.byKey(const Key('custom_filter_rules_textfield')),
-        140,
-        scrollable: find
-            .descendant(
-              of: find.byType(HeavenContentFilteringScreen),
-              matching: find.byType(Scrollable),
-            )
-            .first,
-      );
-      await tester.pumpAndSettle();
-      await tester.enterText(
-        find.byKey(const Key('custom_filter_rules_textfield')),
-        '||ads.example.com^\n##.annoying-banner',
-      );
-      await tester.scrollUntilVisible(
-        find.byKey(const Key('save_custom_filter_rules_button')),
-        120,
-        scrollable: find
-            .descendant(
-              of: find.byType(HeavenContentFilteringScreen),
-              matching: find.byType(Scrollable),
-            )
-            .first,
-      );
-      await tester.pumpAndSettle();
-      await tester.tap(
-        find.byKey(const Key('save_custom_filter_rules_button')),
-      );
-      await tester.pumpAndSettle();
-      expect(settings.customFilterRules.length, 2);
-
-      // Verify Social Media Blocking, WebRTC policy & Site Exceptions exist on HeavenShieldScreen
-      await tester.scrollUntilVisible(
-        find.byKey(const Key('shield_switch_social_facebook')),
-        140,
-        scrollable: shieldScrollable,
-      );
-      await tester.pumpAndSettle();
-      expect(
-        find.byKey(const Key('shield_switch_social_facebook')),
-        findsOneWidget,
-      );
-      await tester.scrollUntilVisible(
-        find.byKey(const Key('shield_switch_social_linkedin')),
-        140,
-        scrollable: shieldScrollable,
-      );
-      await tester.pumpAndSettle();
-      expect(
-        find.byKey(const Key('shield_switch_social_linkedin')),
-        findsOneWidget,
-      );
-
-      await tester.scrollUntilVisible(
-        find.byKey(const Key('shield_row_webrtc_policy')),
-        160,
-        scrollable: shieldScrollable,
-      );
-      await tester.pumpAndSettle();
-      expect(find.byKey(const Key('shield_row_webrtc_policy')), findsOneWidget);
-
-      await tester.scrollUntilVisible(
-        find.byKey(const Key('shield_switch_lock_app')),
-        140,
-        scrollable: shieldScrollable,
-      );
-      await tester.pumpAndSettle();
-      expect(find.byKey(const Key('shield_switch_lock_app')), findsOneWidget);
-
-      await tester.scrollUntilVisible(
-        find.byKey(const Key('heaven_shield_add_exception_button')),
-        180,
-        scrollable: shieldScrollable,
-      );
-      await tester.pumpAndSettle();
-      await tester.tap(
-        find.byKey(const Key('heaven_shield_add_exception_button')),
-      );
-      await tester.pumpAndSettle();
-      await tester.enterText(
-        find.byKey(const Key('heaven_shield_exception_input')),
-        'example.org',
       );
       await tester.tap(
-        find.byKey(const Key('heaven_shield_exception_save_button')),
+        find.byKey(const Key('popup_current_engine_settings_item')),
       );
       await tester.pumpAndSettle();
-      expect(settings.isShieldActiveForHost('example.org'), isFalse);
-
-      // Restore recommended defaults resets Strict -> Standard, clears custom rules & exceptions
-      await tester.scrollUntilVisible(
-        find.byKey(const Key('heaven_shield_restore_defaults_button')),
-        140,
-        scrollable: shieldScrollable,
+      expect(
+        tabManager.activeEngine.currentUrl,
+        SearchEngine.google.settingsUrl,
       );
-      await tester.pumpAndSettle();
-      await tester.tap(
-        find.byKey(const Key('heaven_shield_restore_defaults_button')),
-      );
-      await tester.pumpAndSettle();
-      expect(settings.shieldMode, HeavenShieldMode.standard);
-      expect(settings.customFilterRules, isEmpty);
-      expect(settings.isShieldActiveForHost('example.org'), isTrue);
-
-      await tester.pageBack();
-      await tester.pumpAndSettle();
 
       // 5. Starting a download displays tappable 'Download started' popup banner -> tapping it opens Downloads IN A TAB!
       await downloads.startUrlDownload(
@@ -1232,6 +1073,10 @@ void main() {
       expect(find.byKey(const Key('settings_web_store_tile')), findsNothing);
       expect(
         find.byKey(const Key('settings_heaven_shield_tile')),
+        findsNothing,
+      );
+      expect(
+        find.byKey(const Key('settings_active_engine_own_settings_tile')),
         findsOneWidget,
       );
 
@@ -1415,12 +1260,30 @@ void main() {
         );
         expect(Directory('lib/features/store').existsSync(), isFalse);
 
+        expect(
+          File(
+            'android/app/src/main/java/com/hypertechlabs/heavenbrowser/HeavenShieldEngine.java',
+          ).existsSync(),
+          isFalse,
+        );
+        expect(
+          File('lib/features/shield/heaven_shield_screen.dart').existsSync(),
+          isFalse,
+        );
+
         final String shieldJava = File(
           'android/app/src/main/java/com/hypertechlabs/heavenbrowser/HeavenShieldPlugin.java',
         ).readAsStringSync();
-        expect(shieldJava.contains('setWebChromeClient'), isFalse);
+        expect(shieldJava.contains('HeavenTabWebChromeClient'), isTrue);
+        expect(shieldJava.contains('onOpenNewTabRequest'), isTrue);
+        expect(shieldJava.contains('setSupportMultipleWindows(true)'), isTrue);
+        expect(
+          shieldJava.contains('setJavaScriptCanOpenWindowsAutomatically(true)'),
+          isTrue,
+        );
         expect(shieldJava.contains('ShieldWebChromeClient'), isFalse);
         expect(shieldJava.contains('HeavenBraveShieldEngine'), isFalse);
+        expect(shieldJava.contains('HeavenShieldEngine'), isFalse);
         expect(shieldJava.contains('HeavenExtEngine'), isFalse);
         expect(shieldJava.contains('getBraveShieldStats'), isFalse);
         expect(shieldJava.contains('onBlockedRequest'), isFalse);
@@ -1433,9 +1296,6 @@ void main() {
         expect(shieldJava.contains('installPullToRefreshListener'), isTrue);
         expect(shieldJava.contains('onPageAtTop'), isTrue);
         expect(shieldJava.contains('onInnerScroll'), isTrue);
-        expect(shieldJava.contains('HeavenShieldEngine'), isTrue);
-        expect(shieldJava.contains('getHeavenShieldStats'), isTrue);
-        expect(shieldJava.contains('resetHeavenShieldStats'), isTrue);
         expect(shieldJava.contains('FLAG_DEBUGGABLE'), isTrue);
         expect(shieldJava.contains('setOffscreenPreRaster(false)'), isTrue);
         expect(shieldJava.contains('Bitmap.Config.RGB_565'), isTrue);
@@ -1457,35 +1317,6 @@ void main() {
         expect(shieldJava.contains('window.__hbInBg'), isTrue);
         expect(shieldJava.contains('onWebScrollNavBar'), isTrue);
         expect(shieldJava.contains('bgKeepAliveLoop'), isTrue);
-
-        final String shieldEngineJava = File(
-          'android/app/src/main/java/com/hypertechlabs/heavenbrowser/HeavenShieldEngine.java',
-        ).readAsStringSync();
-        expect(shieldEngineJava.contains('interceptSubresource'), isTrue);
-        expect(shieldEngineJava.contains('shouldBlockDomain'), isTrue);
-        expect(shieldEngineJava.contains('imasdk.googleapis.com'), isTrue);
-        expect(shieldEngineJava.contains('403, "Blocked"'), isTrue);
-        expect(shieldEngineJava.contains('padding-top:50px'), isFalse);
-        expect(
-          shieldEngineJava.contains('isFirstPartyYoutubeAdPath'),
-          isTrue,
-        );
-        expect(shieldEngineJava.contains('stripYtAds'), isTrue);
-        expect(shieldEngineJava.contains('adPlacements'), isTrue);
-        expect(shieldEngineJava.contains('__hbShieldRuntimeV21'), isTrue);
-        expect(
-          shieldEngineJava.contains('overflow:auto!important'),
-          isFalse,
-        );
-        expect(
-          shieldEngineJava.contains('getCompiledDocumentStartBundle'),
-          isTrue,
-        );
-        expect(shieldEngineJava.contains('__hb_top_safe_css'), isTrue);
-        expect(
-          shieldEngineJava.contains('io.flutter.plugin.common.MethodChannel'),
-          isFalse,
-        );
 
         final String browserEngineDart = File(
           'lib/features/browser/engine/browser_engine.dart',
@@ -2373,37 +2204,28 @@ void main() {
         );
         expect(tabManager.totalTabCount, 1);
 
-        // 7. Pirate-site multi-link / popunder redirects NEVER spawn extra tabs & ad domains are blocked!
+        // 7. Heaven Shield & navigation/tab restrictions removed: websites & redirects navigate freely!
         await tabManager.activeEngine.loadUserEntry('https://stream-example.tv');
         await tester.pumpAndSettle();
         expect(tabManager.totalTabCount, 1);
 
-        // Ad/popunder main-frame redirect is blocked completely!
         final adDecision = await tabManager.activeEngine
             .handleWebsiteNavigationOrRedirect(
               'https://syndication.exoclick.com/popunder?zone=1',
             );
-        expect(adDecision.name, 'prevent');
-        expect(tabManager.totalTabCount, 1);
+        expect(adDecision.name, 'navigate');
 
-        // Legitimate cross-site navigation stays inside the SAME tab (zero multi-tab spam!)
-        await tester.runAsync(
-          () => Future<void>.delayed(const Duration(milliseconds: 700)),
-        );
         final legitDecision = await tabManager.activeEngine
             .handleWebsiteNavigationOrRedirect(
               'https://flutter.dev/docs',
             );
         expect(legitDecision.name, 'navigate');
-        expect(tabManager.totalTabCount, 1);
 
-        // Rapid (<650ms) second cross-site redirect bounce is blocked!
         final bounceDecision = await tabManager.activeEngine
             .handleWebsiteNavigationOrRedirect(
               'https://spam-tracker-redirect.xyz/jump',
             );
-        expect(bounceDecision.name, 'prevent');
-        expect(tabManager.totalTabCount, 1);
+        expect(bounceDecision.name, 'navigate');
 
         // 8. 3-Dots Menu: No Incognito, No AI, Listen + Offline/PDF in grid, Settings right below Notifications!
         await tester.tap(find.byTooltip('Browser Menu'));
@@ -2776,4 +2598,312 @@ void main() {
       },
     );
   });
+
+  group(
+    'Step 28: Heaven Shield Removed, Per-Engine Own Settings, Unrestricted Multi-Tab, Fresh Home News & Active-Tab Positioned TabsScreen',
+    () {
+      test(
+        'Legacy Shield prefs are ignored and multi-window/target=_blank requests spawn real new tabs without restriction',
+        () async {
+          SharedPreferences.setMockInitialValues(<String, Object>{
+            'hb.shield.enabled': true,
+            'hb.shield.mode': 'strict',
+            'hb.shield.blockAds': true,
+            'hb.shield.blockPopups': true,
+            'hb.blockThirdPartyCookies': true,
+          });
+          final SharedPreferences prefs = await SharedPreferences.getInstance();
+          final BrowserSettingsController settings = BrowserSettingsController(
+            prefs,
+          );
+          expect(settings.shieldEnabled, isFalse);
+          expect(settings.shieldBlockAds, isFalse);
+          expect(settings.shieldBlockPopups, isFalse);
+          expect(settings.blockThirdPartyCookies, isFalse);
+          expect(settings.cookiePolicy, HeavenCookiePolicy.allowAll);
+
+          final TabManagerController tabManager = TabManagerController(
+            settings: settings,
+            enablePlatformWebView: false,
+          );
+          await tabManager.activeEngine.loadUserEntry(
+            'https://duckduckgo.com/?q=flutter',
+          );
+          expect(tabManager.normalTabs.length, 1);
+
+          // Simulate search engine opening a result in a new tab (target="_blank" / window.open)
+          tabManager.activeEngine.requestNewTabFromEngine(
+            'https://flutter.dev/docs',
+          );
+          await Future<void>.delayed(const Duration(milliseconds: 20));
+
+          expect(tabManager.normalTabs.length, 2);
+          expect(
+            tabManager.activeEngine.currentUrl,
+            'https://flutter.dev/docs',
+          );
+
+          tabManager.dispose();
+          settings.dispose();
+        },
+      );
+
+      testWidgets(
+        'Per-search-engine own settings open from Home chip, Top chip & SettingsScreen, and Home pull-to-refresh shows new news with zero country filter',
+        (WidgetTester tester) async {
+          tester.view.physicalSize = const Size(390, 844);
+          tester.view.devicePixelRatio = 1.0;
+          addTearDown(() {
+            tester.view.resetPhysicalSize();
+            tester.view.resetDevicePixelRatio();
+          });
+
+          SharedPreferences.setMockInitialValues(<String, Object>{});
+          final SharedPreferences prefs = await SharedPreferences.getInstance();
+          final BrowserSettingsController settings = BrowserSettingsController(
+            prefs,
+          );
+          final DownloadsController downloads = DownloadsController(
+            prefs,
+            enableNativePolling: false,
+          );
+          final InterestProfileController interests = InterestProfileController(
+            prefs,
+          );
+          final MockClient rotatingNewsClient = MockClient((
+            http.Request req,
+          ) async {
+            expect(req.url.queryParameters.containsKey('cc'), isFalse);
+            final String xmlItems = List<String>.generate(14, (int i) {
+              final int numId = i + 1;
+              return '''
+                <item>
+                  <title>Headline Batch Story #$numId Breaking Global Update</title>
+                  <link>https://worldnews.example.com/article-$numId</link>
+                  <pubDate>Wed, 28 Oct 2026 12:${(59 - i).toString().padLeft(2, '0')}:00 GMT</pubDate>
+                  <source url="https://worldnews.example.com">WorldNews</source>
+                  <media:content url="https://images.example.com/photo-$numId.jpg" medium="image" />
+                </item>
+              ''';
+            }).join('\n');
+            return http.Response('<rss><channel>$xmlItems</channel></rss>', 200);
+          });
+          final HeavenNewsFeedService newsService = HeavenNewsFeedService(
+            prefs: prefs,
+            interests: interests,
+            client: rotatingNewsClient,
+          );
+          final VpnController vpn = VpnController(
+            prefs,
+            enableNativePolling: false,
+            client: MockClient(
+              (_) async =>
+                  http.Response('ip=198.51.100.12\nloc=US\nwarp=off\n', 200),
+            ),
+          );
+
+          await tester.pumpWidget(
+            HeavenBrowserApp(
+              settings: settings,
+              downloads: downloads,
+              interests: interests,
+              newsService: newsService,
+              searchService: _createMockSearchService(),
+              vpn: vpn,
+              enablePlatformWebView: false,
+            ),
+          );
+          await tester.pumpAndSettle();
+
+          // 1. Country-wise filter is completely gone; initial headline #1 is shown on Home Screen
+          expect(
+            find.byKey(const Key('discover_tab_localCountry')),
+            findsNothing,
+          );
+          expect(
+            find.text('Headline Batch Story #1 Breaking Global Update'),
+            findsOneWidget,
+          );
+
+          // 2. Pull down to refresh on Home Screen -> new news headline rotates right to the top!
+          await tester.fling(
+            find.byType(CustomScrollView).first,
+            const Offset(0, 360),
+            1200,
+          );
+          await tester.pump();
+          await tester.pump(const Duration(seconds: 1));
+          await tester.pumpAndSettle();
+          expect(
+            find.text('Headline Batch Story #7 Breaking Global Update'),
+            findsOneWidget,
+          );
+
+          // 3. Home Screen search engine chip exposes per-engine settings gear -> opens DuckDuckGo settings!
+          await tester.tap(
+            find.byKey(const Key('tiny_search_engine_switcher')).last,
+          );
+          await tester.pumpAndSettle();
+          await tester.tap(
+            find.byKey(const Key('popup_engine_settings_duckDuckGo')),
+          );
+          await tester.pumpAndSettle();
+
+          final TabManagerController tabManager = tester
+              .widget<BrowserScreen>(find.byType(BrowserScreen))
+              .tabManager;
+          expect(settings.searchEngine, SearchEngine.duckDuckGo);
+          expect(
+            tabManager.activeEngine.currentUrl,
+            'https://duckduckgo.com/settings',
+          );
+
+          // 4. SettingsScreen exposes active engine settings tile + per-engine gear in Search Engine picker!
+          await tester.tap(find.byTooltip('Browser Menu'));
+          await tester.pumpAndSettle();
+          await tester.ensureVisible(
+            find.byKey(const Key('browser_menu_settings_tile')),
+          );
+          await tester.pumpAndSettle();
+          await tester.tap(
+            find.byKey(const Key('browser_menu_settings_tile')),
+          );
+          await tester.pumpAndSettle();
+          expect(find.byType(SettingsScreen), findsOneWidget);
+          expect(
+            find.byKey(const Key('settings_heaven_shield_tile')),
+            findsNothing,
+          );
+          expect(find.text('DuckDuckGo Settings'), findsOneWidget);
+
+          await tester.tap(
+            find.byKey(const Key('settings_search_engine_tile')),
+          );
+          await tester.pumpAndSettle();
+          await tester.tap(
+            find.byKey(const Key('open_engine_own_settings_brave')),
+          );
+          await tester.pumpAndSettle();
+          expect(settings.searchEngine, SearchEngine.brave);
+          expect(
+            tabManager.activeEngine.currentUrl,
+            'https://search.brave.com/settings',
+          );
+
+          vpn.dispose();
+          newsService.dispose();
+          downloads.dispose();
+          interests.dispose();
+          settings.dispose();
+        },
+      );
+
+      testWidgets(
+        'TabsScreen removes All button, places New Group before New Tab, and opens scrolled directly to the active tab',
+        (WidgetTester tester) async {
+          tester.view.physicalSize = const Size(390, 760);
+          tester.view.devicePixelRatio = 1.0;
+          addTearDown(() {
+            tester.view.resetPhysicalSize();
+            tester.view.resetDevicePixelRatio();
+          });
+
+          SharedPreferences.setMockInitialValues(<String, Object>{});
+          final SharedPreferences prefs = await SharedPreferences.getInstance();
+          final BrowserSettingsController settings = BrowserSettingsController(
+            prefs,
+          );
+          final TabManagerController tabManager = TabManagerController(
+            settings: settings,
+            enablePlatformWebView: false,
+          );
+
+          // Open 12 websites and keep Tab #11 active (row 5 in 2-column grid, well below top fold)
+          await tabManager.activeEngine.loadUserEntry(
+            'https://site-1.example.org',
+          );
+          final List<BrowserTab> opened = <BrowserTab>[
+            tabManager.normalTabs.first,
+          ];
+          for (int i = 2; i <= 12; i++) {
+            final BrowserTab t = await tabManager.openNewTab(
+              initialInput: 'https://site-$i.example.org',
+            );
+            opened.add(t);
+          }
+          final BrowserTab activeTarget = opened[10]; // Tab #11 (index 10)
+          tabManager.switchToTab(activeTarget.id);
+          expect(tabManager.activeTab.id, activeTarget.id);
+
+          await tester.pumpWidget(
+            MaterialApp(home: TabsScreen(tabManager: tabManager)),
+          );
+          await tester.pumpAndSettle();
+
+          // 1. "All (...)" button is 100% removed
+          expect(find.textContaining('All ('), findsNothing);
+          expect(find.widgetWithText(ChoiceChip, 'All (12)'), findsNothing);
+
+          // 2. "New Group" button is in the bottom bar strictly BEFORE "New Tab"
+          final Finder newGroupBtn = find.byKey(
+            const Key('tabs_bottom_new_group_button'),
+          );
+          final Finder newTabBtn = find.byKey(
+            const Key('tabs_bottom_new_tab_button'),
+          );
+          expect(newGroupBtn, findsOneWidget);
+          expect(newTabBtn, findsOneWidget);
+          expect(
+            tester.getTopLeft(newGroupBtn).dx,
+            lessThan(tester.getTopLeft(newTabBtn).dx),
+          );
+
+          // 3. TabsScreen did NOT open at the top (0.0) — it opened scrolled right to Tab #11!
+          final ScrollableState gridScrollState = tester.state<ScrollableState>(
+            find
+                .descendant(
+                  of: find.byKey(const Key('tabs_grid_view')),
+                  matching: find.byType(Scrollable),
+                )
+                .first,
+          );
+          expect(gridScrollState.position.pixels, greaterThan(400.0));
+          expect(
+            find.byKey(ValueKey<String>('tab_card_${activeTarget.id}')),
+            findsOneWidget,
+          );
+
+          // 4. Tapping "New Group" creates a group chip, and tapping the chip toggles filter cleanly without an "All" chip!
+          await tester.tap(newGroupBtn);
+          await tester.pumpAndSettle();
+          await tester.tap(
+            find.byKey(const Key('confirm_create_tab_group_button')),
+          );
+          await tester.pumpAndSettle();
+          expect(tabManager.groups.length, 1);
+          expect(find.textContaining('All ('), findsNothing);
+
+          final String grpId = tabManager.groups.first.id;
+          final Finder grpChip = find.byKey(
+            ValueKey<String>('tab_group_filter_$grpId'),
+          );
+          expect(grpChip, findsOneWidget);
+          await tester.tap(grpChip);
+          await tester.pumpAndSettle();
+          // Filtered to just the 1 grouped tab
+          expect(
+            find.byKey(ValueKey<String>('tab_card_${activeTarget.id}')),
+            findsOneWidget,
+          );
+          // Tap group chip again -> unselects filter back to all 12 tabs!
+          await tester.tap(grpChip);
+          await tester.pumpAndSettle();
+          expect(tabManager.normalTabs.length, 12);
+
+          tabManager.dispose();
+          settings.dispose();
+        },
+      );
+    },
+  );
 }

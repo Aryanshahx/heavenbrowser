@@ -388,12 +388,13 @@ class BrowserSettingsController extends ChangeNotifier {
   static const String _keyBookmarks = 'hb.bookmarks.v3';
   static const String _keyHistory = 'hb.history.v3';
 
-  // Google is the default search engine; top navigation bar is always used.
+  // Google is the default search engine; Heaven Shield is removed so websites
+  // and search engines work natively with their own cookies & settings!
   SearchEngine _searchEngine = SearchEngine.google;
   ThemeMode _themeMode = ThemeMode.dark;
   BrowserLanguage _language = BrowserLanguage.en;
   bool _httpsUpgrade = true;
-  bool _blockThirdPartyCookies = true;
+  bool _blockThirdPartyCookies = false;
   bool _sendDntAndGpc = false;
   bool _clearOnExit = false;
   bool _javascriptEnabled = true;
@@ -404,17 +405,17 @@ class BrowserSettingsController extends ChangeNotifier {
   bool _downloadNotificationsEnabled = true;
   bool _backgroundPlayNotificationEnabled = true;
   bool _webNotificationsEnabled = false;
-  bool _shieldEnabled = true;
+  bool _shieldEnabled = false;
   HeavenShieldMode _shieldMode = HeavenShieldMode.standard;
-  bool _shieldBlockAds = true;
-  bool _shieldBlockCookieBanners = true;
-  bool _shieldCleanUrls = true;
-  bool _shieldAntiFingerprinting = true;
-  bool _shieldBlockPopups = true;
+  bool _shieldBlockAds = false;
+  bool _shieldBlockCookieBanners = false;
+  bool _shieldCleanUrls = false;
+  bool _shieldAntiFingerprinting = false;
+  bool _shieldBlockPopups = false;
   HeavenHttpsUpgradeMode _httpsUpgradeMode = HeavenHttpsUpgradeMode.standard;
-  HeavenCookiePolicy _cookiePolicy = HeavenCookiePolicy.blockThirdParty;
-  bool _shieldAutoRedirectAmp = true;
-  bool _shieldPreventLangFp = true;
+  HeavenCookiePolicy _cookiePolicy = HeavenCookiePolicy.allowAll;
+  bool _shieldAutoRedirectAmp = false;
+  bool _shieldPreventLangFp = false;
   bool _storeBrokenSiteContact = true;
   String _brokenSiteContactEmail = '';
   HeavenAutoShredMode _autoShredMode = HeavenAutoShredMode.never;
@@ -603,25 +604,12 @@ class BrowserSettingsController extends ChangeNotifier {
       'system' => ThemeMode.system,
       _ => ThemeMode.dark,
     };
-    _httpsUpgradeMode = HeavenHttpsUpgradeMode.fromName(
-      _prefs.getString(_keyShieldHttpsMode),
-    );
-    _httpsUpgrade =
-        _prefs.getBool(_keyHttpsUpgrade) ??
-        (_httpsUpgradeMode != HeavenHttpsUpgradeMode.disabled);
-    if (!_httpsUpgrade &&
-        _httpsUpgradeMode != HeavenHttpsUpgradeMode.disabled) {
-      _httpsUpgradeMode = HeavenHttpsUpgradeMode.disabled;
-    }
+    _httpsUpgradeMode = HeavenHttpsUpgradeMode.standard;
+    _httpsUpgrade = _prefs.getBool(_keyHttpsUpgrade) ?? true;
+    _cookiePolicy = HeavenCookiePolicy.allowAll;
+    _blockThirdPartyCookies = false;
 
-    _cookiePolicy = HeavenCookiePolicy.fromName(
-      _prefs.getString(_keyShieldCookiePolicy),
-    );
-    _blockThirdPartyCookies =
-        _prefs.getBool(_keyBlockThirdPartyCookies) ??
-        (_cookiePolicy != HeavenCookiePolicy.allowAll);
-
-    _sendDntAndGpc = _prefs.getBool(_keySendDntGpc) ?? false;
+    _sendDntAndGpc = false;
     _clearOnExit = _prefs.getBool(_keyClearOnExit) ?? false;
     _javascriptEnabled = _prefs.getBool(_keyJavascriptEnabled) ?? true;
     _desktopMode = _prefs.getBool(_keyDesktopMode) ?? false;
@@ -639,56 +627,42 @@ class BrowserSettingsController extends ChangeNotifier {
     _backgroundPlayNotificationEnabled =
         _prefs.getBool(_keyBgPlayNotifs) ?? true;
     _webNotificationsEnabled = _prefs.getBool(_keyWebNotifs) ?? false;
-    _shieldEnabled = _prefs.getBool(_keyShieldEnabled) ?? true;
-    _shieldMode = HeavenShieldMode.fromName(_prefs.getString(_keyShieldMode));
-    _shieldBlockAds = _prefs.getBool(_keyShieldBlockAds) ?? true;
-    _shieldBlockCookieBanners =
-        _prefs.getBool(_keyShieldCookieBanners) ?? true;
-    _shieldCleanUrls = _prefs.getBool(_keyShieldCleanUrls) ?? true;
-    _shieldAutoRedirectAmp = _prefs.getBool(_keyShieldAutoAmp) ?? true;
-    _shieldPreventLangFp = _prefs.getBool(_keyShieldLangFp) ?? true;
-    _storeBrokenSiteContact = _prefs.getBool(_keyShieldStoreContact) ?? true;
-    _brokenSiteContactEmail =
-        (_prefs.getString(_keyShieldContactEmail) ?? '').trim();
-    _autoShredMode = HeavenAutoShredMode.fromName(
-      _prefs.getString(_keyShieldAutoShred),
-    );
-    _allowElementBlockInPrivate =
-        _prefs.getBool(_keyShieldPrivElemBlock) ?? false;
-    _allowFacebookEmbeds = _prefs.getBool(_keyShieldFbEmbeds) ?? true;
-    _allowTwitterEmbeds = _prefs.getBool(_keyShieldTwEmbeds) ?? true;
-    _allowLinkedinEmbeds = _prefs.getBool(_keyShieldLiEmbeds) ?? false;
+    // Heaven Shield is completely removed — never activate legacy stored Shield flags!
+    _shieldEnabled = false;
+    _shieldMode = HeavenShieldMode.standard;
+    _shieldBlockAds = false;
+    _shieldBlockCookieBanners = false;
+    _shieldCleanUrls = false;
+    _shieldAntiFingerprinting = false;
+    _shieldBlockPopups = false;
+    _shieldAutoRedirectAmp = false;
+    _shieldPreventLangFp = false;
+    _storeBrokenSiteContact = false;
+    _brokenSiteContactEmail = '';
+    _autoShredMode = HeavenAutoShredMode.never;
+    _allowElementBlockInPrivate = false;
+    _allowFacebookEmbeds = true;
+    _allowTwitterEmbeds = true;
+    _allowLinkedinEmbeds = true;
     _openExternalLinksInHeaven = _prefs.getBool(_keyOpenExtInHeaven) ?? true;
-    _safeBrowsingMode = HeavenSafeBrowsingMode.fromName(
-      _prefs.getString(_keySafeBrowsing),
-    );
+    _safeBrowsingMode = HeavenSafeBrowsingMode.standard;
     _allowExternalAppLinks = _prefs.getBool(_keyAllowAppLinks) ?? true;
-    _webrtcPolicy = HeavenWebrtcPolicy.fromName(
-      _prefs.getString(_keyWebrtcPolicy),
-    );
+    _webrtcPolicy = HeavenWebrtcPolicy.defaultPolicy;
     _allowPrivateScreenshots = _prefs.getBool(_keyPrivScreenshots) ?? false;
-    _allowPaymentMethodQuery = _prefs.getBool(_keyPaymentQuery) ?? true;
-    _resolveUnstoppableDomains = _prefs.getBool(_keyUnstoppable) ?? true;
-    _resolveEnsDomains = _prefs.getBool(_keyEns) ?? true;
-    _resolveSnsDomains = _prefs.getBool(_keySns) ?? true;
-    _secureDnsMode = HeavenSecureDnsMode.fromName(
-      _prefs.getString(_keySecureDns),
-    );
-    _jsOptimisationMode = HeavenJsOptimisationMode.fromName(
-      _prefs.getString(_keyJsOpt),
-    );
-    _blockSwitchToAppNotices = _prefs.getBool(_keyBlockSwitchApp) ?? true;
+    _allowPaymentMethodQuery = true;
+    _resolveUnstoppableDomains = true;
+    _resolveEnsDomains = true;
+    _resolveSnsDomains = true;
+    _secureDnsMode = HeavenSecureDnsMode.automatic;
+    _jsOptimisationMode = HeavenJsOptimisationMode.standard;
+    _blockSwitchToAppNotices = false;
     _closeTabsOnExit = _prefs.getBool(_keyCloseTabsExit) ?? false;
-    _filterFanboyAnnoyances = _prefs.getBool(_keyFilterFanboy) ?? true;
-    _filterMobileNotifs = _prefs.getBool(_keyFilterMobNotifs) ?? true;
-    _filterAntiAdblock = _prefs.getBool(_keyFilterAntiAb) ?? true;
-    _filterRegionalIndia = _prefs.getBool(_keyFilterRegIndia) ?? false;
-    _filterRegionalGlobal = _prefs.getBool(_keyFilterRegGlobal) ?? false;
-    _customFilterRules = List<String>.from(
-      _prefs.getStringList(_keyCustomFilterRules) ?? const <String>[],
-    );
-    _shieldAntiFingerprinting = _prefs.getBool(_keyShieldAntiFp) ?? true;
-    _shieldBlockPopups = _prefs.getBool(_keyShieldBlockPopups) ?? true;
+    _filterFanboyAnnoyances = false;
+    _filterMobileNotifs = false;
+    _filterAntiAdblock = false;
+    _filterRegionalIndia = false;
+    _filterRegionalGlobal = false;
+    _customFilterRules = <String>[];
     _translateTargetLang =
         _prefs.getString(_keyTranslateTargetLang) ?? 'en';
     _readerFontSize =

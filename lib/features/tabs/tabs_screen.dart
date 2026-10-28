@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -35,7 +36,8 @@ class _TabsScreenState extends State<TabsScreen> {
   String? _selectedGroupId;
   bool _authenticatingIncognito = false;
   String? _draggingTabId;
-  final ScrollController _gridScrollController = ScrollController();
+  ScrollController? _gridScrollController;
+  String _lastPositionedSignature = '';
   final GlobalKey _gridViewportKey = GlobalKey();
 
   @override
@@ -46,12 +48,54 @@ class _TabsScreenState extends State<TabsScreen> {
 
   @override
   void dispose() {
-    _gridScrollController.dispose();
+    _gridScrollController?.dispose();
     super.dispose();
   }
 
+  double _computeActiveTabScrollOffset({
+    required List<BrowserTab> tabs,
+    required int columns,
+    required double cardHeight,
+    required double crossSpacing,
+    required double viewportHeight,
+    double topPad = 8.0,
+    double bottomPad = 18.0,
+  }) {
+    if (tabs.isEmpty || columns <= 0 || viewportHeight <= 0) {
+      return 0.0;
+    }
+    final String activeId = widget.tabManager.activeTab.id;
+    final int activeIndex = tabs.indexWhere(
+      (BrowserTab t) => t.id == activeId,
+    );
+    if (activeIndex <= 0) {
+      return 0.0;
+    }
+    final int totalRows = (tabs.length + columns - 1) ~/ columns;
+    final double contentHeight =
+        topPad +
+        bottomPad +
+        (totalRows * cardHeight) +
+        (math.max(0, totalRows - 1) * crossSpacing);
+    final double maxScrollExtent = math.max(0.0, contentHeight - viewportHeight);
+    if (maxScrollExtent <= 0) {
+      return 0.0;
+    }
+    final int activeRow = activeIndex ~/ columns;
+    if (activeRow <= 0) {
+      return 0.0;
+    }
+    final double rowTop = topPad + (activeRow * (cardHeight + crossSpacing));
+    final double centeredMargin = math.max(
+      0.0,
+      (viewportHeight - cardHeight) * 0.35,
+    );
+    return (rowTop - centeredMargin).clamp(0.0, maxScrollExtent);
+  }
+
   void _handleDragAutoScroll(DragUpdateDetails details) {
-    if (!_gridScrollController.hasClients) return;
+    final ScrollController? controller = _gridScrollController;
+    if (controller == null || !controller.hasClients) return;
     final BuildContext? boxCtx = _gridViewportKey.currentContext;
     if (boxCtx == null) return;
     final RenderBox? renderBox = boxCtx.findRenderObject() as RenderBox?;
@@ -60,11 +104,11 @@ class _TabsScreenState extends State<TabsScreen> {
     final Offset local = renderBox.globalToLocal(details.globalPosition);
     const double edgeZone = 68.0;
     const double maxStep = 14.0;
-    final ScrollPosition pos = _gridScrollController.position;
+    final ScrollPosition pos = controller.position;
 
     if (local.dy < edgeZone && pos.pixels > pos.minScrollExtent) {
       final double factor = ((edgeZone - local.dy) / edgeZone).clamp(0.15, 1.0);
-      _gridScrollController.jumpTo(
+      controller.jumpTo(
         (pos.pixels - (maxStep * factor)).clamp(
           pos.minScrollExtent,
           pos.maxScrollExtent,
@@ -77,7 +121,7 @@ class _TabsScreenState extends State<TabsScreen> {
             0.15,
             1.0,
           );
-      _gridScrollController.jumpTo(
+      controller.jumpTo(
         (pos.pixels + (maxStep * factor)).clamp(
           pos.minScrollExtent,
           pos.maxScrollExtent,
@@ -153,7 +197,8 @@ class _TabsScreenState extends State<TabsScreen> {
               body: SafeArea(
                 child: Column(
                   children: <Widget>[
-                    if (!_viewingIncognito)
+                    if (!_viewingIncognito &&
+                        widget.tabManager.groups.isNotEmpty)
                       _buildGroupFilterBar(context, colors, isDark),
                     if (_viewingIncognito)
                       Container(
@@ -254,6 +299,47 @@ class _TabsScreenState extends State<TabsScreen> {
                                               columns;
                                           final double cardHeight =
                                               cardWidth / aspectRatio;
+                                          final double initialOffset =
+                                              _computeActiveTabScrollOffset(
+                                                tabs: tabs,
+                                                columns: columns,
+                                                cardHeight: cardHeight,
+                                                crossSpacing: crossSpacing,
+                                                viewportHeight:
+                                                    constraints.maxHeight,
+                                              );
+                                          final String viewSig =
+                                              '$_viewingIncognito|$_selectedGroupId';
+                                          if (_gridScrollController == null) {
+                                            _gridScrollController =
+                                                ScrollController(
+                                                  initialScrollOffset:
+                                                      initialOffset,
+                                                );
+                                            _lastPositionedSignature = viewSig;
+                                          } else if (_lastPositionedSignature !=
+                                              viewSig) {
+                                            _lastPositionedSignature = viewSig;
+                                            WidgetsBinding.instance
+                                                .addPostFrameCallback((_) {
+                                                  final ScrollController? ctrl =
+                                                      _gridScrollController;
+                                                  if (mounted &&
+                                                      ctrl != null &&
+                                                      ctrl.hasClients) {
+                                                    ctrl.jumpTo(
+                                                      initialOffset.clamp(
+                                                        ctrl
+                                                            .position
+                                                            .minScrollExtent,
+                                                        ctrl
+                                                            .position
+                                                            .maxScrollExtent,
+                                                      ),
+                                                    );
+                                                  }
+                                                });
+                                          }
 
                                           return GridView.builder(
                                             key: const Key('tabs_grid_view'),
@@ -883,7 +969,7 @@ class _TabsScreenState extends State<TabsScreen> {
     List<BrowserTab> tabs,
   ) {
     return Container(
-      padding: const EdgeInsets.fromLTRB(16, 10, 16, 14),
+      padding: const EdgeInsets.fromLTRB(12, 10, 12, 14),
       decoration: BoxDecoration(
         border: Border(
           top: BorderSide(color: colors.outlineVariant.withValues(alpha: 0.3)),
@@ -900,6 +986,7 @@ class _TabsScreenState extends State<TabsScreen> {
                 fit: BoxFit.scaleDown,
                 alignment: Alignment.centerLeft,
                 child: TextButton.icon(
+                  key: const Key('tabs_bottom_close_all_button'),
                   onPressed: () async {
                     await widget.tabManager.closeAllTabsByMode(
                       incognito: _viewingIncognito,
@@ -912,25 +999,63 @@ class _TabsScreenState extends State<TabsScreen> {
             ),
           if (tabs.isNotEmpty) const SizedBox(width: 8),
           Flexible(
+            flex: 2,
             child: FittedBox(
               fit: BoxFit.scaleDown,
               alignment: Alignment.centerRight,
-              child: FilledButton.icon(
-                onPressed: () async {
-                  await widget.tabManager.openNewTab(
-                    incognito: _viewingIncognito,
-                  );
-                  if (context.mounted) {
-                    Navigator.pop(context);
-                  }
-                },
-                icon: Icon(
-                  _viewingIncognito
-                      ? Icons.shield_moon_rounded
-                      : Icons.add_rounded,
-                  size: 19,
-                ),
-                label: Text(_viewingIncognito ? 'New Incognito' : 'New Tab'),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: <Widget>[
+                  if (!_viewingIncognito) ...<Widget>[
+                    FilledButton.tonalIcon(
+                      key: const Key('tabs_bottom_new_group_button'),
+                      onPressed: () async {
+                        String targetTabId;
+                        if (widget.tabManager.normalTabs.isEmpty) {
+                          final BrowserTab created = await widget.tabManager
+                              .openNewTab(incognito: false);
+                          targetTabId = created.id;
+                        } else if (!widget.tabManager.activeTab.isIncognito) {
+                          targetTabId = widget.tabManager.activeTab.id;
+                        } else {
+                          targetTabId = widget.tabManager.normalTabs.first.id;
+                        }
+                        if (!context.mounted) return;
+                        await TabsScreen.showCreateGroupDialog(
+                          context,
+                          tabManager: widget.tabManager,
+                          tabId: targetTabId,
+                        );
+                      },
+                      icon: const Icon(
+                        Icons.create_new_folder_outlined,
+                        size: 18,
+                      ),
+                      label: const Text('New Group'),
+                    ),
+                    const SizedBox(width: 8),
+                  ],
+                  FilledButton.icon(
+                    key: const Key('tabs_bottom_new_tab_button'),
+                    onPressed: () async {
+                      await widget.tabManager.openNewTab(
+                        incognito: _viewingIncognito,
+                      );
+                      if (context.mounted) {
+                        Navigator.pop(context);
+                      }
+                    },
+                    icon: Icon(
+                      _viewingIncognito
+                          ? Icons.shield_moon_rounded
+                          : Icons.add_rounded,
+                      size: 19,
+                    ),
+                    label: Text(
+                      _viewingIncognito ? 'New Incognito' : 'New Tab',
+                    ),
+                  ),
+                ],
               ),
             ),
           ),
@@ -951,15 +1076,9 @@ class _TabsScreenState extends State<TabsScreen> {
         scrollDirection: Axis.horizontal,
         child: Row(
           children: <Widget>[
-            ChoiceChip(
-              label: Text('All (${widget.tabManager.normalTabs.length})'),
-              selected: _selectedGroupId == null,
-              onSelected: (_) => setState(() => _selectedGroupId = null),
-              visualDensity: VisualDensity.compact,
-            ),
-            const SizedBox(width: 6),
             for (final TabGroup grp in groups) ...<Widget>[
               InputChip(
+                key: ValueKey<String>('tab_group_filter_${grp.id}'),
                 showCheckmark: false,
                 avatar: CircleAvatar(
                   backgroundColor: grp.color,
@@ -969,7 +1088,11 @@ class _TabsScreenState extends State<TabsScreen> {
                   '${grp.name} (${widget.tabManager.normalTabs.where((BrowserTab t) => t.groupId == grp.id).length})',
                 ),
                 selected: _selectedGroupId == grp.id,
-                onSelected: (_) => setState(() => _selectedGroupId = grp.id),
+                onSelected: (_) => setState(() {
+                  _selectedGroupId = _selectedGroupId == grp.id
+                      ? null
+                      : grp.id;
+                }),
                 onDeleted: () {
                   if (_selectedGroupId == grp.id) {
                     setState(() => _selectedGroupId = null);
@@ -980,16 +1103,6 @@ class _TabsScreenState extends State<TabsScreen> {
               ),
               const SizedBox(width: 6),
             ],
-            ActionChip(
-              avatar: const Icon(Icons.create_new_folder_outlined, size: 16),
-              label: const Text('New Group'),
-              visualDensity: VisualDensity.compact,
-              onPressed: () => TabsScreen.showCreateGroupDialog(
-                context,
-                tabManager: widget.tabManager,
-                tabId: widget.tabManager.activeTab.id,
-              ),
-            ),
           ],
         ),
       ),

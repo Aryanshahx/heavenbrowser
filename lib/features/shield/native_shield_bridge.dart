@@ -40,6 +40,7 @@ class WebContextMenuData {
 }
 
 typedef NativeWebContextMenuCallback = void Function(WebContextMenuData data);
+typedef NativeOpenNewTabCallback = void Function(String url);
 
 class HeavenShieldStats {
   const HeavenShieldStats({
@@ -79,12 +80,15 @@ class NativeShieldBridge {
       <int, NativeWebScrollNavBarCallback>{};
   final Map<int, NativeWebContextMenuCallback> _contextMenuListeners =
       <int, NativeWebContextMenuCallback>{};
+  final Map<int, NativeOpenNewTabCallback> _openNewTabListeners =
+      <int, NativeOpenNewTabCallback>{};
 
   NativeDownloadStartedCallback? onDownloadStarted;
   NativeTtsEventCallback? onTtsEvent;
   NativeExternalLaunchCallback? onExternalLaunchAction;
   NativePullRefreshCallback? onWindowFocusedForKeyboard;
   NativeWebContextMenuCallback? onGlobalWebContextMenu;
+  NativeOpenNewTabCallback? onGlobalOpenNewTabRequest;
 
   Future<dynamic> _handleNativeCall(MethodCall call) async {
     final Object? rawArgs = call.arguments;
@@ -171,6 +175,18 @@ class NativeShieldBridge {
       onExternalLaunchAction?.call(action);
     } else if (call.method == 'onWindowFocusedForKeyboard') {
       onWindowFocusedForKeyboard?.call();
+    } else if (call.method == 'onOpenNewTabRequest' &&
+        rawArgs is Map<Object?, Object?>) {
+      final int webViewId = (rawArgs['webViewId'] as num?)?.toInt() ?? -1;
+      final String targetUrl = (rawArgs['url']?.toString() ?? '').trim();
+      if (targetUrl.isNotEmpty) {
+        final NativeOpenNewTabCallback? cb = _openNewTabListeners[webViewId];
+        if (cb != null) {
+          cb(targetUrl);
+        } else {
+          onGlobalOpenNewTabRequest?.call(targetUrl);
+        }
+      }
     }
     return null;
   }
@@ -310,6 +326,7 @@ class NativeShieldBridge {
     NativeMediaPlaybackChangedCallback? onMediaPlaybackChanged,
     NativeWebScrollNavBarCallback? onScrollNavBarChanged,
     NativeWebContextMenuCallback? onContextMenu,
+    NativeOpenNewTabCallback? onOpenNewTabRequest,
   }) async {
     _pullProgressListeners[webViewId] = onPullProgress;
     _pullRefreshListeners[webViewId] = onPullRefresh;
@@ -327,6 +344,9 @@ class NativeShieldBridge {
     }
     if (onContextMenu != null) {
       _contextMenuListeners[webViewId] = onContextMenu;
+    }
+    if (onOpenNewTabRequest != null) {
+      _openNewTabListeners[webViewId] = onOpenNewTabRequest;
     }
     try {
       await _channel.invokeMethod<bool>('attachToWebView', <String, Object?>{
@@ -408,6 +428,7 @@ class NativeShieldBridge {
     _playbackListeners.remove(webViewId);
     _scrollNavListeners.remove(webViewId);
     _contextMenuListeners.remove(webViewId);
+    _openNewTabListeners.remove(webViewId);
   }
 
   Future<bool> isBiometricAvailable() async {

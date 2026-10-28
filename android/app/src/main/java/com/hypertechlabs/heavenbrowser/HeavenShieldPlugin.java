@@ -55,14 +55,23 @@ import android.view.MotionEvent;
 import android.view.View;
 import android.view.WindowManager;
 import android.view.inputmethod.InputMethodManager;
+import android.webkit.ConsoleMessage;
 import android.webkit.CookieManager;
+import android.webkit.GeolocationPermissions;
 import android.webkit.JavascriptInterface;
+import android.webkit.JsPromptResult;
+import android.webkit.JsResult;
 import android.webkit.MimeTypeMap;
+import android.webkit.PermissionRequest;
+import android.webkit.ValueCallback;
 import android.webkit.WebBackForwardList;
+import android.webkit.WebChromeClient;
 import android.webkit.WebHistoryItem;
+import android.webkit.WebResourceRequest;
 import android.webkit.WebSettings;
 import android.webkit.WebStorage;
 import android.webkit.WebView;
+import android.webkit.WebViewClient;
 import androidx.webkit.ScriptHandler;
 import androidx.webkit.WebViewCompat;
 import androidx.webkit.WebViewFeature;
@@ -94,6 +103,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import org.json.JSONObject;
 
@@ -318,7 +328,6 @@ public class HeavenShieldPlugin
   private MethodChannel.Result pendingVisualSearchResult;
   private File pendingCameraCaptureFile;
   private HeavenVpnManager vpnManager;
-  private HeavenShieldEngine shieldEngine;
   private TextToSpeech ttsEngine;
   private volatile boolean ttsReady = false;
   private volatile float ttsSpeechRate = 1.0f;
@@ -408,7 +417,6 @@ public class HeavenShieldPlugin
     this.customDownloadPath = sp.getString(PREF_DOWNLOAD_PATH, "");
     this.downloadNotificationsEnabled = sp.getBoolean(PREF_DL_NOTIFS_ENABLED, true);
     this.vpnManager = new HeavenVpnManager(appCtx);
-    this.shieldEngine = new HeavenShieldEngine(appCtx);
     this.lensCameraManager = new HeavenLensCameraManager(this.downloadPool);
     this.channel = new MethodChannel(binding.getBinaryMessenger(), CHANNEL_NAME);
     this.channel.setMethodCallHandler(this);
@@ -433,7 +441,6 @@ public class HeavenShieldPlugin
       this.lensCameraManager.stopCamera(true);
       this.lensCameraManager = null;
     }
-    this.shieldEngine = null;
     if (this.channel != null) {
       this.channel.setMethodCallHandler(null);
       this.channel = null;
@@ -1192,22 +1199,14 @@ public class HeavenShieldPlugin
         break;
 
       case "getHeavenShieldStats":
-        Object statsWvObj = call.argument("webViewId");
-        long statsWvId =
-            statsWvObj instanceof Number
-                ? ((Number) statsWvObj).longValue()
-                : this.activeFocusedWebViewId;
-        if (this.shieldEngine != null) {
-          result.success(this.shieldEngine.getStats(statsWvId));
-        } else {
-          result.success(Collections.emptyMap());
-        }
+        Map<String, Object> disabledStats = new HashMap<>(4);
+        disabledStats.put("pageBlocked", 0);
+        disabledStats.put("totalBlocked", 0);
+        disabledStats.put("shieldEnabled", false);
+        result.success(disabledStats);
         break;
 
       case "resetHeavenShieldStats":
-        if (this.shieldEngine != null) {
-          this.shieldEngine.resetStats();
-        }
         result.success(true);
         break;
 
@@ -1298,13 +1297,9 @@ public class HeavenShieldPlugin
       case "updatePageHost":
       case "setWebViewPageHost":
         Object wvIdObj = call.argument("webViewId");
-        String nextHost = call.argument("pageHost");
         if (wvIdObj instanceof Number) {
           long id = ((Number) wvIdObj).longValue();
           this.activeFocusedWebViewId = id;
-          if (this.shieldEngine != null) {
-            this.shieldEngine.updateWebViewHost(id, nextHost);
-          }
           pageLoadingUntilMsByWv.put(id, SystemClock.elapsedRealtime() + 650L);
           pageAtTopByWv.put(id, Boolean.TRUE);
           accumulatedScrollDyByWv.put(id, 0);
@@ -1623,62 +1618,8 @@ public class HeavenShieldPlugin
       this.safeBrowsingMode = safeBrowseArg.trim().toLowerCase(Locale.US);
     }
     try {
-      CookieManager.getInstance().setAcceptCookie(!"block_all".equals(this.cookiePolicy));
+      CookieManager.getInstance().setAcceptCookie(true);
     } catch (Throwable ignored) {
-    }
-    if (this.shieldEngine != null) {
-      Boolean shieldEnabledArg = call.argument("shieldEnabled");
-      Boolean strictModeArg = call.argument("shieldStrictMode");
-      Boolean blockAdsArg = call.argument("shieldBlockAds");
-      Boolean blockCookiesArg = call.argument("shieldBlockCookieBanners");
-      Boolean cleanUrlsArg = call.argument("shieldCleanUrls");
-      Boolean antiFpArg = call.argument("shieldAntiFingerprinting");
-      Boolean blockPopupsArg = call.argument("shieldBlockPopups");
-      List<String> disabledHostsArg = call.argument("shieldDisabledHosts");
-      this.shieldEngine.updateConfiguration(
-          shieldEnabledArg,
-          strictModeArg,
-          blockAdsArg,
-          blockCookiesArg,
-          cleanUrlsArg,
-          antiFpArg,
-          blockPopupsArg,
-          disabledHostsArg);
-
-      Boolean autoAmpArg = call.argument("shieldAutoRedirectAmp");
-      Boolean langFpArg = call.argument("shieldPreventLangFp");
-      Boolean fbEmbedsArg = call.argument("shieldAllowFacebookEmbeds");
-      Boolean twEmbedsArg = call.argument("shieldAllowTwitterEmbeds");
-      Boolean liEmbedsArg = call.argument("shieldAllowLinkedinEmbeds");
-      String webrtcArg = call.argument("shieldWebrtcPolicy");
-      Boolean payQueryArg = call.argument("shieldAllowPaymentQuery");
-      Boolean strictJsArg = call.argument("shieldStrictJsSecurity");
-      Boolean switchAppArg = call.argument("shieldBlockSwitchToApp");
-      Boolean dntArg = call.argument("shieldSendDoNotTrack");
-      Boolean fanboyArg = call.argument("shieldFilterFanboyAnnoyances");
-      Boolean mobNotifArg = call.argument("shieldFilterMobileNotifs");
-      Boolean antiAbArg = call.argument("shieldFilterAntiAdblock");
-      Boolean regInArg = call.argument("shieldFilterRegionalIndia");
-      Boolean regGlArg = call.argument("shieldFilterRegionalGlobal");
-      List<String> customRulesArg = call.argument("shieldCustomRules");
-      this.shieldEngine.updateExtendedPrivacyConfiguration(
-          autoAmpArg,
-          langFpArg,
-          fbEmbedsArg,
-          twEmbedsArg,
-          liEmbedsArg,
-          this.safeBrowsingMode,
-          webrtcArg,
-          payQueryArg,
-          strictJsArg,
-          switchAppArg,
-          dntArg,
-          fanboyArg,
-          mobNotifArg,
-          antiAbArg,
-          regInArg,
-          regGlArg,
-          customRulesArg);
     }
     refreshAllDocumentStartHandlers();
   }
@@ -1714,8 +1655,8 @@ public class HeavenShieldPlugin
     if (webView == null) return;
     try {
       CookieManager cm = CookieManager.getInstance();
-      cm.setAcceptCookie(!"block_all".equals(this.cookiePolicy));
-      cm.setAcceptThirdPartyCookies(webView, "allow_all".equals(this.cookiePolicy));
+      cm.setAcceptCookie(true);
+      cm.setAcceptThirdPartyCookies(webView, true);
     } catch (Throwable ignored) {
     }
     try {
@@ -1727,10 +1668,7 @@ public class HeavenShieldPlugin
   }
 
   private String buildDocumentStartBundle() {
-    String shieldBundle =
-        (this.shieldEngine != null) ? this.shieldEngine.getCompiledDocumentStartBundle() : "";
-    return shieldBundle
-        + "window.__heavenBgMediaEnabled="
+    return "window.__heavenBgMediaEnabled="
         + this.backgroundMediaEnabled
         + ";window.__heavenWebNotifsBlocked="
         + (!this.webNotificationsEnabled)
@@ -1792,10 +1730,10 @@ public class HeavenShieldPlugin
       settings.setSupportZoom(true);
       settings.setBuiltInZoomControls(true);
       settings.setDisplayZoomControls(false);
-      // Allow website download buttons / popups to navigate directly in the active WebView
-      // and trigger DownloadListener cleanly without popup traps!
+      // Enable full multi-tab / multi-window support so search engines ("Open results in new tab")
+      // and websites work with zero tab restrictions!
       settings.setJavaScriptCanOpenWindowsAutomatically(true);
-      settings.setSupportMultipleWindows(false);
+      settings.setSupportMultipleWindows(true);
       if (!forceApply && modeUnchanged) {
         return;
       }
@@ -1920,8 +1858,8 @@ public class HeavenShieldPlugin
 
       WebSettings ws = webView.getSettings();
       ws.setMediaPlaybackRequiresUserGesture(false);
-      ws.setJavaScriptCanOpenWindowsAutomatically(false);
-      ws.setSupportMultipleWindows(false);
+      ws.setJavaScriptCanOpenWindowsAutomatically(true);
+      ws.setSupportMultipleWindows(true);
       ws.setDomStorageEnabled(true);
       ws.setCacheMode(WebSettings.LOAD_DEFAULT);
       ws.setMixedContentMode(WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE);
@@ -1955,11 +1893,9 @@ public class HeavenShieldPlugin
             });
       }
 
-      if (this.shieldEngine != null) {
-        this.shieldEngine.attachClient(webView, webViewId, initialHost);
-      }
       applyCookieAndSafeBrowsingToWebView(webView);
       applyDesktopSettingsToWebView(webView, webViewId, this.desktopMode, false);
+      installMultiWindowTabSupport(webView, webViewId);
       installOrRefreshDocumentStartShield(webView, webViewId);
       installPullToRefreshListener(webView, webViewId);
       installContextMenuListener(webView, webViewId);
@@ -1968,6 +1904,265 @@ public class HeavenShieldPlugin
     } catch (Throwable ignored) {
     }
     return false;
+  }
+
+  private void emitOpenNewTabRequest(final long webViewId, final String url) {
+    if (url == null || url.trim().isEmpty()) {
+      return;
+    }
+    final String cleanUrl = url.trim();
+    mainHandler.post(
+        () -> {
+          MethodChannel ch = this.channel;
+          if (ch != null) {
+            Map<String, Object> payload = new HashMap<>(4);
+            payload.put("webViewId", webViewId);
+            payload.put("url", cleanUrl);
+            ch.invokeMethod("onOpenNewTabRequest", payload);
+          }
+        });
+  }
+
+  private void installMultiWindowTabSupport(final WebView webView, final long webViewId) {
+    if (webView == null) {
+      return;
+    }
+    try {
+      WebChromeClient existing = null;
+      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+        existing = webView.getWebChromeClient();
+      }
+      if (existing instanceof HeavenTabWebChromeClient) {
+        return;
+      }
+      webView.setWebChromeClient(new HeavenTabWebChromeClient(existing, webViewId));
+    } catch (Throwable ignored) {
+    }
+  }
+
+  private final class HeavenTabWebChromeClient extends WebChromeClient {
+    private final WebChromeClient delegate;
+    private final long webViewId;
+
+    HeavenTabWebChromeClient(WebChromeClient delegate, long webViewId) {
+      this.delegate = delegate;
+      this.webViewId = webViewId;
+    }
+
+    @Override
+    public boolean onCreateWindow(
+        final WebView view, boolean isDialog, boolean isUserGesture, Message resultMsg) {
+      if (view == null
+          || resultMsg == null
+          || !(resultMsg.obj instanceof WebView.WebViewTransport)) {
+        return delegate != null
+            && delegate.onCreateWindow(view, isDialog, isUserGesture, resultMsg);
+      }
+      try {
+        final WebView transportWv = new WebView(view.getContext());
+        transportWv.getSettings().setJavaScriptEnabled(true);
+        transportWv.getSettings().setDomStorageEnabled(true);
+        final AtomicBoolean dispatched = new AtomicBoolean(false);
+        final Runnable cleanup =
+            () -> {
+              try {
+                transportWv.stopLoading();
+                transportWv.setWebViewClient(new WebViewClient());
+                transportWv.destroy();
+              } catch (Throwable ignored) {
+              }
+            };
+
+        transportWv.setWebViewClient(
+            new WebViewClient() {
+              private void forwardTargetUrl(String candidate) {
+                if (candidate == null) {
+                  return;
+                }
+                String trimmed = candidate.trim();
+                if (trimmed.isEmpty()
+                    || "about:blank".equalsIgnoreCase(trimmed)
+                    || trimmed.regionMatches(true, 0, "javascript:", 0, 11)) {
+                  return;
+                }
+                if (dispatched.compareAndSet(false, true)) {
+                  mainHandler.post(cleanup);
+                  emitOpenNewTabRequest(webViewId, trimmed);
+                }
+              }
+
+              @Override
+              public boolean shouldOverrideUrlLoading(
+                  WebView wv, WebResourceRequest request) {
+                if (request != null && request.getUrl() != null) {
+                  forwardTargetUrl(request.getUrl().toString());
+                }
+                return true;
+              }
+
+              @Override
+              @SuppressWarnings("deprecation")
+              public boolean shouldOverrideUrlLoading(WebView wv, String url) {
+                forwardTargetUrl(url);
+                return true;
+              }
+
+              @Override
+              public void onPageStarted(WebView wv, String url, Bitmap favicon) {
+                forwardTargetUrl(url);
+              }
+            });
+
+        mainHandler.postDelayed(
+            () -> {
+              if (dispatched.compareAndSet(false, true)) {
+                cleanup.run();
+              }
+            },
+            4500L);
+
+        WebView.WebViewTransport transport = (WebView.WebViewTransport) resultMsg.obj;
+        transport.setWebView(transportWv);
+        resultMsg.sendToTarget();
+        return true;
+      } catch (Throwable ignored) {
+        return delegate != null
+            && delegate.onCreateWindow(view, isDialog, isUserGesture, resultMsg);
+      }
+    }
+
+    @Override
+    public void onCloseWindow(WebView window) {
+      if (delegate != null) {
+        delegate.onCloseWindow(window);
+      }
+    }
+
+    @Override
+    public void onProgressChanged(WebView view, int newProgress) {
+      if (delegate != null) {
+        delegate.onProgressChanged(view, newProgress);
+      }
+    }
+
+    @Override
+    public void onReceivedTitle(WebView view, String title) {
+      if (delegate != null) {
+        delegate.onReceivedTitle(view, title);
+      }
+    }
+
+    @Override
+    public void onReceivedIcon(WebView view, Bitmap icon) {
+      if (delegate != null) {
+        delegate.onReceivedIcon(view, icon);
+      }
+    }
+
+    @Override
+    public void onReceivedTouchIconUrl(WebView view, String url, boolean precomposed) {
+      if (delegate != null) {
+        delegate.onReceivedTouchIconUrl(view, url, precomposed);
+      }
+    }
+
+    @Override
+    public void onShowCustomView(View view, CustomViewCallback callback) {
+      if (delegate != null) {
+        delegate.onShowCustomView(view, callback);
+      }
+    }
+
+    @Override
+    public void onHideCustomView() {
+      if (delegate != null) {
+        delegate.onHideCustomView();
+      }
+    }
+
+    @Override
+    public boolean onJsAlert(WebView view, String url, String message, JsResult result) {
+      return delegate != null && delegate.onJsAlert(view, url, message, result);
+    }
+
+    @Override
+    public boolean onJsConfirm(WebView view, String url, String message, JsResult result) {
+      return delegate != null && delegate.onJsConfirm(view, url, message, result);
+    }
+
+    @Override
+    public boolean onJsPrompt(
+        WebView view, String url, String message, String defaultValue, JsPromptResult result) {
+      return delegate != null
+          && delegate.onJsPrompt(view, url, message, defaultValue, result);
+    }
+
+    @Override
+    public boolean onJsBeforeUnload(WebView view, String url, String message, JsResult result) {
+      return delegate != null && delegate.onJsBeforeUnload(view, url, message, result);
+    }
+
+    @Override
+    public void onGeolocationPermissionsShowPrompt(
+        String origin, GeolocationPermissions.Callback callback) {
+      if (delegate != null) {
+        delegate.onGeolocationPermissionsShowPrompt(origin, callback);
+      }
+    }
+
+    @Override
+    public void onGeolocationPermissionsHidePrompt() {
+      if (delegate != null) {
+        delegate.onGeolocationPermissionsHidePrompt();
+      }
+    }
+
+    @Override
+    public void onPermissionRequest(PermissionRequest request) {
+      if (delegate != null) {
+        delegate.onPermissionRequest(request);
+      }
+    }
+
+    @Override
+    public void onPermissionRequestCanceled(PermissionRequest request) {
+      if (delegate != null) {
+        delegate.onPermissionRequestCanceled(request);
+      }
+    }
+
+    @Override
+    public boolean onConsoleMessage(ConsoleMessage consoleMessage) {
+      return delegate != null && delegate.onConsoleMessage(consoleMessage);
+    }
+
+    @Override
+    public Bitmap getDefaultVideoPoster() {
+      return delegate != null ? delegate.getDefaultVideoPoster() : super.getDefaultVideoPoster();
+    }
+
+    @Override
+    public View getVideoLoadingProgressView() {
+      return delegate != null
+          ? delegate.getVideoLoadingProgressView()
+          : super.getVideoLoadingProgressView();
+    }
+
+    @Override
+    public void getVisitedHistory(ValueCallback<String[]> callback) {
+      if (delegate != null) {
+        delegate.getVisitedHistory(callback);
+      }
+    }
+
+    @Override
+    public boolean onShowFileChooser(
+        WebView webView,
+        ValueCallback<Uri[]> filePathCallback,
+        FileChooserParams fileChooserParams) {
+      return delegate != null
+          && delegate.onShowFileChooser(webView, filePathCallback, fileChooserParams);
+    }
   }
 
   private void installPullToRefreshListener(final WebView webView, final long webViewId) {

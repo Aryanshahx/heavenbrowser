@@ -7,7 +7,6 @@ import '../../core/theme/app_theme.dart';
 import '../../core/utils/omnibox_parser.dart';
 import '../../core/widgets/search_engine_chip_button.dart';
 import '../downloads/downloads_controller.dart';
-import '../shield/heaven_shield_screen.dart';
 import '../shield/native_shield_bridge.dart';
 import '../tabs/tab_manager.dart';
 import '../vpn/vpn_controller.dart';
@@ -39,6 +38,17 @@ class SettingsScreen extends StatelessWidget {
     );
   }
 
+  Future<void> _openSearchEngineOwnSettings(
+    BuildContext context,
+    SearchEngine engine,
+  ) async {
+    await settings.setSearchEngine(engine);
+    if (context.mounted) {
+      Navigator.of(context).popUntil((Route<dynamic> r) => r.isFirst);
+    }
+    await tabManager.activeEngine.loadUri(Uri.parse(engine.settingsUrl));
+  }
+
   Future<void> _pickSearchEngine(BuildContext context) async {
     final ColorScheme colors = Theme.of(context).colorScheme;
     await showModalBottomSheet<void>(
@@ -54,11 +64,27 @@ class SettingsScreen extends StatelessWidget {
               mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.start,
               children: <Widget>[
-                const Padding(
-                  padding: EdgeInsets.fromLTRB(12, 4, 12, 8),
-                  child: Text(
-                    'Search Engine',
-                    style: TextStyle(fontSize: 16, fontWeight: FontWeight.w800),
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(12, 4, 12, 10),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: <Widget>[
+                      const Text(
+                        'Search Engine & Engine Settings',
+                        style: TextStyle(
+                          fontSize: 16,
+                          fontWeight: FontWeight.w800,
+                        ),
+                      ),
+                      const SizedBox(height: 2),
+                      Text(
+                        'Tap an engine to apply it, or tap its tune icon to customize its own search settings.',
+                        style: TextStyle(
+                          fontSize: 12,
+                          color: colors.onSurfaceVariant,
+                        ),
+                      ),
+                    ],
                   ),
                 ),
                 for (final SearchEngine engine in SearchEngine.values)
@@ -82,12 +108,41 @@ class SettingsScreen extends StatelessWidget {
                       ),
                     ),
                     subtitle: Text(
-                      engine.homeUrl.replaceFirst('https://', ''),
+                      engine.settingsSubtitle,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
                       style: const TextStyle(fontSize: 11.5),
                     ),
-                    trailing: settings.searchEngine == engine
-                        ? Icon(Icons.check_rounded, color: colors.primary)
-                        : null,
+                    trailing: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: <Widget>[
+                        if (settings.searchEngine == engine) ...<Widget>[
+                          Icon(
+                            Icons.check_circle_rounded,
+                            size: 19,
+                            color: colors.primary,
+                          ),
+                          const SizedBox(width: 4),
+                        ],
+                        IconButton(
+                          key: Key('open_engine_own_settings_${engine.name}'),
+                          tooltip: '${engine.label} Settings',
+                          visualDensity: VisualDensity.compact,
+                          padding: EdgeInsets.zero,
+                          constraints: const BoxConstraints.tightFor(
+                            width: 34,
+                            height: 34,
+                          ),
+                          onPressed: () =>
+                              _openSearchEngineOwnSettings(sheetContext, engine),
+                          icon: Icon(
+                            Icons.tune_rounded,
+                            size: 18,
+                            color: colors.onSurfaceVariant,
+                          ),
+                        ),
+                      ],
+                    ),
                     onTap: () async {
                       await settings.setSearchEngine(engine);
                       if (sheetContext.mounted) {
@@ -175,6 +230,32 @@ class SettingsScreen extends StatelessWidget {
                     ),
                     _thinDivider(colors),
                     ListTile(
+                      key: const Key('settings_active_engine_own_settings_tile'),
+                      dense: true,
+                      leading: Icon(
+                        Icons.tune_rounded,
+                        size: 20,
+                        color: colors.primary,
+                      ),
+                      title: Text('${settings.searchEngine.label} Settings'),
+                      subtitle: Text(
+                        settings.searchEngine.settingsSubtitle,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(fontSize: 11.5),
+                      ),
+                      trailing: Icon(
+                        Icons.open_in_new_rounded,
+                        size: 16,
+                        color: colors.onSurfaceVariant,
+                      ),
+                      onTap: () => _openSearchEngineOwnSettings(
+                        context,
+                        settings.searchEngine,
+                      ),
+                    ),
+                    _thinDivider(colors),
+                    ListTile(
                       key: const Key('settings_default_browser_tile'),
                       dense: true,
                       leading: Icon(
@@ -233,52 +314,6 @@ class SettingsScreen extends StatelessWidget {
                             ),
                           );
                         }
-                      },
-                    ),
-                    _thinDivider(colors),
-                    ListTile(
-                      key: const Key('settings_heaven_shield_tile'),
-                      dense: true,
-                      leading: Icon(
-                        settings.shieldEnabled
-                            ? Icons.verified_user_rounded
-                            : Icons.shield_outlined,
-                        size: 20,
-                        color: settings.shieldEnabled
-                            ? AppTheme.shieldEmerald
-                            : colors.onSurfaceVariant,
-                      ),
-                      title: const Text('Heaven Shield & privacy'),
-                      subtitle: Text(
-                        settings.shieldEnabled
-                            ? '${settings.trackersAdsLevel.label} • Adblock, De-AMP, WebRTC & Cookies'
-                            : 'Paused — tap to customize Shield & privacy',
-                        style: const TextStyle(fontSize: 11.5),
-                      ),
-                      trailing: Icon(
-                        Icons.chevron_right_rounded,
-                        size: 18,
-                        color: colors.onSurfaceVariant,
-                      ),
-                      onTap: () {
-                        Navigator.of(context).push(
-                          MaterialPageRoute<void>(
-                            builder: (_) => HeavenShieldScreen(
-                              settings: settings,
-                              tabManager: tabManager,
-                              currentHost: tabManager.activeEngine.currentHost,
-                              activeWebViewId:
-                                  tabManager.activeEngine.androidWebViewId,
-                              onShieldChangedForActivePage: () {
-                                if (tabManager.activeEngine.isShowingWebPage) {
-                                  unawaited(
-                                    tabManager.activeEngine.reloadFullPage(),
-                                  );
-                                }
-                              },
-                            ),
-                          ),
-                        );
                       },
                     ),
                     if (vpn != null) ...<Widget>[

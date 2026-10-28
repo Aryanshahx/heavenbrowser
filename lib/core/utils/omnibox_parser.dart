@@ -6,6 +6,8 @@ enum SearchEngine {
     logoAssetPath: 'assets/images/engines/google.png',
     homeUrl: 'https://www.google.com',
     queryPrefix: 'https://www.google.com/search?q=',
+    settingsUrl: 'https://www.google.com/preferences',
+    settingsSubtitle: 'SafeSearch, open results in new tab, language & theme',
   ),
   perplexity(
     label: 'Perplexity',
@@ -14,6 +16,8 @@ enum SearchEngine {
     logoAssetPath: 'assets/images/engines/perplexity.png',
     homeUrl: 'https://www.perplexity.ai',
     queryPrefix: 'https://www.perplexity.ai/search?q=',
+    settingsUrl: 'https://www.perplexity.ai/settings',
+    settingsSubtitle: 'Search preferences, language, theme & account',
   ),
   duckDuckGo(
     label: 'DuckDuckGo',
@@ -21,7 +25,9 @@ enum SearchEngine {
     badge: 'D',
     logoAssetPath: 'assets/images/engines/duckduckgo.png',
     homeUrl: 'https://duckduckgo.com',
-    queryPrefix: 'https://duckduckgo.com/?kp=-2&q=',
+    queryPrefix: 'https://duckduckgo.com/?q=',
+    settingsUrl: 'https://duckduckgo.com/settings',
+    settingsSubtitle: 'Safe Search, open links in new tab, region & appearance',
   ),
   brave(
     label: 'Brave Search',
@@ -30,6 +36,8 @@ enum SearchEngine {
     logoAssetPath: 'assets/images/engines/brave.png',
     homeUrl: 'https://search.brave.com',
     queryPrefix: 'https://search.brave.com/search?q=',
+    settingsUrl: 'https://search.brave.com/settings',
+    settingsSubtitle: 'SafeSearch, open links in new tab, local results & theme',
   ),
   bing(
     label: 'Bing Search',
@@ -37,7 +45,9 @@ enum SearchEngine {
     badge: 'Bi',
     logoAssetPath: 'assets/images/engines/bing.png',
     homeUrl: 'https://www.bing.com',
-    queryPrefix: 'https://www.bing.com/search?adlt=off&q=',
+    queryPrefix: 'https://www.bing.com/search?q=',
+    settingsUrl: 'https://www.bing.com/account/general',
+    settingsSubtitle: 'SafeSearch, results in new tab, language & region',
   ),
   startpage(
     label: 'Startpage',
@@ -46,6 +56,8 @@ enum SearchEngine {
     logoAssetPath: 'assets/images/engines/startpage.png',
     homeUrl: 'https://www.startpage.com',
     queryPrefix: 'https://www.startpage.com/sp/search?query=',
+    settingsUrl: 'https://www.startpage.com/do/settings',
+    settingsSubtitle: 'Family filter, open results in new tab, region & theme',
   );
 
   const SearchEngine({
@@ -55,6 +67,8 @@ enum SearchEngine {
     required this.logoAssetPath,
     required this.homeUrl,
     required this.queryPrefix,
+    required this.settingsUrl,
+    required this.settingsSubtitle,
   });
 
   final String label;
@@ -63,6 +77,8 @@ enum SearchEngine {
   final String logoAssetPath;
   final String homeUrl;
   final String queryPrefix;
+  final String settingsUrl;
+  final String settingsSubtitle;
 
   String buildSearchUrl(String rawQuery) {
     return '$queryPrefix${Uri.encodeQueryComponent(rawQuery.trim())}';

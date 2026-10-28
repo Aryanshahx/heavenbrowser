@@ -1,240 +1,29 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:math' as math;
-import 'dart:ui' as ui;
 
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 import '../../core/utils/omnibox_parser.dart';
 
-class DiscoverRegionConfig {
-  const DiscoverRegionConfig({
-    required this.countryCode,
-    required this.countryName,
-    required this.languageCode,
-    required this.localDirectFeeds,
-    required this.sportsHint,
-    required this.entertainmentHint,
-  });
-
-  final String countryCode;
-  final String countryName;
-  final String languageCode;
-  final List<({String source, String url})> localDirectFeeds;
-  final String sportsHint;
-  final String entertainmentHint;
-
-  String get bingSetLang =>
-      '${languageCode.toLowerCase()}-${countryCode.toLowerCase()}';
-
-  @visibleForTesting
-  static ui.Locale? debugLocaleOverride;
-
-  static DiscoverRegionConfig detect() {
-    final ui.Locale locale =
-        debugLocaleOverride ?? ui.PlatformDispatcher.instance.locale;
-    return fromLocaleAndOffset(locale, DateTime.now().timeZoneOffset);
-  }
-
-  static DiscoverRegionConfig fromLocaleAndOffset(
-    ui.Locale locale,
-    Duration tzOffset,
-  ) {
-    String cc = (locale.countryCode ?? '').trim().toUpperCase();
-    final String rawLang = locale.languageCode.trim().toLowerCase();
-    final String lang = rawLang.isEmpty ? 'en' : rawLang;
-
-    if (cc.length != 2) {
-      final int mins = tzOffset.inMinutes;
-      if (mins == 330) {
-        cc = 'IN';
-      } else if (mins == 540) {
-        cc = 'JP';
-      } else if (mins == 480) {
-        cc = 'SG';
-      } else if (mins >= 600 && mins <= 660) {
-        cc = 'AU';
-      } else if (mins >= -480 && mins <= -240) {
-        cc = 'US';
-      } else if (mins == 60 || mins == 120) {
-        cc = lang == 'fr'
-            ? 'FR'
-            : (lang == 'de' ? 'DE' : (lang == 'es' ? 'ES' : 'GB'));
-      } else {
-        cc = 'US';
-      }
-    }
-
-    final String name = _countryNames[cc] ?? 'Local';
-    return DiscoverRegionConfig(
-      countryCode: cc,
-      countryName: name,
-      languageCode: lang,
-      localDirectFeeds: _feedsForCountry(cc),
-      sportsHint: _sportsQueryForCountry(cc, name),
-      entertainmentHint: cc == 'IN'
-          ? 'Bollywood Hollywood movies'
-          : (cc == 'JP' || cc == 'KR'
-                ? '$name anime cinema entertainment'
-                : '$name movies television music'),
-    );
-  }
-
-  static List<({String source, String url})> _feedsForCountry(String cc) {
-    switch (cc) {
-      case 'IN':
-        return const <({String source, String url})>[
-          (
-            source: 'Times of India',
-            url: 'https://timesofindia.indiatimes.com/rssfeedstopstories.cms',
-          ),
-          (
-            source: 'NDTV',
-            url: 'https://feeds.feedburner.com/ndtvnews-top-stories',
-          ),
-          (
-            source: 'NDTV India',
-            url: 'https://feeds.feedburner.com/ndtvnews-india-news',
-          ),
-        ];
-      case 'US':
-        return const <({String source, String url})>[
-          (source: 'NPR News', url: 'https://feeds.npr.org/1001/rss.xml'),
-          (
-            source: 'NYT Top Stories',
-            url: 'https://rss.nytimes.com/services/xml/rss/nyt/HomePage.xml',
-          ),
-          (
-            source: 'BBC US & Canada',
-            url: 'https://feeds.bbci.co.uk/news/world/us_and_canada/rss.xml',
-          ),
-        ];
-      case 'GB':
-        return const <({String source, String url})>[
-          (source: 'BBC UK', url: 'https://feeds.bbci.co.uk/news/uk/rss.xml'),
-          (
-            source: 'The Guardian UK',
-            url: 'https://www.theguardian.com/uk-news/rss',
-          ),
-        ];
-      case 'CA':
-        return const <({String source, String url})>[
-          (
-            source: 'CBC Top Stories',
-            url: 'https://www.cbc.ca/webfeed/rss/rss-topstories',
-          ),
-          (
-            source: 'BBC US & Canada',
-            url: 'https://feeds.bbci.co.uk/news/world/us_and_canada/rss.xml',
-          ),
-        ];
-      case 'AU':
-        return const <({String source, String url})>[
-          (
-            source: 'ABC News AU',
-            url: 'https://www.abc.net.au/news/feed/51120/rss.xml',
-          ),
-          (
-            source: 'BBC Australia',
-            url: 'https://feeds.bbci.co.uk/news/world/australia/rss.xml',
-          ),
-        ];
-      default:
-        return const <({String source, String url})>[
-          (
-            source: 'BBC World',
-            url: 'https://feeds.bbci.co.uk/news/world/rss.xml',
-          ),
-          (
-            source: 'The Guardian World',
-            url: 'https://www.theguardian.com/world/rss',
-          ),
-        ];
-    }
-  }
-
-  static String _sportsQueryForCountry(String cc, String countryName) {
-    switch (cc) {
-      case 'IN':
-      case 'PK':
-      case 'BD':
-      case 'LK':
-        return '$countryName Cricket IPL sports';
-      case 'US':
-        return 'NFL NBA MLB sports';
-      case 'GB':
-      case 'DE':
-      case 'FR':
-      case 'ES':
-      case 'IT':
-        return '$countryName Premier League Champions League F1 sports';
-      case 'CA':
-        return 'NHL NBA Canada sports';
-      case 'AU':
-      case 'NZ':
-        return '$countryName Cricket AFL NRL sports';
-      default:
-        return '$countryName football sports';
-    }
-  }
-
-  static const Map<String, String> _countryNames = <String, String>{
-    'US': 'United States',
-    'GB': 'United Kingdom',
-    'IN': 'India',
-    'CA': 'Canada',
-    'AU': 'Australia',
-    'DE': 'Germany',
-    'FR': 'France',
-    'ES': 'Spain',
-    'IT': 'Italy',
-    'NL': 'Netherlands',
-    'SE': 'Sweden',
-    'NO': 'Norway',
-    'DK': 'Denmark',
-    'FI': 'Finland',
-    'CH': 'Switzerland',
-    'AT': 'Austria',
-    'BE': 'Belgium',
-    'IE': 'Ireland',
-    'PT': 'Portugal',
-    'PL': 'Poland',
-    'JP': 'Japan',
-    'KR': 'South Korea',
-    'SG': 'Singapore',
-    'MY': 'Malaysia',
-    'ID': 'Indonesia',
-    'PH': 'Philippines',
-    'TH': 'Thailand',
-    'VN': 'Vietnam',
-    'AE': 'UAE',
-    'SA': 'Saudi Arabia',
-    'IL': 'Israel',
-    'TR': 'Turkey',
-    'BR': 'Brazil',
-    'MX': 'Mexico',
-    'AR': 'Argentina',
-    'CL': 'Chile',
-    'CO': 'Colombia',
-    'ZA': 'South Africa',
-    'NG': 'Nigeria',
-    'KE': 'Kenya',
-    'EG': 'Egypt',
-    'NZ': 'New Zealand',
-    'PK': 'Pakistan',
-    'BD': 'Bangladesh',
-    'LK': 'Sri Lanka',
-    'NP': 'Nepal',
-  };
-}
-
 enum NewsCategoryTab {
   forYou(
     label: 'For You',
-    query: 'technology science world',
+    query: 'world technology science entertainment',
+    refreshQueries: <String>[
+      'breaking world headlines today',
+      'latest technology science discoveries',
+      'global business innovation cinema',
+      'trending world sports gaming news',
+    ],
     directRssUrls: <({String source, String url})>[
       (source: 'BBC News', url: 'https://feeds.bbci.co.uk/news/world/rss.xml'),
+      (
+        source: 'The Guardian',
+        url: 'https://www.theguardian.com/world/rss',
+      ),
+      (source: 'NPR News', url: 'https://feeds.npr.org/1001/rss.xml'),
       (source: 'The Verge', url: 'https://www.theverge.com/rss/index.xml'),
       (
         source: 'Ars Technica',
@@ -242,14 +31,15 @@ enum NewsCategoryTab {
       ),
     ],
   ),
-  localCountry(
-    label: 'Top Local',
-    query: 'breaking news',
-    directRssUrls: <({String source, String url})>[],
-  ),
   tech(
-    label: 'Tech & AI',
-    query: 'AI smartphones technology',
+    label: 'Technology',
+    query: 'smartphones gadgets software technology',
+    refreshQueries: <String>[
+      'smartphones laptops hardware launches',
+      'cybersecurity open source software',
+      'semiconductors chips computing',
+      'consumer electronics apps gadgets',
+    ],
     directRssUrls: <({String source, String url})>[
       (source: 'The Verge', url: 'https://www.theverge.com/rss/index.xml'),
       (
@@ -259,6 +49,10 @@ enum NewsCategoryTab {
       (source: 'Wired', url: 'https://www.wired.com/feed/rss'),
       (source: 'Engadget', url: 'https://www.engadget.com/rss.xml'),
       (
+        source: 'TechCrunch',
+        url: 'https://techcrunch.com/feed/',
+      ),
+      (
         source: 'BBC Tech',
         url: 'https://feeds.bbci.co.uk/news/technology/rss.xml',
       ),
@@ -266,36 +60,79 @@ enum NewsCategoryTab {
   ),
   entertainment(
     label: 'Movies & Showbiz',
-    query: 'Hollywood movies television',
+    query: 'movies cinema streaming music entertainment',
+    refreshQueries: <String>[
+      'new movie releases box office cinema',
+      'streaming series television trailers',
+      'music albums concerts pop culture',
+      'film festivals directors actors',
+    ],
     directRssUrls: <({String source, String url})>[
       (
         source: 'BBC Entertainment',
         url: 'https://feeds.bbci.co.uk/news/entertainment_and_arts/rss.xml',
+      ),
+      (source: 'Variety', url: 'https://variety.com/feed/'),
+      (
+        source: 'The Guardian Film',
+        url: 'https://www.theguardian.com/film/rss',
       ),
       (source: 'IGN', url: 'https://feeds.feedburner.com/ign/all'),
     ],
   ),
   sports(
     label: 'Sports',
-    query: 'football cricket F1 sports',
+    query: 'football cricket F1 basketball sports',
+    refreshQueries: <String>[
+      'Champions League Premier League football',
+      'international cricket test T20 matches',
+      'Formula 1 motorsport tennis Grand Slam',
+      'NBA Olympics athletics world sports',
+    ],
     directRssUrls: <({String source, String url})>[
       (source: 'BBC Sport', url: 'https://feeds.bbci.co.uk/sport/rss.xml'),
+      (
+        source: 'The Guardian Sport',
+        url: 'https://www.theguardian.com/uk/sport/rss',
+      ),
+      (
+        source: 'ESPN',
+        url: 'https://www.espn.com/espn/rss/news',
+      ),
     ],
   ),
   gaming(
     label: 'Gaming',
-    query: 'PlayStation PC video games',
+    query: 'PlayStation PC Xbox Nintendo video games',
+    refreshQueries: <String>[
+      'PlayStation 5 Xbox PC game releases',
+      'Nintendo Switch Steam indie games',
+      'esports tournaments gaming hardware',
+      'upcoming RPG action adventure games',
+    ],
     directRssUrls: <({String source, String url})>[
       (source: 'IGN', url: 'https://feeds.feedburner.com/ign/all'),
+      (source: 'Polygon', url: 'https://www.polygon.com/rss/index.xml'),
+      (source: 'Eurogamer', url: 'https://www.eurogamer.net/feed'),
     ],
   ),
   business(
     label: 'Business',
-    query: 'stock market startups economy',
+    query: 'global markets startups economy finance',
+    refreshQueries: <String>[
+      'stock markets Wall Street global economy',
+      'venture capital startups fintech',
+      'bitcoin crypto digital assets',
+      'energy trade central banks business',
+    ],
     directRssUrls: <({String source, String url})>[
       (
         source: 'BBC Business',
         url: 'https://feeds.bbci.co.uk/news/business/rss.xml',
+      ),
+      (
+        source: 'CNBC World',
+        url: 'https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=100727362',
       ),
       (
         source: 'CoinDesk',
@@ -305,9 +142,19 @@ enum NewsCategoryTab {
   ),
   science(
     label: 'Science',
-    query: 'NASA space astronomy science',
+    query: 'NASA SpaceX astronomy physics science',
+    refreshQueries: <String>[
+      'NASA James Webb telescope astronomy',
+      'SpaceX rocket launch space exploration',
+      'quantum physics climate biology',
+      'medical breakthroughs archaeology discoveries',
+    ],
     directRssUrls: <({String source, String url})>[
       (source: 'Space.com', url: 'https://www.space.com/feeds/all'),
+      (
+        source: 'ScienceDaily',
+        url: 'https://www.sciencedaily.com/rss/top/science.xml',
+      ),
       (
         source: 'BBC Science',
         url: 'https://feeds.bbci.co.uk/news/science_and_environment/rss.xml',
@@ -318,53 +165,14 @@ enum NewsCategoryTab {
   const NewsCategoryTab({
     required this.label,
     required this.query,
+    required this.refreshQueries,
     required this.directRssUrls,
   });
 
   final String label;
   final String query;
+  final List<String> refreshQueries;
   final List<({String source, String url})> directRssUrls;
-
-  String resolvedLabel([DiscoverRegionConfig? region]) {
-    if (this == NewsCategoryTab.localCountry) {
-      return (region ?? DiscoverRegionConfig.detect()).countryName;
-    }
-    return label;
-  }
-
-  String resolvedQuery(DiscoverRegionConfig region) {
-    switch (this) {
-      case NewsCategoryTab.forYou:
-        return '${region.countryName} technology science world';
-      case NewsCategoryTab.localCountry:
-        return '${region.countryName} breaking news';
-      case NewsCategoryTab.entertainment:
-        return region.entertainmentHint;
-      case NewsCategoryTab.sports:
-        return region.sportsHint;
-      case NewsCategoryTab.business:
-        return '${region.countryName} stock market startups';
-      case NewsCategoryTab.tech:
-      case NewsCategoryTab.gaming:
-      case NewsCategoryTab.science:
-        return query;
-    }
-  }
-
-  List<({String source, String url})> resolvedDirectFeeds(
-    DiscoverRegionConfig region,
-  ) {
-    if (this == NewsCategoryTab.localCountry) {
-      return region.localDirectFeeds;
-    }
-    if (this == NewsCategoryTab.forYou) {
-      return <({String source, String url})>[
-        ...region.localDirectFeeds.take(2),
-        ...directRssUrls,
-      ];
-    }
-    return directRssUrls;
-  }
 }
 
 class PersonalizedNewsItem {
@@ -477,8 +285,8 @@ class InterestProfileController extends ChangeNotifier {
   _curatedBuckets =
       <String, ({String label, String query, List<String> keywords})>{
         'tech': (
-          label: 'Tech & AI',
-          query: 'AI smartphones technology',
+          label: 'Technology',
+          query: 'smartphones gadgets software technology',
           keywords: <String>[
             'android',
             'apple',
@@ -499,8 +307,8 @@ class InterestProfileController extends ChangeNotifier {
           ],
         ),
         'entertainment': (
-          label: 'Movies & OTT',
-          query: 'Bollywood Hollywood movies',
+          label: 'Movies & Showbiz',
+          query: 'movies cinema streaming music',
           keywords: <String>[
             'movie',
             'movies',
@@ -522,7 +330,7 @@ class InterestProfileController extends ChangeNotifier {
         ),
         'sports': (
           label: 'Sports',
-          query: 'Cricket football F1 sports',
+          query: 'football cricket F1 sports',
           keywords: <String>[
             'cricket',
             'ipl',
@@ -561,7 +369,7 @@ class InterestProfileController extends ChangeNotifier {
         ),
         'finance': (
           label: 'Markets & Crypto',
-          query: 'Sensex Nifty Bitcoin markets',
+          query: 'global stock markets Bitcoin finance',
           keywords: <String>[
             'stock',
             'nifty',
@@ -579,7 +387,7 @@ class InterestProfileController extends ChangeNotifier {
         ),
         'science': (
           label: 'Science & Space',
-          query: 'ISRO SpaceX NASA astronomy',
+          query: 'SpaceX NASA astronomy science',
           keywords: <String>[
             'space',
             'isro',
@@ -821,18 +629,23 @@ class HeavenNewsFeedService {
     http.Client? client,
   }) : _client = client ?? http.Client();
 
-  static const String _cachePrefix = 'hb.newsFeedCache.v8.';
+  static const String _cachePrefix = 'hb.newsFeedCache.global.v28.';
 
   final SharedPreferences prefs;
   final InterestProfileController interests;
   final http.Client _client;
 
-  String _cacheKeyFor(NewsCategoryTab tab, DiscoverRegionConfig region) =>
-      '$_cachePrefix${region.countryCode}.${tab.name}';
+  final Map<NewsCategoryTab, Set<String>> _seenUrlsByTab =
+      <NewsCategoryTab, Set<String>>{};
+  final Map<NewsCategoryTab, List<String>> _lastTopUrlsByTab =
+      <NewsCategoryTab, List<String>>{};
+  final Map<NewsCategoryTab, int> _refreshCycleByTab =
+      <NewsCategoryTab, int>{};
+
+  String _cacheKeyFor(NewsCategoryTab tab) => '$_cachePrefix${tab.name}';
 
   List<PersonalizedNewsItem> readCached(NewsCategoryTab tab) {
-    final DiscoverRegionConfig region = DiscoverRegionConfig.detect();
-    final String? raw = prefs.getString(_cacheKeyFor(tab, region));
+    final String? raw = prefs.getString(_cacheKeyFor(tab));
     if (raw == null || raw.isEmpty) {
       return const <PersonalizedNewsItem>[];
     }
@@ -851,99 +664,208 @@ class HeavenNewsFeedService {
     return const <PersonalizedNewsItem>[];
   }
 
-  Future<List<PersonalizedNewsItem>> fetchFeed(NewsCategoryTab tab) async {
-    final DiscoverRegionConfig region = DiscoverRegionConfig.detect();
-    List<PersonalizedNewsItem> fetched;
-    if (tab == NewsCategoryTab.forYou) {
-      fetched = await _fetchPersonalizedForYou(region);
-    } else {
-      fetched = await _fetchCategoryFeed(tab, region);
+  Future<List<PersonalizedNewsItem>> fetchFeed(
+    NewsCategoryTab tab, {
+    bool forceRefresh = false,
+  }) async {
+    final int nextCycle = forceRefresh
+        ? ((_refreshCycleByTab[tab] ?? 0) + 1)
+        : (_refreshCycleByTab[tab] ?? 0);
+    _refreshCycleByTab[tab] = nextCycle;
+
+    final List<PersonalizedNewsItem> pool = (tab == NewsCategoryTab.forYou)
+        ? await _fetchPersonalizedForYou(
+            cycle: nextCycle,
+            forceRefresh: forceRefresh,
+          )
+        : await _fetchCategoryFeed(
+            tab,
+            cycle: nextCycle,
+            forceRefresh: forceRefresh,
+          );
+
+    if (pool.isEmpty) {
+      final List<PersonalizedNewsItem> cached = readCached(tab);
+      if (forceRefresh && cached.length > 1) {
+        return _rotateStoriesForRefresh(tab, cached);
+      }
+      return cached;
     }
 
-    if (fetched.isNotEmpty) {
-      unawaited(
-        prefs.setString(
-          _cacheKeyFor(tab, region),
-          jsonEncode(
-            fetched
-                .take(24)
-                .map((PersonalizedNewsItem e) => e.toJson())
-                .toList(),
-          ),
+    final List<PersonalizedNewsItem> selected = forceRefresh
+        ? _rotateStoriesForRefresh(tab, pool)
+        : pool.take(24).toList(growable: false);
+
+    _lastTopUrlsByTab[tab] = selected
+        .take(math.max(1, math.min(6, selected.length ~/ 2)))
+        .map((PersonalizedNewsItem e) => e.url)
+        .toList(growable: false);
+
+    unawaited(
+      prefs.setString(
+        _cacheKeyFor(tab),
+        jsonEncode(
+          selected
+              .take(24)
+              .map((PersonalizedNewsItem e) => e.toJson())
+              .toList(),
         ),
-      );
-      return fetched;
-    }
-    return readCached(tab);
+      ),
+    );
+    return selected;
   }
 
-  Future<List<PersonalizedNewsItem>> _fetchPersonalizedForYou(
-    DiscoverRegionConfig region,
-  ) async {
-    final List<InterestEntry> topInterests = interests.rankedInterests
-        .take(3)
+  List<PersonalizedNewsItem> _rotateStoriesForRefresh(
+    NewsCategoryTab tab,
+    List<PersonalizedNewsItem> pool,
+  ) {
+    if (pool.length <= 1) {
+      return pool;
+    }
+    final Set<String> seen = _seenUrlsByTab.putIfAbsent(
+      tab,
+      () => <String>{},
+    );
+    final List<String> previousTop = _lastTopUrlsByTab[tab] ?? const <String>[];
+    if (previousTop.isNotEmpty) {
+      seen.addAll(previousTop);
+    } else {
+      // First explicit refresh after initial load: rotate past the initial top slice
+      final int initialSlice = math.max(1, math.min(6, pool.length ~/ 2));
+      for (int i = 0; i < initialSlice; i++) {
+        seen.add(pool[i].url);
+      }
+    }
+
+    List<PersonalizedNewsItem> unseen = pool
+        .where((PersonalizedNewsItem item) => !seen.contains(item.url))
         .toList(growable: false);
+    List<PersonalizedNewsItem> previouslySeen = pool
+        .where((PersonalizedNewsItem item) => seen.contains(item.url))
+        .toList(growable: false);
+
+    if (unseen.isEmpty) {
+      // Whole candidate pool has been viewed — reset cycle while still rotating
+      // away from the stories that were just at the top of the screen!
+      seen.clear();
+      final Set<String> justShown = previousTop.isNotEmpty
+          ? previousTop.take(math.max(1, pool.length ~/ 2)).toSet()
+          : <String>{pool.first.url};
+      seen.addAll(justShown);
+      unseen = pool
+          .where((PersonalizedNewsItem item) => !seen.contains(item.url))
+          .toList(growable: false);
+      previouslySeen = pool
+          .where((PersonalizedNewsItem item) => seen.contains(item.url))
+          .toList(growable: false);
+    }
+
+    final List<PersonalizedNewsItem> combined = <PersonalizedNewsItem>[
+      ...unseen,
+      ...previouslySeen,
+    ].take(24).toList(growable: false);
+
+    _lastTopUrlsByTab[tab] = combined
+        .take(math.max(1, math.min(6, combined.length ~/ 2)))
+        .map((PersonalizedNewsItem e) => e.url)
+        .toList(growable: false);
+    return combined;
+  }
+
+  Future<List<PersonalizedNewsItem>> _fetchPersonalizedForYou({
+    required int cycle,
+    required bool forceRefresh,
+  }) async {
+    final List<InterestEntry> allRanked = interests.rankedInterests;
+    final List<InterestEntry> selectedInterests;
+    if (allRanked.length <= 3) {
+      selectedInterests = allRanked;
+    } else {
+      final int start = (cycle * 2) % allRanked.length;
+      selectedInterests = <InterestEntry>[
+        for (int i = 0; i < 3; i++) allRanked[(start + i) % allRanked.length],
+      ];
+    }
+
+    final List<String> rotatingAngles = NewsCategoryTab.forYou.refreshQueries;
+    final String primaryAngle = rotatingAngles[cycle % rotatingAngles.length];
+    final String secondaryAngle =
+        rotatingAngles[(cycle + 1) % rotatingAngles.length];
 
     final List<Future<List<PersonalizedNewsItem>>> tasks =
         <Future<List<PersonalizedNewsItem>>>[
           for (final ({String source, String url}) feed
-              in NewsCategoryTab.forYou.resolvedDirectFeeds(region))
-            _fetchDirectPublisherRss(feed.url, defaultSource: feed.source),
-          for (final InterestEntry entry in topInterests)
+              in NewsCategoryTab.forYou.directRssUrls)
+            _fetchDirectPublisherRss(
+              feed.url,
+              defaultSource: feed.source,
+              forceRefresh: forceRefresh,
+            ),
+          for (final InterestEntry entry in selectedInterests)
             _fetchBingMediaNewsRss(
-              _focusedNewsQuery(entry.query, region),
+              _focusedNewsQuery(entry.query),
               topicBadge: entry.label,
-              region: region,
+              forceRefresh: forceRefresh,
             ),
-          if (topInterests.isEmpty) ...<Future<List<PersonalizedNewsItem>>>[
+          _fetchBingMediaNewsRss(
+            primaryAngle,
+            topicBadge: null,
+            forceRefresh: forceRefresh,
+          ),
+          if (selectedInterests.isEmpty || forceRefresh)
             _fetchBingMediaNewsRss(
-              '${region.countryName} top news technology',
+              secondaryAngle,
               topicBadge: null,
-              region: region,
+              forceRefresh: forceRefresh,
             ),
-            _fetchBingMediaNewsRss(
-              'World science entertainment',
-              topicBadge: null,
-              region: region,
-            ),
-          ],
         ];
 
     return _mergeAndRankBatches(await Future.wait(tasks));
   }
 
   Future<List<PersonalizedNewsItem>> _fetchCategoryFeed(
-    NewsCategoryTab tab,
-    DiscoverRegionConfig region,
-  ) async {
-    final String badge = tab.resolvedLabel(region);
+    NewsCategoryTab tab, {
+    required int cycle,
+    required bool forceRefresh,
+  }) async {
+    final String badge = tab.label;
+    final String dynamicQuery = tab.refreshQueries.isEmpty
+        ? tab.query
+        : tab.refreshQueries[cycle % tab.refreshQueries.length];
+
     final List<Future<List<PersonalizedNewsItem>>> tasks =
         <Future<List<PersonalizedNewsItem>>>[
-          for (final ({String source, String url}) feed
-              in tab.resolvedDirectFeeds(region))
+          for (final ({String source, String url}) feed in tab.directRssUrls)
             _fetchDirectPublisherRss(
               feed.url,
               defaultSource: feed.source,
               topicBadge: badge,
+              forceRefresh: forceRefresh,
             ),
           _fetchBingMediaNewsRss(
-            tab.resolvedQuery(region),
+            tab.query,
             topicBadge: badge,
-            region: region,
+            forceRefresh: forceRefresh,
           ),
+          if (dynamicQuery != tab.query)
+            _fetchBingMediaNewsRss(
+              dynamicQuery,
+              topicBadge: badge,
+              forceRefresh: forceRefresh,
+            ),
         ];
 
     return _mergeAndRankBatches(await Future.wait(tasks));
   }
 
-  static String _focusedNewsQuery(String raw, DiscoverRegionConfig region) {
+  static String _focusedNewsQuery(String raw) {
     final List<String> words = raw
         .trim()
         .split(RegExp(r'\s+'))
         .where((String w) => w.length >= 2)
         .take(3)
         .toList();
-    return words.isEmpty ? '${region.countryName} news' : words.join(' ');
+    return words.isEmpty ? 'world headlines news' : words.join(' ');
   }
 
   List<PersonalizedNewsItem> _mergeAndRankBatches(
@@ -994,29 +916,31 @@ class HeavenNewsFeedService {
           b.affinityScore.compareTo(a.affinityScore),
     );
 
-    // Ensure Google Discover cards always display real cover photos whenever image items exist!
     final List<PersonalizedNewsItem> withImages = merged
         .where((PersonalizedNewsItem e) => e.hasValidImage)
         .toList(growable: false);
     if (withImages.isNotEmpty) {
-      return withImages.take(24).toList(growable: false);
+      return withImages.take(72).toList(growable: false);
     }
-    return merged.take(24).toList(growable: false);
+    return merged.take(72).toList(growable: false);
   }
 
   Future<List<PersonalizedNewsItem>> _fetchDirectPublisherRss(
     String feedUrl, {
     required String defaultSource,
     String? topicBadge,
+    bool forceRefresh = false,
   }) async {
     try {
       final http.Response response = await _client
           .get(
             Uri.parse(feedUrl),
-            headers: const <String, String>{
+            headers: <String, String>{
               'User-Agent': 'Mozilla/5.0 (compatible; HeavenBrowser/1.0)',
               'Accept':
                   'application/rss+xml, application/atom+xml, application/xml, text/xml',
+              if (forceRefresh) 'Cache-Control': 'no-cache, max-age=0',
+              if (forceRefresh) 'Pragma': 'no-cache',
             },
           )
           .timeout(const Duration(seconds: 6));
@@ -1033,24 +957,25 @@ class HeavenNewsFeedService {
     }
   }
 
-  /// Fast Bing News RSS with `<News:Image>` 800x450 HD cover photos (~250ms)!
+  /// Fast global Bing News RSS with `<News:Image>` 800x450 HD cover photos (zero country filter)!
   Future<List<PersonalizedNewsItem>> _fetchBingMediaNewsRss(
     String query, {
     required String? topicBadge,
-    required DiscoverRegionConfig region,
+    bool forceRefresh = false,
   }) async {
     try {
       final Uri uri = Uri.parse(
         'https://www.bing.com/news/search?q=${Uri.encodeQueryComponent(query)}'
-        '&format=rss&setlang=${Uri.encodeQueryComponent(region.bingSetLang)}'
-        '&cc=${Uri.encodeQueryComponent(region.countryCode)}',
+        '&format=rss&setlang=en',
       );
       final http.Response response = await _client
           .get(
             uri,
-            headers: const <String, String>{
+            headers: <String, String>{
               'User-Agent': 'Mozilla/5.0 (compatible; HeavenBrowser/1.0)',
               'Accept': 'application/rss+xml, application/xml, text/xml',
+              if (forceRefresh) 'Cache-Control': 'no-cache, max-age=0',
+              if (forceRefresh) 'Pragma': 'no-cache',
             },
           )
           .timeout(const Duration(seconds: 6));
@@ -1114,7 +1039,7 @@ class HeavenNewsFeedService {
           matchedTopic: topicBadge,
         ),
       );
-      if (out.length >= 14) break;
+      if (out.length >= 24) break;
     }
     return out;
   }
@@ -1169,7 +1094,6 @@ class HeavenNewsFeedService {
             '',
       ).trim();
 
-      // Unwrap Bing News RSS apiclick redirect URLs straight to the publisher article!
       link = _unwrapBingNewsRedirect(link);
 
       final String rawPub = _unescapeXml(
@@ -1220,7 +1144,7 @@ class HeavenNewsFeedService {
           matchedTopic: topicBadge,
         ),
       );
-      if (items.length >= 18) {
+      if (items.length >= 30) {
         break;
       }
     }
@@ -1263,10 +1187,8 @@ class HeavenNewsFeedService {
       return null;
     }
 
-    // Upgrade BBC 240px thumbnails to 800px HD
     url = url.replaceFirst('/standard/240/', '/standard/800/');
 
-    // Upgrade Bing News <News:Image> thumbnails to crisp 800x450 16:9 HD JPEG!
     if (url.contains('bing.com/th?')) {
       if (RegExp(r'[?&]w=\d+').hasMatch(url)) {
         url = url
@@ -1377,7 +1299,6 @@ class HeavenNewsFeedService {
         .replaceAll('&lt;', '<')
         .replaceAll('&gt;', '>');
 
-    // Decode decimal entities like &#038; -> & and &#8217; -> '
     out = out.replaceAllMapped(RegExp(r'&#(\d+);'), (Match m) {
       final int? code = int.tryParse(m.group(1)!);
       return (code != null && code > 0 && code <= 0x10FFFF)
@@ -1385,7 +1306,6 @@ class HeavenNewsFeedService {
           : m.group(0)!;
     });
 
-    // Decode hex entities like &#x26; -> &
     out = out.replaceAllMapped(RegExp(r'&#x([0-9a-fA-F]+);'), (Match m) {
       final int? code = int.tryParse(m.group(1)!, radix: 16);
       return (code != null && code > 0 && code <= 0x10FFFF)

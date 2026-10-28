@@ -81,6 +81,7 @@ class BrowserEngine extends ChangeNotifier {
   final BrowserSettingsController settings;
   SitePermissionPromptCallback? onSitePermissionPrompt;
   NativeWebContextMenuCallback? onWebContextMenu;
+  ValueChanged<String>? onNewTabRequested;
   final bool isIncognito;
   final bool enablePlatformWebView;
 
@@ -104,8 +105,6 @@ class BrowserEngine extends ChangeNotifier {
   String? _lastCompletedWebUrl;
   int _lastDownloadInterceptMs = 0;
   int _lastPageFinishedMs = 0;
-  int _userInitiatedLoadUntilMs = 0;
-  int _lastCrossSiteNavMs = 0;
   int _isGoingBackUntilMs = 0;
   int _lastBackPressMs = 0;
   String? _lastBackOriginUrl;
@@ -222,10 +221,8 @@ class BrowserEngine extends ChangeNotifier {
   }
 
   Map<String, String> _headersForTarget({String? host, String? fullUrl}) {
-    final String acceptLang = settings.shieldPreventLangFp
-        ? 'en-US,en;q=0.9'
-        : settings.language.acceptLanguageHeader;
-    final Map<String, String> out = settings.desktopMode
+    final String acceptLang = settings.language.acceptLanguageHeader;
+    return settings.desktopMode
         ? <String, String>{
             'Sec-CH-UA':
                 '"Chromium";v="134", "Not:A-Brand";v="24", "Google Chrome";v="134"',
@@ -238,11 +235,6 @@ class BrowserEngine extends ChangeNotifier {
             'Sec-CH-UA-Platform': '"Android"',
             'Accept-Language': acceptLang,
           };
-    if (settings.sendDntAndGpc) {
-      out['DNT'] = '1';
-      out['Sec-GPC'] = '1';
-    }
-    return out;
   }
 
   void _resetCachedControllerFlags() {
@@ -318,26 +310,13 @@ class BrowserEngine extends ChangeNotifier {
     await _controller?.loadRequest(uri, headers: _headersForTarget());
   }
 
-  void _markUserInitiatedLoad() {
-    _userInitiatedLoadUntilMs = DateTime.now().millisecondsSinceEpoch + 1600;
-  }
+  void _markUserInitiatedLoad() {}
 
-  static bool _isOAuthOrSsoFlow(Uri uri) {
-    final String h = uri.host.toLowerCase();
-    final String p = uri.path.toLowerCase();
-    if (p.contains('/oauth') ||
-        p.contains('/authorize') ||
-        p.contains('/auth/') ||
-        p.contains('/saml') ||
-        p.contains('/openid')) {
-      return true;
+  void requestNewTabFromEngine(String url) {
+    final String clean = url.trim();
+    if (clean.isNotEmpty) {
+      onNewTabRequested?.call(clean);
     }
-    return (h == 'accounts.google.com' ||
-            h == 'appleid.apple.com' ||
-            h == 'login.microsoftonline.com' ||
-            h == 'auth0.com' ||
-            h.endsWith('.auth0.com')) &&
-        (p.contains('signin') || p.contains('login') || p.contains('auth'));
   }
 
   void _initializeController() {
@@ -477,7 +456,6 @@ class BrowserEngine extends ChangeNotifier {
               const Duration(milliseconds: 180),
               () {
                 _finishLoadingDebounceTimer = null;
-                _userInitiatedLoadUntilMs = 0;
                 if (_isLoading) {
                   _isLoading = false;
                   _progress = 0;
@@ -615,6 +593,9 @@ class BrowserEngine extends ChangeNotifier {
           },
           onContextMenu: (WebContextMenuData data) {
             onWebContextMenu?.call(data);
+          },
+          onOpenNewTabRequest: (String targetUrl) {
+            requestNewTabFromEngine(targetUrl);
           },
         ),
       );
@@ -832,17 +813,8 @@ class BrowserEngine extends ChangeNotifier {
       return NavigationDecision.prevent;
     }
 
-    // Bypass top-level redirect tracking wrappers & AMP pages directly to canonical destination
     if (request.isMainFrame) {
-      Uri resolvedUri =
-          (settings.shieldCleanUrls
-              ? OmniboxParser.unwrapTrackingRedirectUri(uri)
-              : OmniboxParser.unwrapGoogleRedirectUri(uri)) ??
-          uri;
-      if (settings.isShieldActiveForHost(resolvedUri.host) &&
-          settings.shieldAutoRedirectAmp) {
-        resolvedUri = OmniboxParser.unwrapAmpUri(resolvedUri) ?? resolvedUri;
-      }
+      Uri resolvedUri = uri;
       if (settings.desktopMode) {
         resolvedUri = rewriteMobileToDesktopUri(resolvedUri);
       }
@@ -850,39 +822,6 @@ class BrowserEngine extends ChangeNotifier {
           resolvedUri.scheme == 'http' &&
           !OmniboxParser.isLocalOrPrivateHost(resolvedUri.host)) {
         resolvedUri = resolvedUri.replace(scheme: 'https');
-      }
-      if (settings.isShieldActiveForHost(resolvedUri.host) &&
-          settings.shieldCleanUrls) {
-        resolvedUri = BrowserSettingsController.stripTrackingParameters(
-          resolvedUri,
-        );
-      }
-
-      // Block pirate/streaming ad-redirect hijacks & rapid cross-site popunder bounce chains!
-      if (settings.isShieldActiveForHost(currentHost)) {
-        if (OmniboxParser.isKnownAdOrPopunderRedirect(
-          resolvedUri,
-          currentUrl: _currentUrl,
-        )) {
-          return NavigationDecision.prevent;
-        }
-        final int nowMs = DateTime.now().millisecondsSinceEpoch;
-        final bool isUserDirectLoad =
-            nowMs <= _userInitiatedLoadUntilMs || nowMs <= _isGoingBackUntilMs;
-        final String? establishedUrl = _lastCompletedWebUrl;
-        if (!isUserDirectLoad &&
-            establishedUrl != null &&
-            establishedUrl.isNotEmpty &&
-            !_isOAuthOrSsoFlow(resolvedUri) &&
-            !OmniboxParser.isSameWebsite(
-              establishedUrl,
-              resolvedUri.toString(),
-            )) {
-          if ((nowMs - _lastCrossSiteNavMs) < 650) {
-            return NavigationDecision.prevent;
-          }
-          _lastCrossSiteNavMs = nowMs;
-        }
       }
 
       _onWebUrlTransition(resolvedUri.toString());
@@ -1005,7 +944,7 @@ class BrowserEngine extends ChangeNotifier {
         );
       }
 
-      final bool allow3p = !isIncognito && !settings.blockThirdPartyCookies;
+      final bool allow3p = !isIncognito;
       if (force || _appliedAllow3pCookies != allow3p) {
         _appliedAllow3pCookies = allow3p;
         final WebViewCookieManager cookieManager = WebViewCookieManager();
@@ -1170,15 +1109,7 @@ class BrowserEngine extends ChangeNotifier {
       migratedUri = SearchEngine.google.buildSearchUri(q);
     }
 
-    Uri finalUri =
-        (settings.shieldCleanUrls
-            ? OmniboxParser.unwrapTrackingRedirectUri(migratedUri)
-            : OmniboxParser.unwrapGoogleRedirectUri(migratedUri)) ??
-        migratedUri;
-    if (settings.isShieldActiveForHost(finalUri.host) &&
-        settings.shieldAutoRedirectAmp) {
-      finalUri = OmniboxParser.unwrapAmpUri(finalUri) ?? finalUri;
-    }
+    Uri finalUri = migratedUri;
     if (settings.desktopMode) {
       finalUri = rewriteMobileToDesktopUri(finalUri);
     }
@@ -1186,10 +1117,6 @@ class BrowserEngine extends ChangeNotifier {
         finalUri.scheme == 'http' &&
         !OmniboxParser.isLocalOrPrivateHost(finalUri.host)) {
       finalUri = finalUri.replace(scheme: 'https');
-    }
-    if (settings.isShieldActiveForHost(finalUri.host) &&
-        settings.shieldCleanUrls) {
-      finalUri = BrowserSettingsController.stripTrackingParameters(finalUri);
     }
 
     final String targetUrl = finalUri.toString();
@@ -1228,7 +1155,6 @@ class BrowserEngine extends ChangeNotifier {
       _onWebUrlTransition(targetUrl);
       _lastCompletedWebUrl = targetUrl;
       _lastSettledWebUrl = targetUrl;
-      _userInitiatedLoadUntilMs = 0;
       _isLoading = false;
       _progress = 0;
       if (!isIncognito &&

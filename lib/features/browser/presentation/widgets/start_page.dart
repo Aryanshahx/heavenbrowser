@@ -81,13 +81,14 @@ class _StartPageState extends State<StartPage> {
     super.dispose();
   }
 
-  Future<void> _refreshNews() async {
+  Future<void> _refreshNews({bool userTriggered = false}) async {
     if (widget.isIncognito || !mounted) {
       return;
     }
     setState(() => _loadingNews = true);
     final List<PersonalizedNewsItem> fresh = await widget.newsService.fetchFeed(
       _selectedNewsTab,
+      forceRefresh: userTriggered,
     );
     if (!mounted) {
       return;
@@ -100,6 +101,7 @@ class _StartPageState extends State<StartPage> {
 
   void _onSelectNewsCategory(NewsCategoryTab tab) {
     if (_selectedNewsTab == tab) {
+      unawaited(_refreshNews(userTriggered: true));
       return;
     }
     setState(() {
@@ -172,7 +174,7 @@ class _StartPageState extends State<StartPage> {
             final int tabletNewsColumns = viewportWidth >= 960.0 ? 3 : 2;
 
             return RefreshIndicator(
-              onRefresh: _refreshNews,
+              onRefresh: () => _refreshNews(userTriggered: true),
               child: CustomScrollView(
                 physics: const AlwaysScrollableScrollPhysics(),
                 slivers: <Widget>[
@@ -395,6 +397,10 @@ class _StartPageState extends State<StartPage> {
                 _submitHomeSearch(typed);
               }
             },
+            onOpenEngineSettings: (SearchEngine engine) async {
+              await widget.settings.setSearchEngine(engine);
+              widget.onSelectUrl(engine.settingsUrl);
+            },
           ),
           const SizedBox(width: 10),
           Expanded(
@@ -554,9 +560,8 @@ class _StartPageState extends State<StartPage> {
     );
   }
 
-  /// Header with zero 'Reset Interests' button as requested!
+  /// Header with global topic categories (country-wise filter removed).
   Widget _buildNewsSectionHeader(BuildContext context, ColorScheme colors) {
-    final DiscoverRegionConfig region = DiscoverRegionConfig.detect();
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: <Widget>[
@@ -599,7 +604,7 @@ class _StartPageState extends State<StartPage> {
                     key: ValueKey<String>('discover_tab_${tab.name}'),
                     showCheckmark: false,
                     label: Text(
-                      tab.resolvedLabel(region),
+                      tab.label,
                       style: const TextStyle(
                         fontSize: 12,
                         fontWeight: FontWeight.w700,
