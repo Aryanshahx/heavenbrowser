@@ -72,6 +72,7 @@ class _BrowserScreenState extends State<BrowserScreen>
 
   Timer? _suggestDebounce;
   Timer? _downloadPopupTimer;
+  Timer? _widgetKeyboardRetryTimer;
   List<String> _liveSuggestions = <String>[];
   String? _downloadPopupMessage;
   bool _isEditingOmnibox = false;
@@ -107,6 +108,7 @@ class _BrowserScreenState extends State<BrowserScreen>
   void dispose() {
     _suggestDebounce?.cancel();
     _downloadPopupTimer?.cancel();
+    _widgetKeyboardRetryTimer?.cancel();
     if (widget.downloads.onDownloadToast == _showDownloadStartedPopup) {
       widget.downloads.onDownloadToast = null;
     }
@@ -148,13 +150,19 @@ class _BrowserScreenState extends State<BrowserScreen>
   }
 
   void _handleWindowFocusedForKeyboard() {
-    if (!mounted || !_isEditingOmnibox) return;
-    _omniboxFocusNode.requestFocus();
+    if (!mounted) return;
+    // Native says the window just gained focus while a guaranteed keyboard
+    // popup is pending — re-assert the soft keyboard no matter which search
+    // field (top omnibox or Home start page) currently owns the input client.
     unawaited(
       SystemChannels.textInput
           .invokeMethod<void>('TextInput.show')
           .catchError((Object _) {}),
     );
+    if (_isEditingOmnibox) {
+      _omniboxFocusNode.requestFocus();
+    }
+    unawaited(NativeShieldBridge.instance.showSoftKeyboard());
   }
 
   void _forceShowKeyboardForActiveField() {
@@ -358,6 +366,17 @@ class _BrowserScreenState extends State<BrowserScreen>
         _forceShowKeyboardForActiveField();
       }
     });
+    if (forceKeyboard) {
+      // Guaranteed keyboard: a delayed re-assert covers the cold-start case
+      // where Flutter attaches the editable a few frames after launch.
+      _widgetKeyboardRetryTimer?.cancel();
+      _widgetKeyboardRetryTimer = Timer(const Duration(milliseconds: 350), () {
+        _widgetKeyboardRetryTimer = null;
+        if (!mounted || !_isEditingOmnibox) return;
+        _omniboxFocusNode.requestFocus();
+        _forceShowKeyboardForActiveField();
+      });
+    }
   }
 
   void _populateCurrentUrlForEditing() {

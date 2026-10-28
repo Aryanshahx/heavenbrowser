@@ -317,6 +317,28 @@ class BrowserEngine extends ChangeNotifier {
     }
   }
 
+  /// A pirated-site popup (`window.open` / `target="_blank"`) whose final
+  /// target is a DIRECT file becomes an instant background download — exactly
+  /// like Brave — instead of a junk blank tab. The opener pirated-site page
+  /// stays 100% intact in its own tab.
+  Future<void> startDirectPopupFileDownload(String url) async {
+    final String clean = url.trim();
+    if (clean.isEmpty) {
+      return;
+    }
+    _lastDownloadInterceptMs = DateTime.now().millisecondsSinceEpoch;
+    _isLoading = false;
+    _progress = 0;
+    notifyListeners();
+    final Map<String, Object?>? info = await NativeShieldBridge.instance
+        .startDownload(url: clean, userAgent: AppConstants.mobileUserAgent);
+    if (info != null) {
+      // Feed the started job into the DownloadsController exactly like a
+      // native WebView download, so the toast + Downloads UI show it live.
+      NativeShieldBridge.instance.onDownloadStarted?.call(info);
+    }
+  }
+
   void _initializeController() {
     _resetCachedControllerFlags();
     _cachedWebViewWidget = null;
@@ -619,6 +641,9 @@ class BrowserEngine extends ChangeNotifier {
         },
         onOpenNewTabRequest: (String targetUrl) {
           requestNewTabFromEngine(targetUrl);
+        },
+        onDirectDownloadRequest: (String targetUrl) {
+          unawaited(startDirectPopupFileDownload(targetUrl));
         },
         onUserInteraction: (String interactedUrl) {
           if (interactedUrl.startsWith('http://') ||

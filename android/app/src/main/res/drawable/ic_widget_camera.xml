@@ -4,7 +4,20 @@
     android:height="22dp"
     android:viewportWidth="24"
     android:viewportHeight="24">
+    <!-- Top-left, bottom-left & bottom-right sleek viewfinder corner arcs -->
+    <path
+        android:strokeColor="@color/heaven_widget_accent"
+        android:strokeWidth="2.05"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:pathData="M3.5,8.6V6.7C3.5,4.93 4.93,3.5 6.7,3.5H8.6M3.5,15.4v1.9c0,1.77 1.43,3.2 3.2,3.2h1.9M15.4,20.5h1.9c1.77,0 3.2,-1.43 3.2,-3.2v-1.9" />
+    <!-- Center optical iris ring -->
+    <path
+        android:strokeColor="@color/heaven_widget_accent"
+        android:strokeWidth="2.0"
+        android:pathData="M12,8.5a3.5,3.5 0 1,1 0,7a3.5,3.5 0 1,1 0,-7z" />
+    <!-- Top-right distinct Heaven Lens shutter/sparkle accent -->
     <path
         android:fillColor="@color/heaven_widget_accent"
-        android:pathData="M12,15.2c1.77,0 3.2,-1.43 3.2,-3.2S13.77,8.8 12,8.8 8.8,10.23 8.8,12s1.43,3.2 3.2,3.2zM9,2L7.17,4H4c-1.1,0 -2,0.9 -2,2v12c0,1.1 0.9,2 2,2h16c1.1,0 2,-0.9 2,-2V6c0,-1.1 -0.9,-2 -2,-2h-3.17L15,2H9zM12,17c-2.76,0 -5,-2.24 -5,-5s2.24,-5 5,-5 5,2.24 5,5 -2.24,5 -5,5z" />
+        android:pathData="M18.2,3.4l0.65,1.55l1.55,0.65l-1.55,0.65l-0.65,1.55l-0.65,-1.55l-1.55,-0.65l1.55,-0.65z" />
 </vector>

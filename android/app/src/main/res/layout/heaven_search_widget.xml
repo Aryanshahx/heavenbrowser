@@ -6,16 +6,16 @@
     android:background="@drawable/heaven_widget_pill_bg"
     android:gravity="center_vertical"
     android:orientation="horizontal"
-    android:paddingStart="12dp"
+    android:paddingStart="11dp"
     android:paddingEnd="8dp">
 
     <ImageView
         android:id="@+id/heaven_widget_logo"
-        android:layout_width="26dp"
-        android:layout_height="26dp"
+        android:layout_width="28dp"
+        android:layout_height="28dp"
         android:contentDescription="Heaven"
         android:scaleType="fitCenter"
-        android:src="@drawable/ic_widget_search_brand" />
+        android:src="@drawable/heaven_widget_logo_icon" />
 
     <TextView
         android:id="@+id/heaven_widget_search_text"

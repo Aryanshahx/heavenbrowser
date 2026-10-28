@@ -2538,9 +2538,25 @@ void main() {
         );
         await tester.pump();
         await tester.tap(find.byKey(const Key('lens_pick_gallery_button')));
-        await tester.pumpAndSettle();
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 250));
 
         expect(galleryPickCalls, 1);
+        // The picked photo now opens FROZEN with the draggable 4-corner crop
+        // frame (Google-Lens style) — the crop feature actually works!
+        expect(find.text('Back to Live Camera'), findsOneWidget);
+        expect(
+          find.byKey(const Key('lens_crop_frame_button')),
+          findsOneWidget,
+        );
+        expect(lastLensMode, isEmpty);
+
+        // Press the shutter to search the picked (optionally cropped) photo!
+        await tester.tap(find.byKey(const Key('lens_shutter_capture_button')));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 200));
+        await tester.pumpAndSettle();
+
         expect(lastLensMode, 'shopping');
         expect(lastLensQuery, 'black sneakers');
 
@@ -3087,6 +3103,239 @@ void main() {
           expect(await tabManager.navigateBackSeamlessly(), isTrue);
           expect(tabManager.totalTabCount, 1);
           expect(tabManager.activeEngine.currentUrl, serpUrl);
+
+          tabManager.dispose();
+          settings.dispose();
+        },
+      );
+    },
+  );
+
+  group(
+    'Step 30: Pirated-Site Download Pass-Through, Heaven Logo Widget, Modern Lens Camera UI & Guaranteed Keyboard',
+    () {
+      test(
+        'Direct popup file downloads start instantly like Brave while same-tab pages keep navigating',
+        () async {
+          SharedPreferences.setMockInitialValues(<String, Object>{});
+          final SharedPreferences prefs = await SharedPreferences.getInstance();
+          final BrowserSettingsController settings = BrowserSettingsController(
+            prefs,
+          );
+          final BrowserEngine engine = BrowserEngine(
+            settings: settings,
+            isIncognito: false,
+            enablePlatformWebView: false,
+          );
+
+          int startDownloadCalls = 0;
+          final List<Map<String, Object?>> downloadEvents =
+              <Map<String, Object?>>[];
+          const MethodChannel nativeChannel = MethodChannel(
+            'com.hypertechlabs.heavenbrowser/native_shield',
+          );
+          TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+              .setMockMethodCallHandler(nativeChannel, (MethodCall call) async {
+                if (call.method == 'startDownload') {
+                  startDownloadCalls += 1;
+                  return <String, Object?>{
+                    'downloadId': 4242,
+                    'url': call.arguments['url'],
+                    'fileName': 'movie.1080p.mkv',
+                    'mimeType': '',
+                    'state': 'running',
+                    'bytesDownloaded': 0,
+                    'totalBytes': -1,
+                  };
+                }
+                return null;
+              });
+          addTearDown(() {
+            TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+                .setMockMethodCallHandler(nativeChannel, null);
+          });
+          NativeShieldBridge.instance.onDownloadStarted = downloadEvents.add;
+          addTearDown(() {
+            NativeShieldBridge.instance.onDownloadStarted = null;
+          });
+
+          // A pirated-site popup whose final target is a DIRECT file becomes
+          // an instant background download — the pirated page stays intact!
+          await engine.startDirectPopupFileDownload(
+            'https://files.example/movie.1080p.mkv?token=abc',
+          );
+          expect(startDownloadCalls, 1);
+          expect(downloadEvents, hasLength(1));
+          expect(downloadEvents.first['fileName'], 'movie.1080p.mkv');
+
+          // Same-tab navigations to normal pages are NEVER intercepted!
+          final NavigationDecision pageDecision = await engine
+              .handleWebsiteNavigationOrRedirect('https://watch.example/page');
+          expect(pageDecision, NavigationDecision.navigate);
+
+          // Native invariants: Brave-style popup file detection + intent://
+          // resolution + ad-cookie flush on popup cleanup + guaranteed
+          // keyboard retries!
+          final String pluginJava = File(
+            'android/app/src/main/java/com/hypertechlabs/heavenbrowser/HeavenShieldPlugin.java',
+          ).readAsStringSync();
+          expect(pluginJava, contains('isLikelyDirectFileUrl'));
+          expect(pluginJava, contains('emitDirectDownloadRequest'));
+          expect(pluginJava, contains('resolveIntentStylePopupUrl'));
+          expect(pluginJava, contains('browser_fallback_url'));
+          expect(pluginJava, contains('Intent.URI_INTENT_SCHEME'));
+          expect(pluginJava, contains('flushCookiesAsyncThrottled'));
+          expect(pluginJava, contains('requestGuaranteedSoftKeyboard'));
+          expect(pluginJava, contains('KEYBOARD_RETRY_DELAY_MS'));
+
+          engine.dispose();
+          settings.dispose();
+        },
+      );
+
+      testWidgets(
+        'Home Screen Widget shows the Heaven logo (no search icon) and a modern Lens camera icon',
+        (WidgetTester tester) async {
+          final String layoutXml = File(
+            'android/app/src/main/res/layout/heaven_search_widget.xml',
+          ).readAsStringSync();
+          expect(layoutXml, contains('@drawable/heaven_widget_logo_icon'));
+          expect(layoutXml, isNot(contains('ic_widget_search_brand')));
+          // Real Heaven logo PNGs exist in every density bucket!
+          for (final String bucket in <String>[
+            'mdpi',
+            'hdpi',
+            'xhdpi',
+            'xxhdpi',
+            'xxxhdpi',
+          ]) {
+            expect(
+              File(
+                'android/app/src/main/res/drawable-$bucket/heaven_widget_logo_icon.png',
+              ).existsSync(),
+              isTrue,
+            );
+          }
+          expect(
+            File(
+              'android/app/src/main/res/drawable/ic_widget_search_brand.xml',
+            ).existsSync(),
+            isFalse,
+          );
+
+          // Preview draws the Heaven brand globe (no search magnifier) + the
+          // modern viewfinder camera icon!
+          final String previewXml = File(
+            'android/app/src/main/res/drawable/heaven_widget_preview.xml',
+          ).readAsStringSync();
+          expect(previewXml, contains('Heaven Brand Globe'));
+          expect(previewXml, isNot(contains('Magnifier')));
+
+          // Modern vector camera icon (viewfinder brackets + iris + sparkle)!
+          final String cameraXml = File(
+            'android/app/src/main/res/drawable/ic_widget_camera.xml',
+          ).readAsStringSync();
+          expect(cameraXml, contains('viewfinder corner arcs'));
+          expect(cameraXml, contains('strokeColor'));
+          expect(cameraXml, isNot(contains('M9,2L7.17,4H4')));
+        },
+      );
+
+      testWidgets(
+        'Heaven Lens camera: no 1x/2x zoom buttons, working drag crop frame, non-overlapping search area',
+        (WidgetTester tester) async {
+          tester.view.physicalSize = const Size(412, 915);
+          tester.view.devicePixelRatio = 1.0;
+          addTearDown(() {
+            tester.view.resetPhysicalSize();
+            tester.view.resetDevicePixelRatio();
+          });
+
+          SharedPreferences.setMockInitialValues(<String, Object>{});
+          final SharedPreferences prefs = await SharedPreferences.getInstance();
+          final BrowserSettingsController settings = BrowserSettingsController(
+            prefs,
+          );
+          final TabManagerController tabManager = TabManagerController(
+            settings: settings,
+            enablePlatformWebView: false,
+          );
+
+          const MethodChannel nativeChannel = MethodChannel(
+            'com.hypertechlabs.heavenbrowser/native_shield',
+          );
+          TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+              .setMockMethodCallHandler(nativeChannel, (MethodCall call) async {
+                switch (call.method) {
+                  case 'consumeInitialLaunchAction':
+                    return null;
+                  case 'lensStartCamera':
+                    return <String, Object?>{
+                      'ok': true,
+                      'textureId': 7,
+                      'previewWidth': 1080,
+                      'previewHeight': 1440,
+                      'isFront': false,
+                      'hasFlash': true,
+                      'maxZoom': 4.0,
+                    };
+                  case 'lensStopCamera':
+                    return true;
+                }
+                return null;
+              });
+          addTearDown(() {
+            TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+                .setMockMethodCallHandler(nativeChannel, null);
+          });
+
+          await tester.pumpWidget(
+            MaterialApp(
+              home: HeavenLensCameraScreen(engine: tabManager.activeEngine),
+            ),
+          );
+          await tester.pump();
+          await tester.pump(const Duration(milliseconds: 220));
+
+          // 1x / 2x zoom buttons completely removed!
+          expect(find.text('1x'), findsNothing);
+          expect(find.text('2x'), findsNothing);
+
+          // Crop is now a REAL working toggle: enable the crop frame...
+          final Finder cropBtn = find.byKey(const Key('lens_crop_frame_button'));
+          expect(cropBtn, findsOneWidget);
+          await tester.tap(cropBtn);
+          await tester.pump(const Duration(milliseconds: 200));
+
+          // ...drag the bottom-right corner handle (interactive crop WORKS!)...
+          await tester.drag(
+            find.byKey(const Key('lens_crop_corner_bottomRight')),
+            const Offset(-36, -28),
+          );
+          await tester.pump(const Duration(milliseconds: 200));
+          expect(
+            find.byKey(const Key('lens_reset_crop_button')),
+            findsOneWidget,
+          );
+
+          // ...and Full Frame resets it cleanly!
+          await tester.tap(find.byKey(const Key('lens_reset_crop_button')));
+          await tester.pump(const Duration(milliseconds: 200));
+          expect(
+            find.byKey(const Key('lens_reset_crop_button')),
+            findsNothing,
+          );
+
+          // The "Add to your search" area NEVER overlaps the shutter/mode
+          // dock while the soft keyboard is up — the whole dock lifts together!
+          tester.view.viewInsets = FakeViewPadding(bottom: 300);
+          await tester.pump(const Duration(milliseconds: 200));
+          final double askBarBottom = tester.getBottomLeft(
+            find.byKey(const Key('lens_multimodal_query_field')),
+          ).dy;
+          expect(askBarBottom, lessThan(915 - 300 + 1));
+          tester.view.viewInsets = FakeViewPadding.zero;
+          await tester.pump(const Duration(milliseconds: 200));
 
           tabManager.dispose();
           settings.dispose();

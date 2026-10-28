@@ -82,7 +82,6 @@ class _HeavenLensCameraScreenState extends State<HeavenLensCameraScreen>
   // Picked/captured freeze-frame image state
   Uint8List? _frozenImageBytes;
   bool _editingGalleryCrop = false;
-  bool _cropBeforeSearch = false;
   bool _searchingLens = false;
 
   HeavenLensMode _selectedMode = HeavenLensMode.search;
@@ -260,7 +259,10 @@ class _HeavenLensCameraScreenState extends State<HeavenLensCameraScreen>
       decoded = base64Decode(b64);
     } catch (_) {}
 
-    if (_cropBeforeSearch && decoded != null) {
+    if (decoded != null) {
+      // Google-Lens style: the picked photo opens frozen with the draggable
+      // 4-corner crop frame. Adjust the frame (optional) and press the shutter
+      // to search exactly the selected region!
       setState(() {
         _frozenImageBytes = decoded;
         _editingGalleryCrop = true;
@@ -268,13 +270,6 @@ class _HeavenLensCameraScreenState extends State<HeavenLensCameraScreen>
         _hasCustomCrop = true;
       });
       return;
-    }
-
-    if (decoded != null) {
-      setState(() {
-        _frozenImageBytes = decoded;
-        _editingGalleryCrop = false;
-      });
     }
     await _uploadGalleryBytesToLens(b64);
   }
@@ -579,15 +574,27 @@ class _HeavenLensCameraScreenState extends State<HeavenLensCameraScreen>
                         ),
                       ],
                     ),
-                  )
-                else if (_frozenImageBytes == null && _textureId != null)
-                  _buildZoomPillRow(),
-                _buildMultimodalAskBar(),
-                const SizedBox(height: 10),
-                _buildModeSelectorRow(),
-                const SizedBox(height: 14),
-                _buildBottomShutterAndGalleryDock(),
-                const SizedBox(height: 12),
+                  ),
+                // Keyboard-aware studio dock: the ENTIRE dock (ask bar +
+                // modes + shutter + gallery) lifts above the soft keyboard
+                // TOGETHER, so "Add to your search" never overlaps the
+                // mode selector or the shutter while typing!
+                Padding(
+                  padding: EdgeInsets.only(
+                    bottom: MediaQuery.viewInsetsOf(context).bottom,
+                  ),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: <Widget>[
+                      _buildMultimodalAskBar(),
+                      const SizedBox(height: 10),
+                      _buildModeSelectorRow(),
+                      const SizedBox(height: 14),
+                      _buildBottomShutterAndGalleryDock(),
+                      const SizedBox(height: 12),
+                    ],
+                  ),
+                ),
               ],
             ),
           ),
@@ -637,10 +644,8 @@ class _HeavenLensCameraScreenState extends State<HeavenLensCameraScreen>
                 color: AppTheme.electricBlue.withValues(alpha: 0.16),
                 shape: BoxShape.circle,
               ),
-              child: const Icon(
-                Icons.photo_camera_outlined,
-                color: Colors.white,
-                size: 30,
+              child: const Center(
+                child: ModernHeavenCameraIcon(size: 32, color: Colors.white),
               ),
             ),
             const SizedBox(height: 14),
@@ -690,6 +695,7 @@ class _HeavenLensCameraScreenState extends State<HeavenLensCameraScreen>
         width: hitSize,
         height: hitSize,
         child: GestureDetector(
+          key: Key('lens_crop_corner_${corner.name}'),
           behavior: HitTestBehavior.opaque,
           onPanUpdate: (DragUpdateDetails d) =>
               _updateCornerDrag(corner, d.delta, viewport),
@@ -770,64 +776,9 @@ class _HeavenLensCameraScreenState extends State<HeavenLensCameraScreen>
     );
   }
 
-  Widget _buildZoomPillRow() {
-    final List<double> stops = <double>[1.0, if (_maxZoom >= 2.0) 2.0];
-    if (stops.length < 2) return const SizedBox(height: 6);
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 10),
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
-        decoration: BoxDecoration(
-          color: Colors.black.withValues(alpha: 0.48),
-          borderRadius: BorderRadius.circular(20),
-          border: Border.all(color: Colors.white.withValues(alpha: 0.14)),
-        ),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: stops.map((double z) {
-            final bool selected = (_zoom - z).abs() < 0.35;
-            return GestureDetector(
-              onTap: () {
-                setState(() => _zoom = z);
-                unawaited(NativeShieldBridge.instance.lensSetZoom(z));
-              },
-              child: Container(
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 10,
-                  vertical: 4,
-                ),
-                decoration: BoxDecoration(
-                  color: selected
-                      ? Colors.white.withValues(alpha: 0.22)
-                      : Colors.transparent,
-                  borderRadius: BorderRadius.circular(14),
-                ),
-                child: Text(
-                  '${z.toStringAsFixed(0)}x',
-                  style: TextStyle(
-                    color: Colors.white,
-                    fontSize: 11.5,
-                    fontWeight: selected ? FontWeight.w800 : FontWeight.w500,
-                  ),
-                ),
-              ),
-            );
-          }).toList(),
-        ),
-      ),
-    );
-  }
-
   Widget _buildMultimodalAskBar() {
     return Padding(
-      padding: EdgeInsets.fromLTRB(
-        18,
-        0,
-        18,
-        MediaQuery.viewInsetsOf(context).bottom > 0
-            ? MediaQuery.viewInsetsOf(context).bottom * 0.45
-            : 0,
-      ),
+      padding: const EdgeInsets.fromLTRB(18, 0, 18, 0),
       child: ConstrainedBox(
         constraints: const BoxConstraints(maxWidth: 460),
         child: Container(
@@ -1031,21 +982,34 @@ class _HeavenLensCameraScreenState extends State<HeavenLensCameraScreen>
               ),
             ),
 
-            // Right: Crop-before-gallery toggle pill
+            // Right: Interactive Crop Frame toggle — drag the 4 corners of the
+            // viewfinder frame to select exactly what to search!
             Expanded(
               child: Align(
                 alignment: Alignment.centerRight,
                 child: Material(
-                  color: _cropBeforeSearch
+                  color: _hasCustomCrop
                       ? AppTheme.electricBlue.withValues(alpha: 0.42)
                       : Colors.white.withValues(alpha: 0.13),
                   borderRadius: BorderRadius.circular(26),
                   child: InkWell(
-                    key: const Key('lens_crop_toggle_button'),
+                    key: const Key('lens_crop_frame_button'),
                     borderRadius: BorderRadius.circular(26),
                     onTap: () {
                       HapticFeedback.selectionClick();
-                      setState(() => _cropBeforeSearch = !_cropBeforeSearch);
+                      setState(() {
+                        if (_hasCustomCrop) {
+                          _cropRect = const Rect.fromLTRB(
+                            0.10,
+                            0.16,
+                            0.90,
+                            0.80,
+                          );
+                          _hasCustomCrop = false;
+                        } else {
+                          _hasCustomCrop = true;
+                        }
+                      });
                     },
                     child: Padding(
                       padding: const EdgeInsets.symmetric(
@@ -1057,7 +1021,7 @@ class _HeavenLensCameraScreenState extends State<HeavenLensCameraScreen>
                         children: <Widget>[
                           Icon(
                             Icons.crop_rounded,
-                            color: _cropBeforeSearch
+                            color: _hasCustomCrop
                                 ? AppTheme.heavenAccent
                                 : Colors.white,
                             size: 19,
@@ -1065,7 +1029,7 @@ class _HeavenLensCameraScreenState extends State<HeavenLensCameraScreen>
                           const SizedBox(width: 6),
                           Flexible(
                             child: Text(
-                              _cropBeforeSearch ? 'Crop: ON' : 'Crop',
+                              _hasCustomCrop ? 'Framed' : 'Crop',
                               maxLines: 1,
                               overflow: TextOverflow.ellipsis,
                               style: const TextStyle(
@@ -1090,6 +1054,84 @@ class _HeavenLensCameraScreenState extends State<HeavenLensCameraScreen>
 }
 
 enum _LensCorner { topLeft, topRight, bottomLeft, bottomRight }
+
+/// Modern Heaven Lens camera icon: sleek viewfinder brackets + optical iris +
+/// sparkle accent — in the spirit of Google Lens, but Heaven's own design.
+class ModernHeavenCameraIcon extends StatelessWidget {
+  const ModernHeavenCameraIcon({super.key, required this.size, this.color});
+
+  final double size;
+  final Color? color;
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      width: size,
+      height: size,
+      child: CustomPaint(
+        painter: _ModernHeavenCameraIconPainter(
+          color ?? const Color(0xFF2563EB),
+        ),
+      ),
+    );
+  }
+}
+
+class _ModernHeavenCameraIconPainter extends CustomPainter {
+  const _ModernHeavenCameraIconPainter(this.color);
+
+  final Color color;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final Paint stroke = Paint()
+      ..color = color
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = math.max(1.4, size.width * 0.085)
+      ..strokeCap = StrokeCap.round
+      ..strokeJoin = StrokeJoin.round;
+    final Paint fill = Paint()
+      ..color = color
+      ..style = PaintingStyle.fill;
+
+    final double w = size.width;
+    final double h = size.height;
+
+    // Top-left bracket
+    canvas.drawLine(Offset(w * 0.08, h * 0.32), Offset(w * 0.08, h * 0.17), stroke);
+    canvas.drawLine(Offset(w * 0.08, h * 0.17), Offset(w * 0.23, h * 0.17), stroke);
+    // Bottom-left bracket
+    canvas.drawLine(Offset(w * 0.08, h * 0.68), Offset(w * 0.08, h * 0.83), stroke);
+    canvas.drawLine(Offset(w * 0.08, h * 0.83), Offset(w * 0.23, h * 0.83), stroke);
+    // Bottom-right bracket
+    canvas.drawLine(Offset(w * 0.77, h * 0.83), Offset(w * 0.92, h * 0.83), stroke);
+    canvas.drawLine(Offset(w * 0.92, h * 0.83), Offset(w * 0.92, h * 0.68), stroke);
+
+    // Central optical iris ring
+    canvas.drawCircle(Offset(w * 0.44, h * 0.54), w * 0.27, stroke);
+
+    // Top-right 4-point sparkle accent
+    final double sx = w * 0.80;
+    final double sy = h * 0.20;
+    final double sr = w * 0.13;
+    final Path sparkle = Path()
+      ..moveTo(sx, sy - sr)
+      ..lineTo(sx + sr * 0.24, sy - sr * 0.24)
+      ..lineTo(sx + sr, sy)
+      ..lineTo(sx + sr * 0.24, sy + sr * 0.24)
+      ..lineTo(sx, sy + sr)
+      ..lineTo(sx - sr * 0.24, sy + sr * 0.24)
+      ..lineTo(sx - sr, sy)
+      ..lineTo(sx - sr * 0.24, sy - sr * 0.24)
+      ..close();
+    canvas.drawPath(sparkle, fill);
+  }
+
+  @override
+  bool shouldRepaint(covariant _ModernHeavenCameraIconPainter oldDelegate) {
+    return oldDelegate.color != color;
+  }
+}
 
 class _GlassCircleIconButton extends StatelessWidget {
   const _GlassCircleIconButton({

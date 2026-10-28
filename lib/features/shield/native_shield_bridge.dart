@@ -42,6 +42,7 @@ class WebContextMenuData {
 typedef NativeWebContextMenuCallback = void Function(WebContextMenuData data);
 typedef NativeOpenNewTabCallback = void Function(String url);
 typedef NativeWebUserInteractionCallback = void Function(String url);
+typedef NativeDirectDownloadCallback = void Function(String url);
 
 class HeavenShieldStats {
   const HeavenShieldStats({
@@ -83,6 +84,8 @@ class NativeShieldBridge {
       <int, NativeWebContextMenuCallback>{};
   final Map<int, NativeOpenNewTabCallback> _openNewTabListeners =
       <int, NativeOpenNewTabCallback>{};
+  final Map<int, NativeDirectDownloadCallback> _directDownloadListeners =
+      <int, NativeDirectDownloadCallback>{};
   final Map<int, NativeWebUserInteractionCallback> _userInteractionListeners =
       <int, NativeWebUserInteractionCallback>{};
 
@@ -196,6 +199,13 @@ class NativeShieldBridge {
       final String interactedUrl = (rawArgs['url']?.toString() ?? '').trim();
       if (interactedUrl.isNotEmpty) {
         _userInteractionListeners[webViewId]?.call(interactedUrl);
+      }
+    } else if (call.method == 'onDirectDownloadRequest' &&
+        rawArgs is Map<Object?, Object?>) {
+      final int webViewId = (rawArgs['webViewId'] as num?)?.toInt() ?? -1;
+      final String targetUrl = (rawArgs['url']?.toString() ?? '').trim();
+      if (targetUrl.isNotEmpty && webViewId >= 0) {
+        _directDownloadListeners[webViewId]?.call(targetUrl);
       }
     }
     return null;
@@ -339,6 +349,7 @@ class NativeShieldBridge {
     NativeWebContextMenuCallback? onContextMenu,
     NativeOpenNewTabCallback? onOpenNewTabRequest,
     NativeWebUserInteractionCallback? onUserInteraction,
+    NativeDirectDownloadCallback? onDirectDownloadRequest,
   }) async {
     _pullProgressListeners[webViewId] = onPullProgress;
     _pullRefreshListeners[webViewId] = onPullRefresh;
@@ -362,6 +373,9 @@ class NativeShieldBridge {
     }
     if (onUserInteraction != null) {
       _userInteractionListeners[webViewId] = onUserInteraction;
+    }
+    if (onDirectDownloadRequest != null) {
+      _directDownloadListeners[webViewId] = onDirectDownloadRequest;
     }
     try {
       await _channel.invokeMethod<bool>('attachToWebView', <String, Object?>{
@@ -445,6 +459,7 @@ class NativeShieldBridge {
     _scrollNavListeners.remove(webViewId);
     _contextMenuListeners.remove(webViewId);
     _openNewTabListeners.remove(webViewId);
+    _directDownloadListeners.remove(webViewId);
     _userInteractionListeners.remove(webViewId);
   }
 

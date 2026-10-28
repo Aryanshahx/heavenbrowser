@@ -418,6 +418,7 @@ public class HeavenShieldPlugin
   private boolean pendingLensWantFront = false;
   private MethodChannel.Result pendingLensGalleryResult;
   private volatile boolean pendingShowKeyboardOnWindowFocus = false;
+  private volatile long pendingShowKeyboardUntilMs = 0L;
 
   public HeavenShieldPlugin() {}
 
@@ -551,7 +552,6 @@ public class HeavenShieldPlugin
 
   public void onWindowFocusChanged(boolean hasFocus) {
     if (hasFocus && this.pendingShowKeyboardOnWindowFocus) {
-      this.pendingShowKeyboardOnWindowFocus = false;
       showSoftKeyboardNow();
       mainHandler.postDelayed(this::showSoftKeyboardNow, 65L);
       MethodChannel ch = this.channel;
@@ -562,8 +562,15 @@ public class HeavenShieldPlugin
   }
 
   private void triggerKeyboardIfWindowFocused() {
+    if (!this.pendingShowKeyboardOnWindowFocus) {
+      return;
+    }
+    if (SystemClock.elapsedRealtime() > this.pendingShowKeyboardUntilMs) {
+      this.pendingShowKeyboardOnWindowFocus = false;
+      return;
+    }
     Activity act = this.activity;
-    if (act != null && act.hasWindowFocus() && this.pendingShowKeyboardOnWindowFocus) {
+    if (act != null && act.hasWindowFocus()) {
       onWindowFocusChanged(true);
     }
   }
@@ -1079,11 +1086,7 @@ public class HeavenShieldPlugin
         break;
 
       case "showSoftKeyboard":
-        this.pendingShowKeyboardOnWindowFocus = true;
-        showSoftKeyboardNow();
-        if (this.activity != null && this.activity.hasWindowFocus()) {
-          this.pendingShowKeyboardOnWindowFocus = false;
-        }
+        requestGuaranteedSoftKeyboard();
         result.success(true);
         break;
 
@@ -2023,6 +2026,115 @@ public class HeavenShieldPlugin
         });
   }
 
+  private void emitDirectDownloadRequest(final long webViewId, final String url) {
+    if (url == null || url.trim().isEmpty()) {
+      return;
+    }
+    final String cleanUrl = url.trim();
+    mainHandler.post(
+        () -> {
+          MethodChannel ch = this.channel;
+          if (ch != null) {
+            Map<String, Object> payload = new HashMap<>(4);
+            payload.put("webViewId", webViewId);
+            payload.put("url", cleanUrl);
+            ch.invokeMethod("onDirectDownloadRequest", payload);
+          }
+        });
+  }
+
+  private static final String[] DIRECT_FILE_DOWNLOAD_EXTENSIONS = {
+    "apk", "zip", "rar", "7z", "tar", "gz", "tgz", "bz2", "xz",
+    "mp4", "mkv", "avi", "mov", "wmv", "flv", "webm", "m4v", "3gp",
+    "mp3", "m4a", "aac", "flac", "wav", "ogg", "opus", "wma",
+    "exe", "msi", "dmg", "iso", "deb", "rpm", "torrent", "epub", "jar"
+  };
+
+  /** True when the URL points at a direct downloadable file (Brave-style popup handling). */
+  static boolean isLikelyDirectFileUrl(String url) {
+    if (url == null) {
+      return false;
+    }
+    String u = url.trim();
+    if (u.isEmpty()
+        || !(u.regionMatches(true, 0, "http://", 0, 7)
+            || u.regionMatches(true, 0, "https://", 0, 8))) {
+      return false;
+    }
+    int hash = u.indexOf('#');
+    String noFrag = hash >= 0 ? u.substring(0, hash) : u;
+    int q = noFrag.indexOf('?');
+    String path = q >= 0 ? noFrag.substring(0, q) : noFrag;
+    String query = q >= 0 ? noFrag.substring(q + 1) : "";
+    int slash = path.lastIndexOf('/');
+    String file = slash >= 0 ? path.substring(slash + 1) : path;
+    int dot = file.lastIndexOf('.');
+    if (dot > 0 && dot < file.length() - 1) {
+      String ext = file.substring(dot + 1).toLowerCase(Locale.US);
+      for (String candidate : DIRECT_FILE_DOWNLOAD_EXTENSIONS) {
+        if (candidate.equals(ext)) {
+          return true;
+        }
+      }
+    }
+    String ql = query.toLowerCase(Locale.US);
+    return ql.contains("download=1")
+        || ql.contains("download=true")
+        || ql.contains("dl=1")
+        || ql.contains("dl=true");
+  }
+
+  /**
+   * Resolves an intent:// popup/redirect URL exactly like Chrome/Brave: prefer
+   * browser_fallback_url, then the intent data as https, else hand it to the
+   * target app. Returns null when the popup should simply be dropped.
+   */
+  private String resolveIntentStylePopupUrl(String intentUrl) {
+    try {
+      Intent parsed = Intent.parseUri(intentUrl, Intent.URI_INTENT_SCHEME);
+      String fallback = parsed.getStringExtra("browser_fallback_url");
+      if (fallback != null
+          && (fallback.regionMatches(true, 0, "http://", 0, 7)
+              || fallback.regionMatches(true, 0, "https://", 0, 8))) {
+        return fallback.trim();
+      }
+      String data = parsed.getDataString();
+      if (data != null && data.regionMatches(true, 0, "intent://", 0, 9)) {
+        return "https://" + data.substring("intent://".length());
+      }
+      Activity act = this.activity;
+      if (act != null) {
+        parsed.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+        try {
+          act.startActivity(parsed);
+        } catch (Throwable ignored) {
+        }
+      }
+      return null;
+    } catch (Throwable ignored) {
+      return null;
+    }
+  }
+
+  private static final long[] KEYBOARD_RETRY_DELAY_MS = {
+    40L, 120L, 260L, 520L, 900L, 1500L, 2200L
+  };
+
+  /**
+   * Guaranteed keyboard popup for Home Screen Widget taps: keeps re-asserting
+   * the soft keyboard (and notifying Flutter) until it is truly visible, even
+   * when Flutter attaches its editable focus several frames AFTER the window
+   * gains focus (cold app start) or after the launch transition.
+   */
+  private void requestGuaranteedSoftKeyboard() {
+    this.pendingShowKeyboardOnWindowFocus = true;
+    this.pendingShowKeyboardUntilMs = SystemClock.elapsedRealtime() + 4000L;
+    showSoftKeyboardNow();
+    for (long delay : KEYBOARD_RETRY_DELAY_MS) {
+      mainHandler.postDelayed(this::triggerKeyboardIfWindowFocused, delay);
+    }
+  }
+
   private void installMultiWindowTabSupport(final WebView webView, final long webViewId) {
     if (webView == null) {
       return;
@@ -2133,6 +2245,10 @@ public class HeavenShieldPlugin
                 transportWv.stopLoading();
                 transportWv.setWebViewClient(new WebViewClient());
                 transportWv.destroy();
+                // Persist any cookies the ad/popunder chain just set so the
+                // NEXT tap on the same download button passes straight through
+                // to the real download page (exactly like Brave does)!
+                flushCookiesAsyncThrottled();
               } catch (Throwable ignored) {
               }
             };
@@ -2150,6 +2266,24 @@ public class HeavenShieldPlugin
                   return;
                 }
                 if (dispatched.compareAndSet(false, true)) {
+                  // Brave-style pirated-site download flow: a popup whose final
+                  // target is a DIRECT file becomes an instant background
+                  // download (never a junk blank tab)...
+                  if (isLikelyDirectFileUrl(trimmed)) {
+                    mainHandler.post(cleanup);
+                    emitDirectDownloadRequest(webViewId, trimmed);
+                    return;
+                  }
+                  // ...and intent:// ad redirects resolve exactly like
+                  // Chrome/Brave (browser_fallback_url or the target app).
+                  if (trimmed.regionMatches(true, 0, "intent:", 0, 7)) {
+                    String resolved = resolveIntentStylePopupUrl(trimmed);
+                    if (resolved == null) {
+                      mainHandler.post(cleanup);
+                      return;
+                    }
+                    trimmed = resolved;
+                  }
                   mainHandler.post(cleanup);
                   emitOpenNewTabRequest(webViewId, trimmed);
                 }
@@ -4654,8 +4788,7 @@ public class HeavenShieldPlugin
       return;
     }
     if ("omnibox".equals(payload.get("type"))) {
-      this.pendingShowKeyboardOnWindowFocus = true;
-      mainHandler.post(this::showSoftKeyboardNow);
+      requestGuaranteedSoftKeyboard();
     }
     if (isNewRuntimeIntent && this.channel != null) {
       final Map<String, Object> dispatch = payload;

@@ -12,6 +12,7 @@ import '../../../news/interest_news_service.dart';
 import '../../../search/heaven_search_service.dart';
 import '../../../settings/browser_settings.dart';
 import '../../../shield/native_shield_bridge.dart';
+import 'visual_search_sheet.dart' show ModernHeavenCameraIcon;
 
 class StartPage extends StatefulWidget {
   const StartPage({
@@ -456,10 +457,9 @@ class _StartPageState extends State<StartPage> {
             IconButton(
               key: const Key('home_camera_lens_button'),
               onPressed: widget.onCameraSearch,
-              icon: Icon(
-                Icons.photo_camera_outlined,
+              icon: ModernHeavenCameraIcon(
+                size: 21,
                 color: colors.primary,
-                size: 20,
               ),
               tooltip: 'Camera Search',
               style: IconButton.styleFrom(
