@@ -411,58 +411,67 @@ class _HeavenLensCameraScreenState extends State<HeavenLensCameraScreen>
                 constraints.maxWidth,
                 constraints.maxHeight,
               );
-              return GestureDetector(
-                behavior: HitTestBehavior.translucent,
-                onTapUp: (TapUpDetails d) => _handleViewfinderTap(d, boxSize),
-                onScaleStart: (_) => _baseScaleZoom = _zoom,
-                onScaleUpdate: (ScaleUpdateDetails d) {
-                  if (_frozenImageBytes != null || d.pointerCount < 2) return;
-                  final double next = (_baseScaleZoom * d.scale).clamp(
-                    1.0,
-                    _maxZoom,
-                  );
-                  if ((next - _zoom).abs() >= 0.04) {
-                    setState(() => _zoom = next);
-                    unawaited(NativeShieldBridge.instance.lensSetZoom(next));
-                  }
-                },
-                child: AnimatedBuilder(
-                  animation: _scanAnimController,
-                  builder: (BuildContext context, _) {
-                    return Stack(
-                      fit: StackFit.expand,
-                      children: <Widget>[
-                        CustomPaint(
+              // The 4 corner drag handles live in their OWN layer strictly
+              // ABOVE the tap/pinch layer so dragging a corner ALWAYS wins
+              // the gesture arena (pinch-zoom can never swallow a crop drag)!
+              return Stack(
+                fit: StackFit.expand,
+                children: <Widget>[
+                  GestureDetector(
+                    behavior: HitTestBehavior.translucent,
+                    onTapUp: (TapUpDetails d) =>
+                        _handleViewfinderTap(d, boxSize),
+                    onScaleStart: (_) => _baseScaleZoom = _zoom,
+                    onScaleUpdate: (ScaleUpdateDetails d) {
+                      if (_frozenImageBytes != null || d.pointerCount < 2) {
+                        return;
+                      }
+                      final double next = (_baseScaleZoom * d.scale).clamp(
+                        1.0,
+                        _maxZoom,
+                      );
+                      if ((next - _zoom).abs() >= 0.04) {
+                        setState(() => _zoom = next);
+                        unawaited(
+                          NativeShieldBridge.instance.lensSetZoom(next),
+                        );
+                      }
+                    },
+                    child: AnimatedBuilder(
+                      animation: _scanAnimController,
+                      builder: (BuildContext context, _) {
+                        return CustomPaint(
                           painter: _GoogleLensFramePainter(
                             cropRect: _cropRect,
                             scanProgress: _scanAnimController.value,
                             isSearching: _searchingLens,
-                            dimOutside: _hasCustomCrop || _editingGalleryCrop,
+                            dimOutside:
+                                _hasCustomCrop || _editingGalleryCrop,
                           ),
-                        ),
-                        ..._buildCornerDragHandles(boxSize),
-                        if (_focusTapOffset != null)
-                          Positioned(
-                            left: _focusTapOffset!.dx - 26,
-                            top: _focusTapOffset!.dy - 26,
-                            child: IgnorePointer(
-                              child: Container(
-                                width: 52,
-                                height: 52,
-                                decoration: BoxDecoration(
-                                  shape: BoxShape.circle,
-                                  border: Border.all(
-                                    color: AppTheme.heavenAccent,
-                                    width: 2,
-                                  ),
-                                ),
-                              ),
+                        );
+                      },
+                    ),
+                  ),
+                  ..._buildCornerDragHandles(boxSize),
+                  if (_focusTapOffset != null)
+                    Positioned(
+                      left: _focusTapOffset!.dx - 26,
+                      top: _focusTapOffset!.dy - 26,
+                      child: IgnorePointer(
+                        child: Container(
+                          width: 52,
+                          height: 52,
+                          decoration: BoxDecoration(
+                            shape: BoxShape.circle,
+                            border: Border.all(
+                              color: AppTheme.heavenAccent,
+                              width: 2,
                             ),
                           ),
-                      ],
-                    );
-                  },
-                ),
+                        ),
+                      ),
+                    ),
+                ],
               );
             },
           ),
@@ -472,6 +481,9 @@ class _HeavenLensCameraScreenState extends State<HeavenLensCameraScreen>
             child: Column(
               children: <Widget>[
                 _buildTopBar(context),
+                // "Add to your search" lives at the TOP (right under the top
+                // bar) so the soft keyboard can NEVER overlap it while typing!
+                _buildMultimodalAskBar(),
                 if (_hasCustomCrop || _editingGalleryCrop)
                   Padding(
                     padding: const EdgeInsets.only(top: 6),
@@ -575,26 +587,10 @@ class _HeavenLensCameraScreenState extends State<HeavenLensCameraScreen>
                       ],
                     ),
                   ),
-                // Keyboard-aware studio dock: the ENTIRE dock (ask bar +
-                // modes + shutter + gallery) lifts above the soft keyboard
-                // TOGETHER, so "Add to your search" never overlaps the
-                // mode selector or the shutter while typing!
-                Padding(
-                  padding: EdgeInsets.only(
-                    bottom: MediaQuery.viewInsetsOf(context).bottom,
-                  ),
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: <Widget>[
-                      _buildMultimodalAskBar(),
-                      const SizedBox(height: 10),
-                      _buildModeSelectorRow(),
-                      const SizedBox(height: 14),
-                      _buildBottomShutterAndGalleryDock(),
-                      const SizedBox(height: 12),
-                    ],
-                  ),
-                ),
+                _buildModeSelectorRow(),
+                const SizedBox(height: 14),
+                _buildBottomShutterAndGalleryDock(),
+                const SizedBox(height: 12),
               ],
             ),
           ),
@@ -982,70 +978,9 @@ class _HeavenLensCameraScreenState extends State<HeavenLensCameraScreen>
               ),
             ),
 
-            // Right: Interactive Crop Frame toggle — drag the 4 corners of the
-            // viewfinder frame to select exactly what to search!
-            Expanded(
-              child: Align(
-                alignment: Alignment.centerRight,
-                child: Material(
-                  color: _hasCustomCrop
-                      ? AppTheme.electricBlue.withValues(alpha: 0.42)
-                      : Colors.white.withValues(alpha: 0.13),
-                  borderRadius: BorderRadius.circular(26),
-                  child: InkWell(
-                    key: const Key('lens_crop_frame_button'),
-                    borderRadius: BorderRadius.circular(26),
-                    onTap: () {
-                      HapticFeedback.selectionClick();
-                      setState(() {
-                        if (_hasCustomCrop) {
-                          _cropRect = const Rect.fromLTRB(
-                            0.10,
-                            0.16,
-                            0.90,
-                            0.80,
-                          );
-                          _hasCustomCrop = false;
-                        } else {
-                          _hasCustomCrop = true;
-                        }
-                      });
-                    },
-                    child: Padding(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 13,
-                        vertical: 11,
-                      ),
-                      child: Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: <Widget>[
-                          Icon(
-                            Icons.crop_rounded,
-                            color: _hasCustomCrop
-                                ? AppTheme.heavenAccent
-                                : Colors.white,
-                            size: 19,
-                          ),
-                          const SizedBox(width: 6),
-                          Flexible(
-                            child: Text(
-                              _hasCustomCrop ? 'Framed' : 'Crop',
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                              style: const TextStyle(
-                                color: Colors.white,
-                                fontSize: 12.5,
-                                fontWeight: FontWeight.w700,
-                              ),
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ),
-                ),
-              ),
-            ),
+            // Right: kept clear — the crop frame is adjusted by simply
+            // dragging the 4 viewfinder corners (no extra button needed)!
+            const Expanded(child: SizedBox.shrink()),
           ],
         ),
       ),
@@ -1084,45 +1019,68 @@ class _ModernHeavenCameraIconPainter extends CustomPainter {
 
   @override
   void paint(Canvas canvas, Size size) {
+    // Exact 1:1 mirror of the Home Screen Widget's ic_widget_camera.xml
+    // vector (24x24 viewport) so the in-app camera icon always matches the
+    // widget camera icon perfectly!
+    final double s = size.width / 24.0;
     final Paint stroke = Paint()
       ..color = color
       ..style = PaintingStyle.stroke
-      ..strokeWidth = math.max(1.4, size.width * 0.085)
+      ..strokeWidth = 2.05 * s
       ..strokeCap = StrokeCap.round
       ..strokeJoin = StrokeJoin.round;
     final Paint fill = Paint()
       ..color = color
       ..style = PaintingStyle.fill;
 
-    final double w = size.width;
-    final double h = size.height;
-
-    // Top-left bracket
-    canvas.drawLine(Offset(w * 0.08, h * 0.32), Offset(w * 0.08, h * 0.17), stroke);
-    canvas.drawLine(Offset(w * 0.08, h * 0.17), Offset(w * 0.23, h * 0.17), stroke);
-    // Bottom-left bracket
-    canvas.drawLine(Offset(w * 0.08, h * 0.68), Offset(w * 0.08, h * 0.83), stroke);
-    canvas.drawLine(Offset(w * 0.08, h * 0.83), Offset(w * 0.23, h * 0.83), stroke);
-    // Bottom-right bracket
-    canvas.drawLine(Offset(w * 0.77, h * 0.83), Offset(w * 0.92, h * 0.83), stroke);
-    canvas.drawLine(Offset(w * 0.92, h * 0.83), Offset(w * 0.92, h * 0.68), stroke);
+    // Top-left bracket with rounded corner
+    final Path tl = Path()
+      ..moveTo(3.5 * s, 8.6 * s)
+      ..lineTo(3.5 * s, 6.7 * s)
+      ..arcToPoint(
+        Offset(6.7 * s, 3.5 * s),
+        radius: Radius.circular(3.2 * s),
+      )
+      ..lineTo(8.6 * s, 3.5 * s);
+    // Bottom-left bracket with rounded corner
+    final Path bl = Path()
+      ..moveTo(3.5 * s, 15.4 * s)
+      ..lineTo(3.5 * s, 17.3 * s)
+      ..arcToPoint(
+        Offset(6.7 * s, 20.5 * s),
+        radius: Radius.circular(3.2 * s),
+      )
+      ..lineTo(8.6 * s, 20.5 * s);
+    // Bottom-right bracket with rounded corner
+    final Path br = Path()
+      ..moveTo(15.4 * s, 20.5 * s)
+      ..lineTo(17.3 * s, 20.5 * s)
+      ..arcToPoint(
+        Offset(20.5 * s, 17.3 * s),
+        radius: Radius.circular(3.2 * s),
+      )
+      ..lineTo(20.5 * s, 15.4 * s);
+    canvas.drawPath(tl, stroke);
+    canvas.drawPath(bl, stroke);
+    canvas.drawPath(br, stroke);
 
     // Central optical iris ring
-    canvas.drawCircle(Offset(w * 0.44, h * 0.54), w * 0.27, stroke);
+    canvas.drawCircle(
+      Offset(12 * s, 12 * s),
+      3.5 * s,
+      stroke..strokeWidth = 2.0 * s,
+    );
 
     // Top-right 4-point sparkle accent
-    final double sx = w * 0.80;
-    final double sy = h * 0.20;
-    final double sr = w * 0.13;
     final Path sparkle = Path()
-      ..moveTo(sx, sy - sr)
-      ..lineTo(sx + sr * 0.24, sy - sr * 0.24)
-      ..lineTo(sx + sr, sy)
-      ..lineTo(sx + sr * 0.24, sy + sr * 0.24)
-      ..lineTo(sx, sy + sr)
-      ..lineTo(sx - sr * 0.24, sy + sr * 0.24)
-      ..lineTo(sx - sr, sy)
-      ..lineTo(sx - sr * 0.24, sy - sr * 0.24)
+      ..moveTo(18.2 * s, 3.4 * s)
+      ..lineTo(18.85 * s, 4.95 * s)
+      ..lineTo(20.4 * s, 5.6 * s)
+      ..lineTo(18.85 * s, 6.25 * s)
+      ..lineTo(18.2 * s, 7.8 * s)
+      ..lineTo(17.55 * s, 6.25 * s)
+      ..lineTo(16.0 * s, 5.6 * s)
+      ..lineTo(17.55 * s, 4.95 * s)
       ..close();
     canvas.drawPath(sparkle, fill);
   }

@@ -40,7 +40,7 @@ class WebContextMenuData {
 }
 
 typedef NativeWebContextMenuCallback = void Function(WebContextMenuData data);
-typedef NativeOpenNewTabCallback = void Function(String url);
+typedef NativeOpenNewTabCallback = void Function(String url, bool background);
 typedef NativeWebUserInteractionCallback = void Function(String url);
 typedef NativeDirectDownloadCallback = void Function(String url);
 
@@ -185,12 +185,13 @@ class NativeShieldBridge {
         rawArgs is Map<Object?, Object?>) {
       final int webViewId = (rawArgs['webViewId'] as num?)?.toInt() ?? -1;
       final String targetUrl = (rawArgs['url']?.toString() ?? '').trim();
+      final bool background = rawArgs['background'] == true;
       if (targetUrl.isNotEmpty) {
         final NativeOpenNewTabCallback? cb = _openNewTabListeners[webViewId];
         if (cb != null) {
-          cb(targetUrl);
+          cb(targetUrl, background);
         } else {
-          onGlobalOpenNewTabRequest?.call(targetUrl);
+          onGlobalOpenNewTabRequest?.call(targetUrl, background);
         }
       }
     } else if (call.method == 'onWebUserInteraction' &&

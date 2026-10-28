@@ -266,13 +266,14 @@ class TabManagerController extends ChangeNotifier {
                     : null,
                 previewBytes: restoredPreview,
               );
-              engine.onNewTabRequested = (String targetUrl) {
+              engine.onNewTabRequested = (String targetUrl, bool background) {
                 unawaited(
                   openNewTab(
                     incognito: restoredTab.isIncognito,
                     initialInput: targetUrl,
                     openerTabId: restoredTab.id,
                     groupId: restoredTab.groupId,
+                    switchTo: !background,
                   ),
                 );
               };
@@ -533,13 +534,14 @@ class TabManagerController extends ChangeNotifier {
       openerTabId: openerTabId,
       groupId: groupId,
     );
-    engine.onNewTabRequested = (String targetUrl) {
+    engine.onNewTabRequested = (String targetUrl, bool background) {
       unawaited(
         openNewTab(
           incognito: tab.isIncognito,
           initialInput: targetUrl,
           openerTabId: tab.id,
           groupId: tab.groupId,
+          switchTo: !background,
         ),
       );
     };

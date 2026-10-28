@@ -398,10 +398,6 @@ class _StartPageState extends State<StartPage> {
                 _submitHomeSearch(typed);
               }
             },
-            onOpenEngineSettings: (SearchEngine engine) async {
-              await widget.settings.setSearchEngine(engine);
-              widget.onSelectUrl(engine.settingsUrl);
-            },
           ),
           const SizedBox(width: 10),
           Expanded(

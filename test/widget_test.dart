@@ -957,22 +957,32 @@ void main() {
       await tester.tap(find.byIcon(Icons.close_rounded));
       await tester.pumpAndSettle();
 
-      // 4b. Top bar has ZERO Heaven Shield icon, and Search Engine chip opens the engine's own settings!
+      // 4b. Top bar has ZERO Heaven Shield icon, and the Search Engine picker
+      // from the search bar is a CLEAN engine list (no settings entries)!
       expect(find.byKey(const Key('top_bar_shield_button')), findsNothing);
       await tester.tap(find.byKey(const Key('tiny_search_engine_switcher')).first);
       await tester.pumpAndSettle();
       expect(
         find.byKey(const Key('popup_current_engine_settings_item')),
-        findsOneWidget,
+        findsNothing,
       );
+      expect(
+        find.byKey(const Key('popup_engine_settings_google')),
+        findsNothing,
+      );
+      // Selecting an engine from the clean picker just switches engines!
       await tester.tap(
-        find.byKey(const Key('popup_current_engine_settings_item')),
+        find.byKey(const Key('popup_search_engine_bing')),
       );
       await tester.pumpAndSettle();
-      expect(
-        tabManager.activeEngine.currentUrl,
-        SearchEngine.google.settingsUrl,
+      expect(settings.searchEngine, SearchEngine.bing);
+      await tester.tap(find.byKey(const Key('tiny_search_engine_switcher')).first);
+      await tester.pumpAndSettle();
+      await tester.tap(
+        find.byKey(const Key('popup_search_engine_google')),
       );
+      await tester.pumpAndSettle();
+      expect(settings.searchEngine, SearchEngine.google);
 
       // 5. Starting a download displays tappable 'Download started' popup banner -> tapping it opens Downloads IN A TAB!
       await downloads.startUrlDownload(
@@ -2547,7 +2557,7 @@ void main() {
         expect(find.text('Back to Live Camera'), findsOneWidget);
         expect(
           find.byKey(const Key('lens_crop_frame_button')),
-          findsOneWidget,
+          findsNothing,
         );
         expect(lastLensMode, isEmpty);
 
@@ -2573,11 +2583,12 @@ void main() {
         await tester.pumpAndSettle();
         expect(tabManager.activeEngine.isShowingStartPage, isTrue);
 
-        // User opens Website A
+        // User opens Website A (2 tabs total: the Heaven Search Widget tap
+        // earlier opened its own fresh new tab!)
         await tabManager.activeEngine.loadUserEntry('https://site-a.com/news');
         await tester.pumpAndSettle();
         expect(tabManager.activeEngine.currentUrl, 'https://site-a.com/news');
-        expect(tabManager.totalTabCount, 1);
+        expect(tabManager.totalTabCount, 2);
 
         // Website A redirects via intermediate hop -> Website B inside the SAME tab!
         tabManager.activeEngine.recordHeadlessWebsiteRedirect(
@@ -2593,7 +2604,7 @@ void main() {
           tabManager.activeEngine.currentUrl,
           'https://site-b.org/final-article',
         );
-        expect(tabManager.totalTabCount, 1);
+        expect(tabManager.totalTabCount, 2);
         expect(tabManager.activeEngine.canGoBack, isTrue);
 
         // First Back -> skips intermediate redirect hop and lands cleanly back on Website A!
@@ -2757,13 +2768,23 @@ void main() {
             findsOneWidget,
           );
 
-          // 3. Home Screen search engine chip exposes per-engine settings gear -> opens DuckDuckGo settings!
+          // 3. Home Screen search engine chip is a CLEAN picker (settings
+          // entries removed from the bottom picker) and switches engines
+          // instantly!
           await tester.tap(
             find.byKey(const Key('tiny_search_engine_switcher')).last,
           );
           await tester.pumpAndSettle();
-          await tester.tap(
+          expect(
             find.byKey(const Key('popup_engine_settings_duckDuckGo')),
+            findsNothing,
+          );
+          expect(
+            find.byKey(const Key('popup_current_engine_settings_item')),
+            findsNothing,
+          );
+          await tester.tap(
+            find.byKey(const Key('popup_search_engine_duckDuckGo')),
           );
           await tester.pumpAndSettle();
 
@@ -2771,10 +2792,7 @@ void main() {
               .widget<BrowserScreen>(find.byType(BrowserScreen))
               .tabManager;
           expect(settings.searchEngine, SearchEngine.duckDuckGo);
-          expect(
-            tabManager.activeEngine.currentUrl,
-            'https://duckduckgo.com/settings',
-          );
+          expect(tabManager.activeEngine.isShowingStartPage, isTrue);
 
           // 4. SettingsScreen exposes active engine settings tile + per-engine gear in Search Engine picker!
           await tester.tap(find.byTooltip('Browser Menu'));
@@ -3306,13 +3324,14 @@ void main() {
           expect(find.text('1x'), findsNothing);
           expect(find.text('2x'), findsNothing);
 
-          // Crop is now a REAL working toggle: enable the crop frame...
-          final Finder cropBtn = find.byKey(const Key('lens_crop_frame_button'));
-          expect(cropBtn, findsOneWidget);
-          await tester.tap(cropBtn);
-          await tester.pump(const Duration(milliseconds: 200));
+          // The Crop button is gone — crop works by simply dragging the
+          // viewfinder corners directly!
+          expect(
+            find.byKey(const Key('lens_crop_frame_button')),
+            findsNothing,
+          );
 
-          // ...drag the bottom-right corner handle (interactive crop WORKS!)...
+          // Drag the bottom-right corner handle (interactive crop WORKS!)...
           await tester.drag(
             find.byKey(const Key('lens_crop_corner_bottomRight')),
             const Offset(-36, -28),
@@ -3331,14 +3350,18 @@ void main() {
             findsNothing,
           );
 
-          // The "Add to your search" area NEVER overlaps the shutter/mode
-          // dock while the soft keyboard is up — the whole dock lifts together!
+          // "Add to your search" now lives at the TOP — the soft keyboard can
+          // NEVER overlap it, and it stays above the mode/shutter dock!
           tester.view.viewInsets = FakeViewPadding(bottom: 300);
           await tester.pump(const Duration(milliseconds: 200));
-          final double askBarBottom = tester.getBottomLeft(
+          final double askBarTop = tester.getTopLeft(
             find.byKey(const Key('lens_multimodal_query_field')),
           ).dy;
-          expect(askBarBottom, lessThan(915 - 300 + 1));
+          final double shutterTop = tester.getTopLeft(
+            find.byKey(const Key('lens_shutter_capture_button')),
+          ).dy;
+          expect(askBarTop, lessThan(200));
+          expect(askBarTop, lessThan(shutterTop - 100));
           tester.view.viewInsets = FakeViewPadding.zero;
           await tester.pump(const Duration(milliseconds: 200));
 
@@ -3460,6 +3483,260 @@ void main() {
           expect(fnEnd, greaterThan(fnStart));
           final String fnBody = browserScreen.substring(fnStart, fnEnd);
           expect(fnBody, isNot(contains('showSoftKeyboard')));
+
+          vpn.dispose();
+          newsService.dispose();
+          downloads.dispose();
+          interests.dispose();
+          settings.dispose();
+        },
+      );
+    },
+  );
+
+  group(
+    'Step 32: Widget New-Tab Actions, Matching Camera Icons, Clean Engine Picker & Background Popunders',
+    () {
+      test(
+        'Script popunders open in background tabs (user stays on the download page) while tapped target=_blank links switch tabs',
+        () async {
+          SharedPreferences.setMockInitialValues(<String, Object>{});
+          final SharedPreferences prefs = await SharedPreferences.getInstance();
+          final BrowserSettingsController settings = BrowserSettingsController(
+            prefs,
+          );
+          final TabManagerController tabManager = TabManagerController(
+            settings: settings,
+            enablePlatformWebView: false,
+          );
+
+          await tabManager.activeEngine.loadUserEntry(
+            'https://pirate.example/download-page',
+          );
+          final String pirateTabId = tabManager.activeTab.id;
+
+          // A script-opened popunder (NO user gesture) must NEVER steal focus —
+          // the user stays on the pirated download page like in Brave!
+          tabManager.activeEngine.requestNewTabFromEngine(
+            'https://unknown-ad.example/popunder',
+            background: true,
+          );
+          await Future<void>.delayed(const Duration(milliseconds: 20));
+          expect(tabManager.totalTabCount, 2);
+          expect(tabManager.activeTab.id, pirateTabId);
+          expect(
+            tabManager.activeEngine.currentUrl,
+            'https://pirate.example/download-page',
+          );
+          expect(
+            tabManager.allTabs
+                .lastWhere(
+                  (BrowserTab t) => t.id != pirateTabId,
+                )
+                .engine
+                .currentUrl,
+            'https://unknown-ad.example/popunder',
+          );
+
+          // A real user-tapped target="_blank" link opens in the FOREGROUND!
+          tabManager.activeEngine.requestNewTabFromEngine(
+            'https://filehost.example/download',
+            background: false,
+          );
+          await Future<void>.delayed(const Duration(milliseconds: 20));
+          expect(tabManager.totalTabCount, 3);
+          expect(
+            tabManager.activeEngine.currentUrl,
+            'https://filehost.example/download',
+          );
+
+          // Native invariants: isUserGesture-driven background flag + the
+          // longer 8s popup redirect capture window for slow ad chains!
+          final String pluginJava = File(
+            'android/app/src/main/java/com/hypertechlabs/heavenbrowser/HeavenShieldPlugin.java',
+          ).readAsStringSync();
+          expect(pluginJava, contains('payload.put("background"'));
+          expect(pluginJava, contains('!isUserGesture'));
+          expect(pluginJava, contains('8000L'));
+
+          tabManager.dispose();
+          settings.dispose();
+        },
+      );
+
+      test(
+        'In-app camera icon is an exact 1:1 mirror of the Home Screen Widget camera icon',
+        () async {
+          final String sheet = File(
+            'lib/features/browser/presentation/widgets/visual_search_sheet.dart',
+          ).readAsStringSync();
+          // The Flutter painter mirrors ic_widget_camera.xml's 24x24 geometry!
+          expect(sheet, contains('ic_widget_camera.xml'));
+          expect(sheet, contains('Radius.circular(3.2'));
+          expect(sheet, contains('18.85'));
+          expect(sheet, contains('20.4'));
+
+          final String widgetIcon = File(
+            'android/app/src/main/res/drawable/ic_widget_camera.xml',
+          ).readAsStringSync();
+          // The exact same anchors exist in the widget vector!
+          expect(widgetIcon, contains('M18.2,3.4'));
+          expect(widgetIcon, contains('3.5,3.5'));
+          expect(widgetIcon, contains('M12,8.5a3.5,3.5'));
+
+          // The widget logo + camera drawables are still wired into the widget.
+          final String layoutXml = File(
+            'android/app/src/main/res/layout/heaven_search_widget.xml',
+          ).readAsStringSync();
+          expect(layoutXml, contains('@drawable/heaven_widget_logo_icon'));
+          expect(layoutXml, contains('@drawable/ic_widget_camera'));
+        },
+      );
+
+      testWidgets(
+        'Home Screen Widget taps open a fresh NEW TAB ready for typing / camera, keeping the current website untouched',
+        (WidgetTester tester) async {
+          tester.view.physicalSize = const Size(412, 915);
+          tester.view.devicePixelRatio = 1.0;
+          addTearDown(() {
+            tester.view.resetPhysicalSize();
+            tester.view.resetDevicePixelRatio();
+          });
+
+          int lensStartCalls = 0;
+          const MethodChannel nativeChannel = MethodChannel(
+            'com.hypertechlabs.heavenbrowser/native_shield',
+          );
+          TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+              .setMockMethodCallHandler(nativeChannel, (MethodCall call) async {
+                switch (call.method) {
+                  case 'consumeInitialLaunchAction':
+                    return null;
+                  case 'showSoftKeyboard':
+                    return true;
+                  case 'lensStartCamera':
+                    lensStartCalls += 1;
+                    return <String, Object?>{
+                      'ok': true,
+                      'textureId': 7,
+                      'previewWidth': 1080,
+                      'previewHeight': 1440,
+                      'isFront': false,
+                      'hasFlash': true,
+                      'maxZoom': 4.0,
+                    };
+                  case 'lensStopCamera':
+                    return true;
+                }
+                return null;
+              });
+          addTearDown(() {
+            TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+                .setMockMethodCallHandler(nativeChannel, null);
+          });
+
+          SharedPreferences.setMockInitialValues(<String, Object>{});
+          final SharedPreferences prefs = await SharedPreferences.getInstance();
+          final BrowserSettingsController settings = BrowserSettingsController(
+            prefs,
+          );
+          final DownloadsController downloads = DownloadsController(
+            prefs,
+            enableNativePolling: false,
+          );
+          final InterestProfileController interests =
+              InterestProfileController(prefs);
+          final HeavenNewsFeedService newsService = _createMockNewsService(
+            prefs,
+            interests,
+          );
+          final VpnController vpn = VpnController(
+            prefs,
+            enableNativePolling: false,
+            client: MockClient(
+              (_) async =>
+                  http.Response('ip=89.187.173.169\nloc=US\nwarp=off\n', 200),
+            ),
+          );
+
+          await tester.pumpWidget(
+            HeavenBrowserApp(
+              settings: settings,
+              downloads: downloads,
+              interests: interests,
+              newsService: newsService,
+              searchService: _createMockSearchService(),
+              vpn: vpn,
+              enablePlatformWebView: false,
+            ),
+          );
+          await tester.pumpAndSettle();
+
+          final TabManagerController tabManager = tester
+              .widget<BrowserScreen>(find.byType(BrowserScreen))
+              .tabManager;
+
+          // User is browsing a website in Tab 1...
+          await tabManager.activeEngine.loadUserEntry(
+            'https://pirate.example/movie',
+          );
+          await tester.pumpAndSettle();
+          final String websiteTabId = tabManager.activeTab.id;
+          expect(tabManager.totalTabCount, 1);
+
+          // 1. Widget search bar tap -> NEW TAB opens + instantly ready for typing!
+          NativeShieldBridge.instance.onExternalLaunchAction?.call(
+            const <String, Object?>{'type': 'omnibox'},
+          );
+          await tester.pump();
+          await tester.pump(const Duration(milliseconds: 500));
+          await tester.pumpAndSettle();
+          expect(tabManager.totalTabCount, 2);
+          expect(tabManager.activeTab.id, isNot(websiteTabId));
+          expect(tabManager.activeEngine.isShowingStartPage, isTrue);
+          expect(
+            find.byKey(const Key('top_omnibox_textfield')),
+            findsOneWidget,
+          );
+          // The user's website tab is still perfectly intact!
+          expect(
+            tabManager.allTabs
+                .firstWhere((BrowserTab t) => t.id == websiteTabId)
+                .engine
+                .currentUrl,
+            'https://pirate.example/movie',
+          );
+          // Close the omnibox edit overlay.
+          await tester.tap(find.byTooltip('Cancel'));
+          await tester.pumpAndSettle();
+
+          // 2. Widget camera tap -> ANOTHER new tab + Heaven Lens camera opens in it!
+          NativeShieldBridge.instance.onExternalLaunchAction?.call(
+            const <String, Object?>{'type': 'camera'},
+          );
+          await tester.pump();
+          await tester.pump(const Duration(milliseconds: 500));
+          // NOTE: no pumpAndSettle here — the Lens scan animation runs forever!
+          expect(tabManager.totalTabCount, 3);
+          expect(tabManager.activeEngine.isShowingStartPage, isTrue);
+          expect(find.byType(HeavenLensCameraScreen), findsOneWidget);
+          expect(lensStartCalls, 1);
+
+          // 3. Every widget tap ALWAYS opens its own fresh new tab — ready
+          // for typing instantly!
+          await tester.tap(find.byKey(const Key('lens_close_button')));
+          await tester.pumpAndSettle();
+          NativeShieldBridge.instance.onExternalLaunchAction?.call(
+            const <String, Object?>{'type': 'omnibox'},
+          );
+          await tester.pump();
+          await tester.pump(const Duration(milliseconds: 500));
+          await tester.pumpAndSettle();
+          expect(tabManager.totalTabCount, 4);
+          expect(
+            find.byKey(const Key('top_omnibox_textfield')),
+            findsOneWidget,
+          );
 
           vpn.dispose();
           newsService.dispose();

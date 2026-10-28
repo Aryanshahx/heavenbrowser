@@ -208,14 +208,33 @@ class _BrowserScreenState extends State<BrowserScreen>
           }
         }
       case 'omnibox':
-        _beginOmniboxEdit(forceKeyboard: true);
+        unawaited(
+          _runOnFreshWidgetTab(
+            () => _beginOmniboxEdit(forceKeyboard: true),
+          ),
+        );
       case 'voice':
         _closeOmniboxOverlay();
-        unawaited(_triggerVoiceSearch());
+        unawaited(
+          _runOnFreshWidgetTab(() => unawaited(_triggerVoiceSearch())),
+        );
       case 'camera':
         _closeOmniboxOverlay();
-        unawaited(_openHeavenLensCamera(context, _activeEngine));
+        unawaited(
+          _runOnFreshWidgetTab(
+            () => unawaited(_openHeavenLensCamera(context, _activeEngine)),
+          ),
+        );
     }
+  }
+
+  /// Every Home Screen Widget interaction (search bar / voice / camera) opens
+  /// a brand-new tab — the user's current website is never disturbed — and
+  /// the requested function starts immediately inside that new tab.
+  Future<void> _runOnFreshWidgetTab(VoidCallback action) async {
+    await widget.tabManager.openNewTab(incognito: false, switchTo: true);
+    if (!mounted) return;
+    action();
   }
 
   Future<void> _maybePromptFirstLaunchDefaultBrowser() async {
@@ -1744,8 +1763,6 @@ class _BrowserScreenState extends State<BrowserScreen>
           currentEngine: widget.settings.searchEngine,
           onSelected: (SearchEngine sel) =>
               _handleSearchEngineChanged(sel, engine),
-          onOpenEngineSettings: (SearchEngine sel) =>
-              _openSearchEngineOwnSettings(sel, engine),
         ),
         const SizedBox(width: 6),
         Expanded(
@@ -1825,8 +1842,6 @@ class _BrowserScreenState extends State<BrowserScreen>
                 currentEngine: widget.settings.searchEngine,
                 onSelected: (SearchEngine sel) =>
                     _handleSearchEngineChanged(sel, engine),
-                onOpenEngineSettings: (SearchEngine sel) =>
-                    _openSearchEngineOwnSettings(sel, engine),
               ),
             ),
           ),
@@ -1872,17 +1887,6 @@ class _BrowserScreenState extends State<BrowserScreen>
           const SizedBox(width: 5),
       ],
     );
-  }
-
-  Future<void> _openSearchEngineOwnSettings(
-    SearchEngine selected,
-    BrowserEngine engine,
-  ) async {
-    await widget.settings.setSearchEngine(selected);
-    if (_isEditingOmnibox || _showLinkActionsCard) {
-      _closeOmniboxOverlay();
-    }
-    await engine.loadUri(Uri.parse(selected.settingsUrl));
   }
 
   Future<void> _handleSearchEngineChanged(

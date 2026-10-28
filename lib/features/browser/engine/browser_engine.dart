@@ -81,7 +81,10 @@ class BrowserEngine extends ChangeNotifier {
   final BrowserSettingsController settings;
   SitePermissionPromptCallback? onSitePermissionPrompt;
   NativeWebContextMenuCallback? onWebContextMenu;
-  ValueChanged<String>? onNewTabRequested;
+  /// Fired when the page requests a new window/tab. `background` is true for
+  /// script-opened popunders (no user gesture) which must never steal focus
+  /// from the user's current page — exactly like Brave/Chrome.
+  void Function(String url, bool background)? onNewTabRequested;
   final bool isIncognito;
   final bool enablePlatformWebView;
 
@@ -310,10 +313,10 @@ class BrowserEngine extends ChangeNotifier {
 
   void _markUserInitiatedLoad() {}
 
-  void requestNewTabFromEngine(String url) {
+  void requestNewTabFromEngine(String url, {bool background = false}) {
     final String clean = url.trim();
     if (clean.isNotEmpty) {
-      onNewTabRequested?.call(clean);
+      onNewTabRequested?.call(clean, background);
     }
   }
 
@@ -639,8 +642,8 @@ class BrowserEngine extends ChangeNotifier {
         onContextMenu: (WebContextMenuData data) {
           onWebContextMenu?.call(data);
         },
-        onOpenNewTabRequest: (String targetUrl) {
-          requestNewTabFromEngine(targetUrl);
+        onOpenNewTabRequest: (String targetUrl, bool background) {
+          requestNewTabFromEngine(targetUrl, background: background);
         },
         onDirectDownloadRequest: (String targetUrl) {
           unawaited(startDirectPopupFileDownload(targetUrl));

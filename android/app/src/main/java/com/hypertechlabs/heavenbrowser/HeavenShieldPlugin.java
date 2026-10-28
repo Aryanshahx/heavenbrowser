@@ -2020,7 +2020,8 @@ public class HeavenShieldPlugin
     return false;
   }
 
-  private void emitOpenNewTabRequest(final long webViewId, final String url) {
+  private void emitOpenNewTabRequest(
+      final long webViewId, final String url, final boolean background) {
     if (url == null || url.trim().isEmpty()) {
       return;
     }
@@ -2032,6 +2033,7 @@ public class HeavenShieldPlugin
             Map<String, Object> payload = new HashMap<>(4);
             payload.put("webViewId", webViewId);
             payload.put("url", cleanUrl);
+            payload.put("background", background);
             ch.invokeMethod("onOpenNewTabRequest", payload);
           }
         });
@@ -2319,7 +2321,12 @@ public class HeavenShieldPlugin
                     trimmed = resolved;
                   }
                   mainHandler.post(cleanup);
-                  emitOpenNewTabRequest(webViewId, trimmed);
+                  // Brave/Chrome popup focus rules: popups the PAGE opened by
+                  // itself (no user gesture — popunders/redirect scripts from
+                  // pirated-site download buttons) open in the BACKGROUND so
+                  // the user stays on the download page; real user-tapped
+                  // target="_blank" links open in the foreground.
+                  emitOpenNewTabRequest(webViewId, trimmed, !isUserGesture);
                 }
               }
 
@@ -2368,7 +2375,7 @@ public class HeavenShieldPlugin
                 cleanup.run();
               }
             },
-            4500L);
+            8000L);
 
         WebView.WebViewTransport transport = (WebView.WebViewTransport) resultMsg.obj;
         transport.setWebView(transportWv);
