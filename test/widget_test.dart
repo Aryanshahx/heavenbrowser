@@ -2217,14 +2217,25 @@ void main() {
                   return true;
                 case 'refreshSearchWidgets':
                   return null;
-                case 'captureVisualSearchImage':
-                  final Map<Object?, Object?> args =
-                      call.arguments as Map<Object?, Object?>;
-                  lastCameraSource = args['source']?.toString() ?? '';
+                case 'lensStartCamera':
+                  lastCameraSource = 'live_camera';
                   return <String, Object?>{
                     'ok': true,
-                    'base64Jpeg': base64Encode(<int>[0xFF, 0xD8, 0xFF, 0xD9]),
+                    'textureId': 42,
+                    'previewWidth': 1080,
+                    'previewHeight': 1440,
+                    'isFront': false,
+                    'hasFlash': true,
+                    'maxZoom': 4.0,
                   };
+                case 'lensCaptureAndSearch':
+                  return <String, Object?>{
+                    'ok': true,
+                    'resultUrl':
+                        'https://www.google.com/search?vsrid=MOCK_LENS_ID&udm=26',
+                  };
+                case 'lensStopCamera':
+                  return true;
                 case 'ttsSpeak':
                   final Map<Object?, Object?> args =
                       call.arguments as Map<Object?, Object?>;
@@ -2344,20 +2355,21 @@ void main() {
         await tester.tap(find.text('Google').last);
         await tester.pumpAndSettle();
 
-        // 6. Camera button next to Mic opens VisualSearchLensSheet & searches with Google Lens!
+        // 6. Camera button next to Mic opens HeavenLensCameraScreen instantly & searches with Google Lens!
         await tester.tap(homeCamera);
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 220));
+        expect(find.byType(HeavenLensCameraScreen), findsOneWidget);
+        expect(lastCameraSource, 'live_camera');
+        await tester.tap(find.byKey(const Key('lens_shutter_capture_button')));
         await tester.pumpAndSettle();
-        expect(find.byType(VisualSearchLensSheet), findsOneWidget);
-        await tester.tap(find.byKey(const Key('lens_take_photo_tile')));
-        await tester.pumpAndSettle();
-        expect(lastCameraSource, 'camera');
 
         final TabManagerController tabManager = tester
             .widget<BrowserScreen>(find.byType(BrowserScreen))
             .tabManager;
         expect(
           tabManager.activeEngine.currentUrl,
-          'https://lens.google.com/search',
+          'https://www.google.com/search?vsrid=MOCK_LENS_ID&udm=26',
         );
         expect(tabManager.totalTabCount, 1);
 
@@ -2485,6 +2497,277 @@ void main() {
         await tester.tap(find.byKey(const Key('settings_add_widget_tile')));
         await tester.pumpAndSettle();
         expect(pinWidgetCalls, 1);
+
+        vpn.dispose();
+        downloads.dispose();
+        interests.dispose();
+        settings.dispose();
+      },
+    );
+
+    testWidgets(
+      'Step 27: Redirect Back-Navigation Fix, Top Camera Button Removed, Instant Widget Keyboard (Even When Already Tapped), & Instant Modern Google-Lens Live Camera + Gallery Search',
+      (WidgetTester tester) async {
+        // 1. Verify native Step 27 architecture files & widget Android 14+ BAL + no-animation flags!
+        final String widgetJava = File(
+          'android/app/src/main/java/com/hypertechlabs/heavenbrowser/HeavenSearchWidgetProvider.java',
+        ).readAsStringSync();
+        expect(widgetJava, contains('FLAG_ACTIVITY_NO_ANIMATION'));
+        expect(
+          widgetJava,
+          contains('MODE_BACKGROUND_ACTIVITY_START_ALLOWED'),
+        );
+        expect(widgetJava, contains('onAppWidgetOptionsChanged'));
+        expect(
+          File(
+            'android/app/src/main/java/com/hypertechlabs/heavenbrowser/HeavenLensCameraManager.java',
+          ).existsSync(),
+          isTrue,
+        );
+        expect(
+          File(
+            'android/app/src/main/res/drawable/heaven_widget_preview.xml',
+          ).existsSync(),
+          isTrue,
+        );
+        final String widgetInfoXml = File(
+          'android/app/src/main/res/xml/heaven_search_widget_info.xml',
+        ).readAsStringSync();
+        expect(
+          widgetInfoXml,
+          contains('android:previewLayout="@layout/heaven_search_widget"'),
+        );
+        expect(
+          widgetInfoXml,
+          contains('android:previewImage="@drawable/heaven_widget_preview"'),
+        );
+
+        int showSoftKeyboardCalls = 0;
+        int lensStartCalls = 0;
+        int galleryPickCalls = 0;
+        String lastLensMode = '';
+        String lastLensQuery = '';
+
+        // Valid 1x1 JPEG bytes for gallery preview rendering in widget test
+        final Uint8List tinyPngBytes = base64Decode(
+          'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==',
+        );
+
+        const MethodChannel nativeChannel = MethodChannel(
+          'com.hypertechlabs.heavenbrowser/native_shield',
+        );
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+            .setMockMethodCallHandler(nativeChannel, (MethodCall call) async {
+              switch (call.method) {
+                case 'consumeInitialLaunchAction':
+                  return null;
+                case 'showSoftKeyboard':
+                  showSoftKeyboardCalls += 1;
+                  return true;
+                case 'lensStartCamera':
+                  lensStartCalls += 1;
+                  return <String, Object?>{
+                    'ok': true,
+                    'textureId': 99,
+                    'previewWidth': 1080,
+                    'previewHeight': 1440,
+                    'isFront': call.arguments['facing'] == 'front',
+                    'hasFlash': true,
+                    'maxZoom': 4.0,
+                  };
+                case 'lensSetTorch':
+                  return call.arguments['enabled'] == true;
+                case 'lensStopCamera':
+                  return true;
+                case 'lensPickGalleryImage':
+                  galleryPickCalls += 1;
+                  return <String, Object?>{
+                    'ok': true,
+                    'base64Jpeg': base64Encode(tinyPngBytes),
+                    'width': 400,
+                    'height': 400,
+                  };
+                case 'lensSearchImageBytes':
+                  final Map<Object?, Object?> args =
+                      call.arguments as Map<Object?, Object?>;
+                  lastLensMode = args['mode']?.toString() ?? '';
+                  lastLensQuery = args['query']?.toString() ?? '';
+                  return <String, Object?>{
+                    'ok': true,
+                    'resultUrl':
+                        'https://www.google.com/search?vsrid=GALLERY_LENS_OK&udm=24&q=${Uri.encodeQueryComponent(lastLensQuery)}',
+                  };
+                default:
+                  return null;
+              }
+            });
+        addTearDown(() {
+          TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+              .setMockMethodCallHandler(nativeChannel, null);
+        });
+
+        tester.view.physicalSize = const Size(412, 915);
+        tester.view.devicePixelRatio = 1.0;
+        addTearDown(() {
+          tester.view.resetPhysicalSize();
+          tester.view.resetDevicePixelRatio();
+        });
+
+        SharedPreferences.setMockInitialValues(<String, Object>{});
+        final SharedPreferences prefs = await SharedPreferences.getInstance();
+        final BrowserSettingsController settings = BrowserSettingsController(
+          prefs,
+        );
+        final DownloadsController downloads = DownloadsController(
+          prefs,
+          enableNativePolling: false,
+        );
+        final InterestProfileController interests = InterestProfileController(
+          prefs,
+        );
+        final HeavenNewsFeedService newsService = _createMockNewsService(
+          prefs,
+          interests,
+        );
+        final VpnController vpn = VpnController(
+          prefs,
+          enableNativePolling: false,
+          client: MockClient(
+            (_) async =>
+                http.Response('ip=89.187.173.169\nloc=US\nwarp=off\n', 200),
+          ),
+        );
+
+        await tester.pumpWidget(
+          HeavenBrowserApp(
+            settings: settings,
+            downloads: downloads,
+            interests: interests,
+            newsService: newsService,
+            searchService: _createMockSearchService(),
+            vpn: vpn,
+            enablePlatformWebView: false,
+          ),
+        );
+        await tester.pumpAndSettle();
+
+        // 2. Top Search Area has ZERO camera button, while Home Screen Search Bar keeps Camera next to Mic!
+        expect(
+          find.byKey(const Key('top_bar_camera_lens_button')),
+          findsNothing,
+        );
+        expect(find.byKey(const Key('home_camera_lens_button')), findsOneWidget);
+
+        // Tap top search bar -> editing mode ALSO has ZERO camera button & shows keyboard!
+        await tester.tap(find.byKey(const Key('omnibox_display_pill')));
+        await tester.pumpAndSettle();
+        expect(find.byKey(const Key('top_omnibox_textfield')), findsOneWidget);
+        expect(
+          find.byKey(const Key('top_omnibox_camera_lens_button')),
+          findsNothing,
+        );
+        final int kbCallsAfterFirstTap = showSoftKeyboardCalls;
+        expect(kbCallsAfterFirstTap, greaterThanOrEqualTo(1));
+
+        // 3. Even when ALREADY tapped in search bar, tapping Heaven Search Widget forces keyboard open!
+        NativeShieldBridge.instance.onExternalLaunchAction?.call(
+          const <String, Object?>{'type': 'omnibox'},
+        );
+        await tester.pumpAndSettle();
+        expect(find.byKey(const Key('top_omnibox_textfield')), findsOneWidget);
+        expect(showSoftKeyboardCalls, greaterThan(kbCallsAfterFirstTap));
+
+        // Close omnibox edit overlay
+        await tester.tap(find.byTooltip('Cancel'));
+        await tester.pumpAndSettle();
+
+        // 4. Instant Google-Lens Camera Screen + Choose from Gallery + Multimodal Query & Modes!
+        await tester.tap(find.byKey(const Key('home_camera_lens_button')));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 220));
+        expect(find.byType(HeavenLensCameraScreen), findsOneWidget);
+        expect(lensStartCalls, 1);
+        expect(
+          find.byKey(const Key('lens_pick_gallery_button')),
+          findsOneWidget,
+        );
+        expect(
+          find.byKey(const Key('lens_shutter_capture_button')),
+          findsOneWidget,
+        );
+        expect(find.byKey(const Key('lens_torch_button')), findsOneWidget);
+        expect(
+          find.byKey(const Key('lens_flip_camera_button')),
+          findsOneWidget,
+        );
+        expect(find.byKey(const Key('lens_mode_translate')), findsOneWidget);
+        expect(find.byKey(const Key('lens_mode_search')), findsOneWidget);
+        expect(find.byKey(const Key('lens_mode_text')), findsOneWidget);
+        expect(find.byKey(const Key('lens_mode_shopping')), findsOneWidget);
+
+        // Select Shopping mode + enter multimodal question + tap Gallery button!
+        await tester.tap(find.byKey(const Key('lens_mode_shopping')));
+        await tester.pump();
+        await tester.enterText(
+          find.byKey(const Key('lens_multimodal_query_field')),
+          'black sneakers',
+        );
+        await tester.pump();
+        await tester.tap(find.byKey(const Key('lens_pick_gallery_button')));
+        await tester.pumpAndSettle();
+
+        expect(galleryPickCalls, 1);
+        expect(lastLensMode, 'shopping');
+        expect(lastLensQuery, 'black sneakers');
+
+        final TabManagerController tabManager = tester
+            .widget<BrowserScreen>(find.byType(BrowserScreen))
+            .tabManager;
+        expect(
+          tabManager.activeEngine.currentUrl,
+          contains('google.com/search?vsrid=GALLERY_LENS_OK'),
+        );
+
+        // 5. Redirect Back-Navigation Fix: Website A -> transient redirect hop -> Website B (same tab) -> Back returns to Website A -> Back returns to StartPage!
+        await tabManager.activeEngine.goHome();
+        await tester.pumpAndSettle();
+        expect(tabManager.activeEngine.isShowingStartPage, isTrue);
+
+        // User opens Website A
+        await tabManager.activeEngine.loadUserEntry('https://site-a.com/news');
+        await tester.pumpAndSettle();
+        expect(tabManager.activeEngine.currentUrl, 'https://site-a.com/news');
+        expect(tabManager.totalTabCount, 1);
+
+        // Website A redirects via intermediate hop -> Website B inside the SAME tab!
+        tabManager.activeEngine.recordHeadlessWebsiteRedirect(
+          'https://redirect-hop.example/bounce',
+          isTransientHop: true,
+        );
+        tabManager.activeEngine.recordHeadlessWebsiteRedirect(
+          'https://site-b.org/final-article',
+          isTransientHop: false,
+        );
+        await tester.pumpAndSettle();
+        expect(
+          tabManager.activeEngine.currentUrl,
+          'https://site-b.org/final-article',
+        );
+        expect(tabManager.totalTabCount, 1);
+        expect(tabManager.activeEngine.canGoBack, isTrue);
+
+        // First Back -> skips intermediate redirect hop and lands cleanly back on Website A!
+        final bool back1 = await tabManager.navigateBackSeamlessly();
+        await tester.pumpAndSettle();
+        expect(back1, isTrue);
+        expect(tabManager.activeEngine.currentUrl, 'https://site-a.com/news');
+        expect(tabManager.activeEngine.canGoBack, isTrue);
+
+        // Second Back -> lands cleanly back on StartPage!
+        final bool back2 = await tabManager.navigateBackSeamlessly();
+        await tester.pumpAndSettle();
+        expect(back2, isTrue);
+        expect(tabManager.activeEngine.isShowingStartPage, isTrue);
 
         vpn.dispose();
         downloads.dispose();

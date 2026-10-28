@@ -106,7 +106,13 @@ class BrowserEngine extends ChangeNotifier {
   int _lastPageFinishedMs = 0;
   int _userInitiatedLoadUntilMs = 0;
   int _lastCrossSiteNavMs = 0;
+  int _isGoingBackUntilMs = 0;
+  int _lastBackPressMs = 0;
+  String? _lastBackOriginUrl;
+  String? _lastSettledWebUrl;
+  final List<String> _settledSiteBackStack = <String>[];
   Timer? _finishLoadingDebounceTimer;
+  Timer? _settleHistoryTimer;
 
   // Live Background Audio state
   bool _isMediaPlaying = false;
@@ -191,7 +197,9 @@ class BrowserEngine extends ChangeNotifier {
   bool get isLoading => _isLoading;
 
   bool get canGoBack =>
-      (isShowingWebPage && _webViewCanGoBack) || _virtualIndex > 0;
+      (isShowingWebPage &&
+          (_webViewCanGoBack || _settledSiteBackStack.isNotEmpty)) ||
+      _virtualIndex > 0;
 
   bool get canGoForward =>
       (isShowingWebPage && _webViewCanGoForward) ||
@@ -381,10 +389,13 @@ class BrowserEngine extends ChangeNotifier {
             }
             _finishLoadingDebounceTimer?.cancel();
             _finishLoadingDebounceTimer = null;
+            _settleHistoryTimer?.cancel();
+            _settleHistoryTimer = null;
             final int nowMs = DateTime.now().millisecondsSinceEpoch;
             final bool isFastRedirect =
                 _isLoading || (nowMs - _lastPageFinishedMs) < 420;
             final String? nextHost = Uri.tryParse(url)?.host;
+            _onWebUrlTransition(url);
             _currentUrl = url;
             _pageIconUrl = null;
             _elementPickerActive = false;
@@ -447,6 +458,15 @@ class BrowserEngine extends ChangeNotifier {
             _lastNotifiedProgress = 1.0;
             _pullProgress = 0;
             _syncVirtualEntryWithWebUrl(url);
+            if (_androidWebViewId != null) {
+              unawaited(
+                NativeShieldBridge.instance.recordWebUrlCommit(
+                  webViewId: _androidWebViewId,
+                  url: url,
+                ),
+              );
+            }
+            _scheduleSettledWebUrlCommit(url);
             notifyListeners();
 
             // Settle guard: if an immediate client/HTTP redirect starts within 180ms
@@ -481,8 +501,17 @@ class BrowserEngine extends ChangeNotifier {
                 nextUrl.isNotEmpty &&
                 nextUrl != 'about:blank' &&
                 !isShowingDownloadsPage) {
+              _onWebUrlTransition(nextUrl);
               _currentUrl = nextUrl;
               _syncVirtualEntryWithWebUrl(nextUrl);
+              if (_androidWebViewId != null) {
+                unawaited(
+                  NativeShieldBridge.instance.recordWebUrlCommit(
+                    webViewId: _androidWebViewId,
+                    url: nextUrl,
+                  ),
+                );
+              }
               unawaited(_refreshNavigationState());
             }
           },
@@ -720,6 +749,42 @@ class BrowserEngine extends ChangeNotifier {
     );
   }
 
+  void _onWebUrlTransition(String nextUrl) {
+    if (!nextUrl.startsWith('http://') && !nextUrl.startsWith('https://')) {
+      return;
+    }
+    final int nowMs = DateTime.now().millisecondsSinceEpoch;
+    if (nowMs <= _isGoingBackUntilMs) {
+      return;
+    }
+    final String? prevSettled = _lastSettledWebUrl;
+    if (prevSettled != null &&
+        prevSettled.isNotEmpty &&
+        !OmniboxParser.isSameWebsite(prevSettled, nextUrl)) {
+      if (_settledSiteBackStack.isEmpty ||
+          !OmniboxParser.isSameWebsite(_settledSiteBackStack.last, prevSettled)) {
+        if (_settledSiteBackStack.length >= 40) {
+          _settledSiteBackStack.removeAt(0);
+        }
+        _settledSiteBackStack.add(prevSettled);
+      }
+      _lastSettledWebUrl = null;
+    }
+  }
+
+  void _scheduleSettledWebUrlCommit(String url) {
+    if (!url.startsWith('http://') && !url.startsWith('https://')) {
+      return;
+    }
+    _settleHistoryTimer?.cancel();
+    _settleHistoryTimer = Timer(const Duration(milliseconds: 450), () {
+      _settleHistoryTimer = null;
+      if (_currentUrl == url) {
+        _lastSettledWebUrl = url;
+      }
+    });
+  }
+
   void _syncVirtualEntryWithWebUrl(String url) {
     if (_virtualHistory.isEmpty) {
       _virtualHistory.add(url);
@@ -802,7 +867,8 @@ class BrowserEngine extends ChangeNotifier {
           return NavigationDecision.prevent;
         }
         final int nowMs = DateTime.now().millisecondsSinceEpoch;
-        final bool isUserDirectLoad = nowMs <= _userInitiatedLoadUntilMs;
+        final bool isUserDirectLoad =
+            nowMs <= _userInitiatedLoadUntilMs || nowMs <= _isGoingBackUntilMs;
         final String? establishedUrl = _lastCompletedWebUrl;
         if (!isUserDirectLoad &&
             establishedUrl != null &&
@@ -818,6 +884,8 @@ class BrowserEngine extends ChangeNotifier {
           _lastCrossSiteNavMs = nowMs;
         }
       }
+
+      _onWebUrlTransition(resolvedUri.toString());
 
       if (resolvedUri != uri) {
         await _applyControllerSettings(forHost: resolvedUri.host);
@@ -1157,7 +1225,9 @@ class BrowserEngine extends ChangeNotifier {
     await _applyControllerSettings(forHost: finalUri.host);
     await _controller?.loadRequest(finalUri, headers: _headersForTarget());
     if (_controller == null) {
+      _onWebUrlTransition(targetUrl);
       _lastCompletedWebUrl = targetUrl;
+      _lastSettledWebUrl = targetUrl;
       _userInitiatedLoadUntilMs = 0;
       _isLoading = false;
       _progress = 0;
@@ -1173,6 +1243,10 @@ class BrowserEngine extends ChangeNotifier {
   Future<void> goHome() async {
     _finishLoadingDebounceTimer?.cancel();
     _finishLoadingDebounceTimer = null;
+    _settleHistoryTimer?.cancel();
+    _settleHistoryTimer = null;
+    _settledSiteBackStack.clear();
+    _lastSettledWebUrl = null;
     _pushVirtualLocation('');
     _currentUrl = null;
     _pageTitle = isIncognito ? 'Incognito Tab' : 'New Tab';
@@ -1189,17 +1263,84 @@ class BrowserEngine extends ChangeNotifier {
 
   Future<void> goBack() async {
     _markUserInitiatedLoad();
-    if (isShowingWebPage &&
-        _controller != null &&
-        await _controller!.canGoBack()) {
-      await _controller!.goBack();
-      await _refreshNavigationState();
-      return;
+    final int nowMs = DateTime.now().millisecondsSinceEpoch;
+    _isGoingBackUntilMs = nowMs + 2800;
+
+    final String? originBeforeBack = _currentUrl;
+    final bool bouncedBackToSameSite =
+        originBeforeBack != null &&
+        _lastBackOriginUrl != null &&
+        (nowMs - _lastBackPressMs) < 5000 &&
+        OmniboxParser.isSameWebsite(originBeforeBack, _lastBackOriginUrl!);
+    _lastBackPressMs = nowMs;
+    _lastBackOriginUrl = originBeforeBack;
+
+    if (isShowingWebPage && _controller != null) {
+      final Map<String, Object?> smart = await NativeShieldBridge.instance
+          .smartGoBack(
+            webViewId: _androidWebViewId,
+            skipPredecessor: bouncedBackToSameSite,
+          );
+      if (smart['navigated'] == true) {
+        final String targetUrl = (smart['targetUrl']?.toString() ?? '').trim();
+        if (targetUrl.isNotEmpty) {
+          _lastSettledWebUrl = targetUrl;
+          while (_settledSiteBackStack.isNotEmpty &&
+              OmniboxParser.isSameWebsite(
+                _settledSiteBackStack.last,
+                targetUrl,
+              )) {
+            _settledSiteBackStack.removeLast();
+          }
+        }
+        await _refreshNavigationState();
+        return;
+      }
+
+      // Only call raw WebView.goBack() if smartGoBack did NOT exhaust a redirect
+      // trap chain at index 0 (otherwise raw goBack() would re-enter the redirect loop!)
+      if (smart['exhaustedRedirectChain'] != true &&
+          !bouncedBackToSameSite &&
+          await _controller!.canGoBack()) {
+        await _controller!.goBack();
+        await _refreshNavigationState();
+        return;
+      }
+    }
+
+    // Fallback when a website redirected via location.replace() or exhausted a
+    // redirect chain at index 0: step back to previous settled website or StartPage!
+    if (isShowingWebPage && _settledSiteBackStack.isNotEmpty) {
+      String previousSiteUrl = _settledSiteBackStack.removeLast();
+      if (bouncedBackToSameSite &&
+          OmniboxParser.isSameWebsite(previousSiteUrl, originBeforeBack) &&
+          _settledSiteBackStack.isNotEmpty) {
+        previousSiteUrl = _settledSiteBackStack.removeLast();
+      }
+      if (!bouncedBackToSameSite ||
+          !OmniboxParser.isSameWebsite(previousSiteUrl, originBeforeBack)) {
+        _lastSettledWebUrl = previousSiteUrl;
+        _syncVirtualEntryWithWebUrl(previousSiteUrl);
+        await _restoreVirtualLocation(previousSiteUrl);
+        return;
+      }
     }
 
     if (_virtualIndex > 0) {
       _virtualIndex -= 1;
-      await _restoreVirtualLocation(_virtualHistory[_virtualIndex]);
+      final String target = _virtualHistory[_virtualIndex];
+      _lastSettledWebUrl =
+          (target.startsWith('http://') || target.startsWith('https://'))
+          ? target
+          : null;
+      await _restoreVirtualLocation(target);
+      return;
+    }
+
+    // If tab started directly on a web URL (initialInput) whose redirect chain
+    // was exhausted, return cleanly to StartPage instead of getting stuck!
+    if (isShowingWebPage) {
+      await goHome();
     }
   }
 
@@ -1573,98 +1714,60 @@ class BrowserEngine extends ChangeNotifier {
     return const <String>[];
   }
 
-  /// Uploads a captured camera/gallery JPEG directly into Google Lens Visual
-  /// Search inside the active WebView (100% free, zero API keys).
-  Future<void> loadGoogleLensImageBase64(String base64Jpeg) async {
-    final String cleanB64 = base64Jpeg.trim();
-    if (cleanB64.isEmpty) return;
-
-    _markUserInitiatedLoad();
-    _errorMessage = null;
-    if (enablePlatformWebView && _controller == null) {
-      _initializeController();
+  ///Simulates a same-tab website redirect chain in headless tests (where there
+  /// is no platform WebView) so Back navigation over transient hops can be verified.
+  void recordHeadlessWebsiteRedirect(
+    String targetUrl, {
+    required bool isTransientHop,
+  }) {
+    _onWebUrlTransition(targetUrl);
+    _currentUrl = targetUrl;
+    _lastCompletedWebUrl = targetUrl;
+    _syncVirtualEntryWithWebUrl(targetUrl);
+    if (!isTransientHop) {
+      _lastSettledWebUrl = targetUrl;
     }
-
-    const String lensUrl = 'https://lens.google.com/search';
-    _pushVirtualLocation(lensUrl);
-    _currentUrl = lensUrl;
-    _pageTitle = 'Google Lens';
-    _isLoading = _controller != null;
-    _progress = _controller != null ? 0.2 : 0;
     notifyListeners();
+  }
 
-    if (_controller == null) {
-      _lastCompletedWebUrl = lensUrl;
-      _userInitiatedLoadUntilMs = 0;
-      notifyListeners();
-      return;
-    }
+  /// Navigates the active tab to a resolved Google Lens visual search URL
+  /// returned by the native multipart uploader.
+  Future<void> openGoogleLensResultUrl(String resultUrl) async {
+    final String clean = resultUrl.trim();
+    if (clean.isEmpty) return;
+    await loadUserEntry(clean);
+  }
 
-    await _applyControllerSettings(forHost: 'lens.google.com');
-    final String safeB64Json = jsonEncode(cleanB64);
-    final String uploaderHtml = '''
-<!DOCTYPE html>
-<html>
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width,initial-scale=1">
-  <style>
-    body {
-      margin: 0;
-      background: #09111F;
-      color: #F8FAFC;
-      font-family: system-ui, -apple-system, sans-serif;
-      display: flex;
-      height: 100vh;
-      align-items: center;
-      justify-content: center;
-      flex-direction: column;
-      gap: 12px;
+  /// Uploads a JPEG image via native Google Lens multipart POST and opens the
+  /// resulting Google Lens visual search results inside the active tab.
+  Future<bool> loadGoogleLensImageBase64(
+    String base64Jpeg, {
+    double cropLeft = 0.0,
+    double cropTop = 0.0,
+    double cropRight = 1.0,
+    double cropBottom = 1.0,
+    String mode = 'search',
+    String query = '',
+  }) async {
+    final String cleanB64 = base64Jpeg.trim();
+    if (cleanB64.isEmpty) return false;
+    final Map<String, Object?> res = await NativeShieldBridge.instance
+        .lensSearchImageBytes(
+          base64Jpeg: cleanB64,
+          cropLeft: cropLeft,
+          cropTop: cropTop,
+          cropRight: cropRight,
+          cropBottom: cropBottom,
+          mode: mode,
+          query: query,
+          language: settings.language.code,
+        );
+    final String resultUrl = (res['resultUrl']?.toString() ?? '').trim();
+    if (res['ok'] == true && resultUrl.isNotEmpty) {
+      await openGoogleLensResultUrl(resultUrl);
+      return true;
     }
-    .ring {
-      width: 30px;
-      height: 30px;
-      border: 3px solid rgba(59, 130, 246, 0.25);
-      border-top-color: #3B82F6;
-      border-radius: 50%;
-      animation: s 0.75s linear infinite;
-    }
-    @keyframes s { to { transform: rotate(360deg); } }
-  </style>
-</head>
-<body>
-  <div class="ring"></div>
-  <div style="font-size:14px;font-weight:600">Searching image with Google Lens</div>
-  <form id="lensForm" action="https://lens.google.com/v3/upload" method="POST" enctype="multipart/form-data" style="display:none">
-    <input id="lensFile" type="file" name="encoded_image">
-  </form>
-  <script>
-    (function(){
-      try {
-        var b64 = $safeB64Json;
-        var bin = atob(b64);
-        var bytes = new Uint8Array(bin.length);
-        for (var i = 0; i < bin.length; i++) {
-          bytes[i] = bin.charCodeAt(i);
-        }
-        var file = new File([bytes], "heaven_lens.jpg", { type: "image/jpeg" });
-        var dt = new DataTransfer();
-        dt.items.add(file);
-        var inp = document.getElementById("lensFile");
-        inp.files = dt.files;
-        document.getElementById("lensForm").submit();
-      } catch (e) {
-        location.replace("https://lens.google.com/");
-      }
-    })();
-  </script>
-</body>
-</html>
-''';
-    await _controller!.loadHtmlString(
-      uploaderHtml,
-      baseUrl: 'https://lens.google.com',
-    );
+    return false;
   }
 
   /// Opens a saved `.mht` offline webpage archive inside the active tab even
@@ -2276,6 +2379,8 @@ class BrowserEngine extends ChangeNotifier {
   void dispose() {
     _finishLoadingDebounceTimer?.cancel();
     _finishLoadingDebounceTimer = null;
+    _settleHistoryTimer?.cancel();
+    _settleHistoryTimer = null;
     settings.removeListener(_onSettingsChanged);
     if (_androidWebViewId != null) {
       NativeShieldBridge.instance.detachWebView(_androidWebViewId!);

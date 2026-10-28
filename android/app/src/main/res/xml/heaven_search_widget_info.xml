@@ -6,7 +6,7 @@
     android:minResizeHeight="48dp"
     android:minResizeWidth="180dp"
     android:minWidth="250dp"
-    android:previewImage="@mipmap/ic_launcher"
+    android:previewImage="@drawable/heaven_widget_preview"
     android:previewLayout="@layout/heaven_search_widget"
     android:resizeMode="horizontal|vertical"
     android:targetCellHeight="1"

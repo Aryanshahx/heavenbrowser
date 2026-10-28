@@ -1,5 +1,6 @@
 package com.hypertechlabs.heavenbrowser;
 
+import android.app.ActivityOptions;
 import android.app.PendingIntent;
 import android.appwidget.AppWidgetManager;
 import android.appwidget.AppWidgetProvider;
@@ -10,12 +11,13 @@ import android.content.SharedPreferences;
 import android.content.res.Resources;
 import android.net.Uri;
 import android.os.Build;
+import android.os.Bundle;
 import android.widget.RemoteViews;
 
 /**
- * Home Screen Search Bar Widget ("Heaven Search") — visible in the Android Widgets picker on all
- * devices, styled like the Google Search pill with instant Search Bar focus, Voice Search (Mic),
- * and Camera Visual Search (Google Lens).
+ * Home Screen Search Bar Widget ("Heaven Search") — instant launch with zero transition lag,
+ * Android 14+ Background Activity Launch (BAL) opt-in, resize/update resilience, Voice Search,
+ * and instant Google-Lens Camera Search.
  */
 public final class HeavenSearchWidgetProvider extends AppWidgetProvider {
 
@@ -26,6 +28,40 @@ public final class HeavenSearchWidgetProvider extends AppWidgetProvider {
 
   private static final String FLUTTER_PREFS = "FlutterSharedPreferences";
   private static final String FLUTTER_SEARCH_ENGINE_KEY = "flutter.pref_search_engine_v2";
+
+  @Override
+  public void onReceive(Context context, Intent intent) {
+    super.onReceive(context, intent);
+    if (context == null || intent == null) {
+      return;
+    }
+    String action = intent.getAction();
+    if (Intent.ACTION_MY_PACKAGE_REPLACED.equals(action)
+        || "android.appwidget.action.APPWIDGET_ENABLED".equals(action)) {
+      refreshAllWidgets(context);
+    }
+  }
+
+  @Override
+  public void onEnabled(Context context) {
+    super.onEnabled(context);
+    refreshAllWidgets(context);
+  }
+
+  @Override
+  public void onRestored(Context context, int[] oldWidgetIds, int[] newWidgetIds) {
+    super.onRestored(context, oldWidgetIds, newWidgetIds);
+    refreshAllWidgets(context);
+  }
+
+  @Override
+  public void onAppWidgetOptionsChanged(
+      Context context, AppWidgetManager appWidgetManager, int appWidgetId, Bundle newOptions) {
+    super.onAppWidgetOptionsChanged(context, appWidgetManager, appWidgetId, newOptions);
+    if (context != null && appWidgetManager != null) {
+      updateSingleWidget(context, appWidgetManager, appWidgetId);
+    }
+  }
 
   @Override
   public void onUpdate(
@@ -108,9 +144,13 @@ public final class HeavenSearchWidgetProvider extends AppWidgetProvider {
         views.setTextViewText(textId, "Search " + engineLabel + " or type URL");
       }
 
-      PendingIntent omniboxPi = buildLaunchPendingIntent(context, ACTION_OMNIBOX, 7101);
-      PendingIntent voicePi = buildLaunchPendingIntent(context, ACTION_VOICE, 7102);
-      PendingIntent cameraPi = buildLaunchPendingIntent(context, ACTION_CAMERA, 7103);
+      int baseReq = Math.abs(appWidgetId) * 10;
+      PendingIntent omniboxPi =
+          buildLaunchPendingIntent(context, ACTION_OMNIBOX, appWidgetId, baseReq + 1);
+      PendingIntent voicePi =
+          buildLaunchPendingIntent(context, ACTION_VOICE, appWidgetId, baseReq + 2);
+      PendingIntent cameraPi =
+          buildLaunchPendingIntent(context, ACTION_CAMERA, appWidgetId, baseReq + 3);
 
       if (rootId != 0) {
         views.setOnClickPendingIntent(rootId, omniboxPi);
@@ -160,17 +200,32 @@ public final class HeavenSearchWidgetProvider extends AppWidgetProvider {
   }
 
   private static PendingIntent buildLaunchPendingIntent(
-      Context context, String widgetAction, int reqCode) {
+      Context context, String widgetAction, int appWidgetId, int reqCode) {
     Intent launch = new Intent(Intent.ACTION_VIEW);
     launch.setComponent(
         new ComponentName(
             context.getPackageName(), "com.hypertechlabs.heavenbrowser.MainActivity"));
-    launch.setData(Uri.parse("heaven://widget/" + widgetAction));
+    launch.setData(Uri.parse("heaven://widget/" + widgetAction + "?wid=" + appWidgetId));
     launch.putExtra(EXTRA_WIDGET_ACTION, widgetAction);
-    launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP);
+    launch.addFlags(
+        Intent.FLAG_ACTIVITY_NEW_TASK
+            | Intent.FLAG_ACTIVITY_SINGLE_TOP
+            | Intent.FLAG_ACTIVITY_CLEAR_TOP
+            | Intent.FLAG_ACTIVITY_NO_ANIMATION);
+
     int flags = PendingIntent.FLAG_UPDATE_CURRENT;
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
       flags |= PendingIntent.FLAG_IMMUTABLE;
+    }
+
+    if (Build.VERSION.SDK_INT >= 34) {
+      try {
+        ActivityOptions opts = ActivityOptions.makeBasic();
+        opts.setPendingIntentBackgroundActivityStartMode(
+            ActivityOptions.MODE_BACKGROUND_ACTIVITY_START_ALLOWED);
+        return PendingIntent.getActivity(context, reqCode, launch, flags, opts.toBundle());
+      } catch (Throwable ignored) {
+      }
     }
     return PendingIntent.getActivity(context, reqCode, launch, flags);
   }

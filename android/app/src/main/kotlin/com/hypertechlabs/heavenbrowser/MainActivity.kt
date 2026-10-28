@@ -54,7 +54,11 @@ class MainActivity : FlutterActivity() {
     override fun onResume() {
         super.onResume()
         shieldPlugin?.onActivityResumed()
-        HeavenSearchWidgetProvider.refreshAllWidgets(this)
+    }
+
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        shieldPlugin?.onWindowFocusChanged(hasFocus)
     }
 
     override fun onTrimMemory(level: Int) {

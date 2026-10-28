@@ -97,6 +97,8 @@ class _BrowserScreenState extends State<BrowserScreen>
     widget.downloads.onDownloadToast = _showDownloadStartedPopup;
     NativeShieldBridge.instance.onExternalLaunchAction =
         _handleExternalLaunchAction;
+    NativeShieldBridge.instance.onWindowFocusedForKeyboard =
+        _handleWindowFocusedForKeyboard;
     WidgetsBinding.instance.addPostFrameCallback((_) {
       unawaited(_bootstrapFirstLaunchAndWidgetActions());
     });
@@ -112,6 +114,10 @@ class _BrowserScreenState extends State<BrowserScreen>
     if (NativeShieldBridge.instance.onExternalLaunchAction ==
         _handleExternalLaunchAction) {
       NativeShieldBridge.instance.onExternalLaunchAction = null;
+    }
+    if (NativeShieldBridge.instance.onWindowFocusedForKeyboard ==
+        _handleWindowFocusedForKeyboard) {
+      NativeShieldBridge.instance.onWindowFocusedForKeyboard = null;
     }
     for (final BrowserTab tab in widget.tabManager.allTabs) {
       tab.engine.onSitePermissionPrompt = null;
@@ -142,9 +148,39 @@ class _BrowserScreenState extends State<BrowserScreen>
     }
   }
 
+  void _handleWindowFocusedForKeyboard() {
+    if (!mounted || !_isEditingOmnibox) return;
+    _omniboxFocusNode.requestFocus();
+    unawaited(
+      SystemChannels.textInput
+          .invokeMethod<void>('TextInput.show')
+          .catchError((Object _) {}),
+    );
+  }
+
+  void _forceShowKeyboardForActiveField() {
+    if (!mounted) return;
+    _omniboxFocusNode.requestFocus();
+    unawaited(
+      SystemChannels.textInput
+          .invokeMethod<void>('TextInput.show')
+          .catchError((Object _) {}),
+    );
+    unawaited(NativeShieldBridge.instance.showSoftKeyboard());
+  }
+
   void _handleExternalLaunchAction(Map<String, Object?> action) {
     if (!mounted) return;
     final String type = (action['type']?.toString() ?? '').trim();
+    if (type.isEmpty) return;
+
+    // Pop any open sub-screen, dialog, or modal sheet so BrowserScreen handles
+    // Home Screen Widget & external link taps immediately!
+    final NavigatorState nav = Navigator.of(context);
+    if (nav.canPop()) {
+      nav.popUntil((Route<dynamic> route) => route.isFirst);
+    }
+
     switch (type) {
       case 'url':
         final String url = (action['url']?.toString() ?? '').trim();
@@ -163,13 +199,13 @@ class _BrowserScreenState extends State<BrowserScreen>
           }
         }
       case 'omnibox':
-        _beginOmniboxEdit();
+        _beginOmniboxEdit(forceKeyboard: true);
       case 'voice':
         _closeOmniboxOverlay();
         unawaited(_triggerVoiceSearch());
       case 'camera':
         _closeOmniboxOverlay();
-        unawaited(_openVisualSearchLensSheet(context, _activeEngine));
+        unawaited(_openHeavenLensCamera(context, _activeEngine));
     }
   }
 
@@ -303,17 +339,24 @@ class _BrowserScreenState extends State<BrowserScreen>
     return engine.currentUrl ?? '';
   }
 
-  void _beginOmniboxEdit() {
+  void _beginOmniboxEdit({bool forceKeyboard = false}) {
     final bool hasActiveLink = _activeEngine.isShowingWebPage;
-    _omniboxController.clear();
+    if (!_isEditingOmnibox) {
+      _omniboxController.clear();
+    }
     setState(() {
       _isEditingOmnibox = true;
-      _showLinkActionsCard = hasActiveLink;
+      _showLinkActionsCard = hasActiveLink && _omniboxController.text.isEmpty;
       _liveSuggestions = <String>[];
     });
+    if (_omniboxFocusNode.hasFocus) {
+      _forceShowKeyboardForActiveField();
+    }
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted) {
-        _omniboxFocusNode.requestFocus();
+      if (!mounted || !_isEditingOmnibox) return;
+      _omniboxFocusNode.requestFocus();
+      if (forceKeyboard || _omniboxFocusNode.hasFocus) {
+        _forceShowKeyboardForActiveField();
       }
     });
   }
@@ -1072,7 +1115,7 @@ class _BrowserScreenState extends State<BrowserScreen>
               initialInput: url,
             ),
             onVoiceSearch: _triggerVoiceSearch,
-            onCameraSearch: () => _openVisualSearchLensSheet(context, engine),
+            onCameraSearch: () => _openHeavenLensCamera(context, engine),
           );
         } else if (engine.errorMessage != null) {
           overlayChild = Center(
@@ -1692,6 +1735,7 @@ class _BrowserScreenState extends State<BrowserScreen>
             textInputAction: TextInputAction.go,
             autocorrect: false,
             enableSuggestions: false,
+            onTap: _forceShowKeyboardForActiveField,
             onChanged: _onOmniboxTextChanged,
             onSubmitted: _submitOmnibox,
             style: const TextStyle(fontSize: 14.5),
@@ -1703,32 +1747,15 @@ class _BrowserScreenState extends State<BrowserScreen>
             ),
           ),
         ),
-        if (showMic) ...<Widget>[
+        if (showMic)
           IconButton(
             onPressed: _triggerVoiceSearch,
             icon: Icon(Icons.mic_rounded, size: 19, color: colors.primary),
             visualDensity: VisualDensity.compact,
             padding: EdgeInsets.zero,
-            constraints: const BoxConstraints(minWidth: 30, minHeight: 34),
+            constraints: const BoxConstraints(minWidth: 32, minHeight: 34),
             tooltip: 'Voice Search',
           ),
-          IconButton(
-            key: const Key('top_omnibox_camera_lens_button'),
-            onPressed: () {
-              _closeOmniboxOverlay();
-              _openVisualSearchLensSheet(context, engine);
-            },
-            icon: Icon(
-              Icons.photo_camera_outlined,
-              size: 19,
-              color: colors.primary,
-            ),
-            visualDensity: VisualDensity.compact,
-            padding: EdgeInsets.zero,
-            constraints: const BoxConstraints(minWidth: 30, minHeight: 34),
-            tooltip: 'Camera Search',
-          ),
-        ],
         if (hasText) ...<Widget>[
           IconButton(
             onPressed: () {
@@ -1814,7 +1841,7 @@ class _BrowserScreenState extends State<BrowserScreen>
           child: GestureDetector(
             key: const Key('omnibox_display_pill'),
             behavior: HitTestBehavior.opaque,
-            onTap: _beginOmniboxEdit,
+            onTap: () => _beginOmniboxEdit(forceKeyboard: true),
             child: Text(
               engine.isShowingStartPage
                   ? 'Search ${widget.settings.searchEngine.shortLabel} or type URL'
@@ -1844,22 +1871,6 @@ class _BrowserScreenState extends State<BrowserScreen>
             padding: EdgeInsets.zero,
             constraints: const BoxConstraints(minWidth: 24, minHeight: 30),
             tooltip: 'Voice Search',
-          ),
-          IconButton(
-            key: const Key('top_bar_camera_lens_button'),
-            onPressed: () => _openVisualSearchLensSheet(context, engine),
-            icon: Icon(
-              Icons.photo_camera_outlined,
-              size: 16.5,
-              color: colors.primary,
-            ),
-            style: IconButton.styleFrom(
-              tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-            ),
-            visualDensity: VisualDensity.compact,
-            padding: EdgeInsets.zero,
-            constraints: const BoxConstraints(minWidth: 24, minHeight: 30),
-            tooltip: 'Camera Search',
           ),
           const SizedBox(width: 2),
         ] else
@@ -1995,19 +2006,11 @@ class _BrowserScreenState extends State<BrowserScreen>
     );
   }
 
-  Future<void> _openVisualSearchLensSheet(
+  Future<void> _openHeavenLensCamera(
     BuildContext context,
     BrowserEngine engine,
   ) async {
-    await showModalBottomSheet<void>(
-      context: context,
-      isScrollControlled: true,
-      showDragHandle: true,
-      constraints: const BoxConstraints(maxWidth: 520),
-      builder: (BuildContext _) {
-        return VisualSearchLensSheet(engine: engine);
-      },
-    );
+    await HeavenLensCameraScreen.open(context, engine);
   }
 
   void _handleWebContextMenu(WebContextMenuData data) {

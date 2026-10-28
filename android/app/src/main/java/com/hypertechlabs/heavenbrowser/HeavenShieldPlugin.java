@@ -54,9 +54,12 @@ import android.view.HapticFeedbackConstants;
 import android.view.MotionEvent;
 import android.view.View;
 import android.view.WindowManager;
+import android.view.inputmethod.InputMethodManager;
 import android.webkit.CookieManager;
 import android.webkit.JavascriptInterface;
 import android.webkit.MimeTypeMap;
+import android.webkit.WebBackForwardList;
+import android.webkit.WebHistoryItem;
 import android.webkit.WebSettings;
 import android.webkit.WebStorage;
 import android.webkit.WebView;
@@ -85,6 +88,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.LinkedBlockingQueue;
@@ -118,6 +122,8 @@ public class HeavenShieldPlugin
   private static final int VISUAL_CAMERA_CAPTURE_REQUEST_CODE = 49030;
   private static final int VISUAL_GALLERY_PICK_REQUEST_CODE = 49031;
   private static final int VISUAL_CAMERA_PERM_REQUEST_CODE = 49032;
+  private static final int LENS_LIVE_CAMERA_PERM_REQUEST_CODE = 49033;
+  private static final int LENS_GALLERY_PICK_REQUEST_CODE = 49034;
 
   private static final String DESKTOP_CHROME_WIN_UA =
       "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -367,6 +373,16 @@ public class HeavenShieldPlugin
   private final Map<Long, ScriptHandler> docStartHandlers = new ConcurrentHashMap<>();
   private final Map<Long, Float> lastTouchXByWv = new ConcurrentHashMap<>();
   private final Map<Long, Float> lastTouchYByWv = new ConcurrentHashMap<>();
+  private final Map<Long, Long> lastUserTouchMsByWv = new ConcurrentHashMap<>();
+  private final Map<Long, String> lastObservedUrlByWv = new ConcurrentHashMap<>();
+  private final Map<Long, Long> lastObservedUrlMsByWv = new ConcurrentHashMap<>();
+  private final Map<Long, Set<String>> transientRedirectUrlsByWv = new ConcurrentHashMap<>();
+
+  private HeavenLensCameraManager lensCameraManager;
+  private MethodChannel.Result pendingLensCameraStartResult;
+  private boolean pendingLensWantFront = false;
+  private MethodChannel.Result pendingLensGalleryResult;
+  private volatile boolean pendingShowKeyboardOnWindowFocus = false;
 
   public HeavenShieldPlugin() {}
 
@@ -393,6 +409,7 @@ public class HeavenShieldPlugin
     this.downloadNotificationsEnabled = sp.getBoolean(PREF_DL_NOTIFS_ENABLED, true);
     this.vpnManager = new HeavenVpnManager(appCtx);
     this.shieldEngine = new HeavenShieldEngine(appCtx);
+    this.lensCameraManager = new HeavenLensCameraManager(this.downloadPool);
     this.channel = new MethodChannel(binding.getBinaryMessenger(), CHANNEL_NAME);
     this.channel.setMethodCallHandler(this);
     registerDownloadControlReceiver(appCtx);
@@ -412,6 +429,10 @@ public class HeavenShieldPlugin
     unregisterMediaCommandReceiver(binding.getApplicationContext());
     stopBackgroundMediaService();
     shutdownTtsEngine();
+    if (this.lensCameraManager != null) {
+      this.lensCameraManager.stopCamera(true);
+      this.lensCameraManager = null;
+    }
     this.shieldEngine = null;
     if (this.channel != null) {
       this.channel.setMethodCallHandler(null);
@@ -454,6 +475,9 @@ public class HeavenShieldPlugin
 
   public void onActivityPaused() {
     this.appInBackground = true;
+    if (this.lensCameraManager != null) {
+      this.lensCameraManager.stopCamera(false);
+    }
     broadcastBgFlagToWebViews(true);
     if (!this.backgroundMediaEnabled || !this.activeAudioOrVideoPlaying) {
       return;
@@ -486,6 +510,55 @@ public class HeavenShieldPlugin
     broadcastBgFlagToWebViews(false);
     if (!this.activeAudioOrVideoPlaying) {
       stopBackgroundMediaService();
+    }
+    if (this.pendingShowKeyboardOnWindowFocus) {
+      mainHandler.postDelayed(this::triggerKeyboardIfWindowFocused, 40L);
+    }
+  }
+
+  public void onWindowFocusChanged(boolean hasFocus) {
+    if (hasFocus && this.pendingShowKeyboardOnWindowFocus) {
+      this.pendingShowKeyboardOnWindowFocus = false;
+      showSoftKeyboardNow();
+      mainHandler.postDelayed(this::showSoftKeyboardNow, 65L);
+      MethodChannel ch = this.channel;
+      if (ch != null) {
+        ch.invokeMethod("onWindowFocusedForKeyboard", null);
+      }
+    }
+  }
+
+  private void triggerKeyboardIfWindowFocused() {
+    Activity act = this.activity;
+    if (act != null && act.hasWindowFocus() && this.pendingShowKeyboardOnWindowFocus) {
+      onWindowFocusChanged(true);
+    }
+  }
+
+  private void showSoftKeyboardNow() {
+    Activity act = this.activity;
+    if (act == null) {
+      return;
+    }
+    try {
+      act.getWindow()
+          .setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_VISIBLE);
+      InputMethodManager imm =
+          (InputMethodManager) act.getSystemService(Context.INPUT_METHOD_SERVICE);
+      if (imm == null) {
+        return;
+      }
+      View decor = act.getWindow().getDecorView();
+      View focused = act.getCurrentFocus();
+      if (focused == null && decor != null) {
+        focused = decor.findFocus();
+      }
+      View target = focused != null ? focused : decor;
+      if (target != null) {
+        target.requestFocus();
+        imm.showSoftInput(target, InputMethodManager.SHOW_IMPLICIT);
+      }
+    } catch (Throwable ignored) {
     }
   }
 
@@ -840,12 +913,56 @@ public class HeavenShieldPlugin
       handleVisualSearchActivityResult(requestCode, resultCode, data);
       return true;
     }
+    if (requestCode == LENS_GALLERY_PICK_REQUEST_CODE) {
+      MethodChannel.Result galCb = this.pendingLensGalleryResult;
+      this.pendingLensGalleryResult = null;
+      if (galCb == null) {
+        return true;
+      }
+      if (resultCode != Activity.RESULT_OK || data == null || data.getData() == null) {
+        Map<String, Object> cancelled = new HashMap<>(4);
+        cancelled.put("ok", false);
+        cancelled.put("cancelled", true);
+        galCb.success(cancelled);
+        return true;
+      }
+      Context ctx = resolveContext();
+      if (this.lensCameraManager != null && ctx != null) {
+        this.lensCameraManager.processGalleryUriAndPrepare(ctx, data.getData(), galCb);
+      } else {
+        galCb.success(Collections.singletonMap("ok", false));
+      }
+      return true;
+    }
     return false;
   }
 
   @Override
   public boolean onRequestPermissionsResult(
       int requestCode, String[] permissions, int[] grantResults) {
+    if (requestCode == LENS_LIVE_CAMERA_PERM_REQUEST_CODE) {
+      MethodChannel.Result camCb = this.pendingLensCameraStartResult;
+      this.pendingLensCameraStartResult = null;
+      boolean wantFront = this.pendingLensWantFront;
+      if (camCb == null) {
+        return true;
+      }
+      boolean granted =
+          grantResults != null
+              && grantResults.length > 0
+              && grantResults[0] == PackageManager.PERMISSION_GRANTED;
+      if (granted && this.lensCameraManager != null && this.pluginBinding != null) {
+        this.lensCameraManager.startCamera(
+            resolveContext(), this.pluginBinding.getTextureRegistry(), wantFront, camCb);
+      } else {
+        Map<String, Object> denied = new HashMap<>(4);
+        denied.put("ok", false);
+        denied.put("permissionDenied", true);
+        denied.put("error", "Camera permission is required for live scanning");
+        camCb.success(denied);
+      }
+      return true;
+    }
     if (requestCode == VISUAL_CAMERA_PERM_REQUEST_CODE) {
       boolean granted =
           grantResults != null
@@ -926,6 +1043,84 @@ public class HeavenShieldPlugin
       case "refreshSearchWidgets":
         HeavenSearchWidgetProvider.refreshAllWidgets(resolveContext());
         result.success(true);
+        break;
+
+      case "showSoftKeyboard":
+        this.pendingShowKeyboardOnWindowFocus = true;
+        showSoftKeyboardNow();
+        if (this.activity != null && this.activity.hasWindowFocus()) {
+          this.pendingShowKeyboardOnWindowFocus = false;
+        }
+        result.success(true);
+        break;
+
+      case "recordWebUrlCommit":
+        Object commitWvObj = call.argument("webViewId");
+        String committedUrl = call.argument("url");
+        if (commitWvObj instanceof Number && committedUrl != null) {
+          recordWebViewUrlObservation(((Number) commitWvObj).longValue(), committedUrl);
+        }
+        result.success(true);
+        break;
+
+      case "smartGoBack":
+        Object backWvObj = call.argument("webViewId");
+        Boolean forceSkipPred = call.argument("skipPredecessor");
+        long backWvId =
+            backWvObj instanceof Number
+                ? ((Number) backWvObj).longValue()
+                : this.activeFocusedWebViewId;
+        result.success(
+            performSmartGoBack(backWvId, forceSkipPred != null && forceSkipPred));
+        break;
+
+      case "lensStartCamera":
+        handleLensStartCamera(call, result);
+        break;
+
+      case "lensStopCamera":
+        Boolean releaseTex = call.argument("release");
+        if (this.lensCameraManager != null) {
+          this.lensCameraManager.stopCamera(releaseTex == null || releaseTex);
+        }
+        result.success(true);
+        break;
+
+      case "lensSetTorch":
+        Boolean torchOn = call.argument("enabled");
+        boolean nextTorch =
+            this.lensCameraManager != null
+                && this.lensCameraManager.setTorch(torchOn != null && torchOn);
+        result.success(nextTorch);
+        break;
+
+      case "lensSetZoom":
+        Double zoomVal = call.argument("zoom");
+        if (this.lensCameraManager != null && zoomVal != null) {
+          this.lensCameraManager.setZoom(zoomVal.floatValue());
+        }
+        result.success(true);
+        break;
+
+      case "lensFocusPoint":
+        Double fx = call.argument("x");
+        Double fy = call.argument("y");
+        if (this.lensCameraManager != null && fx != null && fy != null) {
+          this.lensCameraManager.focusAtNormalizedPoint(fx.floatValue(), fy.floatValue());
+        }
+        result.success(true);
+        break;
+
+      case "lensCaptureAndSearch":
+        handleLensCaptureAndSearch(call, result);
+        break;
+
+      case "lensPickGalleryImage":
+        handleLensPickGalleryImage(result);
+        break;
+
+      case "lensSearchImageBytes":
+        handleLensSearchImageBytes(call, result);
         break;
 
       case "captureVisualSearchImage":
@@ -1828,6 +2023,7 @@ public class HeavenShieldPlugin
               case MotionEvent.ACTION_DOWN:
                 lastTouchXByWv.put(webViewId, event.getX());
                 lastTouchYByWv.put(webViewId, event.getY());
+                lastUserTouchMsByWv.put(webViewId, SystemClock.elapsedRealtime());
                 if (isWebPageAtTop() && !isVideoPlayerTouchZone(event.getY())) {
                   startY = event.getRawY();
                   startX = event.getRawX();
@@ -4040,6 +4236,10 @@ public class HeavenShieldPlugin
     if (payload == null) {
       return;
     }
+    if ("omnibox".equals(payload.get("type"))) {
+      this.pendingShowKeyboardOnWindowFocus = true;
+      mainHandler.post(this::showSoftKeyboardNow);
+    }
     if (isNewRuntimeIntent && this.channel != null) {
       final Map<String, Object> dispatch = payload;
       mainHandler.post(
@@ -4601,5 +4801,189 @@ public class HeavenShieldPlugin
       lower = lower.substring(0, colon);
     }
     return lower;
+  }
+
+  private void recordWebViewUrlObservation(long webViewId, String url) {
+    if (url == null || url.isEmpty() || "about:blank".equals(url)) {
+      return;
+    }
+    long now = SystemClock.elapsedRealtime();
+    String prevUrl = lastObservedUrlByWv.put(webViewId, url);
+    Long prevMs = lastObservedUrlMsByWv.put(webViewId, now);
+    if (prevUrl != null && prevMs != null && !stripUrlFragment(prevUrl).equals(stripUrlFragment(url))) {
+      long dwellMs = now - prevMs;
+      Long lastTouch = lastUserTouchMsByWv.get(webViewId);
+      boolean userTouchedDuringDwell = lastTouch != null && lastTouch >= prevMs;
+      if (dwellMs < 1700L && !userTouchedDuringDwell) {
+        Set<String> hops =
+            transientRedirectUrlsByWv.computeIfAbsent(
+                webViewId, k -> ConcurrentHashMap.newKeySet());
+        hops.add(stripUrlFragment(prevUrl));
+      }
+    }
+  }
+
+  private Map<String, Object> performSmartGoBack(long webViewId, boolean skipPredecessor) {
+    Map<String, Object> out = new HashMap<>(6);
+    out.put("navigated", false);
+    out.put("exhaustedRedirectChain", false);
+    if (pluginBinding == null || webViewId < 0) {
+      return out;
+    }
+    try {
+      WebView wv = WebViewFlutterAndroidExternalApi.getWebView(pluginBinding, webViewId);
+      if (wv == null || !wv.canGoBack()) {
+        return out;
+      }
+      WebBackForwardList bfl = wv.copyBackForwardList();
+      int curIdx = bfl.getCurrentIndex();
+      if (curIdx <= 0) {
+        return out;
+      }
+      WebHistoryItem curItem = bfl.getItemAtIndex(curIdx);
+      String curUrl = curItem != null && curItem.getUrl() != null ? curItem.getUrl() : "";
+      String curNoFrag = stripUrlFragment(curUrl);
+      Set<String> redirectHops = transientRedirectUrlsByWv.get(webViewId);
+
+      int targetIdx = curIdx - (skipPredecessor ? 2 : 1);
+      while (targetIdx >= 0) {
+        WebHistoryItem candidate = bfl.getItemAtIndex(targetIdx);
+        String candUrl = candidate != null && candidate.getUrl() != null ? candidate.getUrl() : "";
+        String candNoFrag = stripUrlFragment(candUrl);
+
+        if ("about:blank".equals(candUrl)) {
+          targetIdx--;
+          continue;
+        }
+        // Skip duplicate pushState / #hash entries on the exact same URL (including index 0!)
+        if (!curNoFrag.isEmpty() && candNoFrag.equals(curNoFrag)) {
+          targetIdx--;
+          continue;
+        }
+        // Skip intermediate redirect bounce hops that lasted <1.7s without user interaction
+        // (including index 0 so we exit to StartPage instead of re-entering a redirect loop!)
+        if (redirectHops != null && redirectHops.contains(candNoFrag)) {
+          targetIdx--;
+          continue;
+        }
+        break;
+      }
+
+      if (targetIdx < 0) {
+        out.put("exhaustedRedirectChain", true);
+        return out;
+      }
+      int steps = targetIdx - curIdx; // negative
+      WebHistoryItem targetItem = bfl.getItemAtIndex(targetIdx);
+      String targetUrl =
+          targetItem != null && targetItem.getUrl() != null ? targetItem.getUrl() : "";
+      wv.goBackOrForward(steps);
+      out.put("navigated", true);
+      out.put("targetUrl", targetUrl);
+      out.put("canStillGoBack", targetIdx > 0);
+      return out;
+    } catch (Throwable ignored) {
+      return out;
+    }
+  }
+
+  private static String stripUrlFragment(String url) {
+    if (url == null) return "";
+    int hash = url.indexOf('#');
+    return hash >= 0 ? url.substring(0, hash) : url;
+  }
+
+  private void handleLensStartCamera(MethodCall call, MethodChannel.Result result) {
+    if (this.lensCameraManager == null || this.pluginBinding == null) {
+      result.success(Collections.singletonMap("ok", false));
+      return;
+    }
+    String facing = call.argument("facing");
+    boolean wantFront = "front".equalsIgnoreCase(facing);
+    Activity act = this.activity;
+    if (act != null && !this.lensCameraManager.hasCameraPermission(act)) {
+      this.pendingLensCameraStartResult = result;
+      this.pendingLensWantFront = wantFront;
+      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+        act.requestPermissions(
+            new String[] {Manifest.permission.CAMERA}, LENS_LIVE_CAMERA_PERM_REQUEST_CODE);
+        return;
+      }
+    }
+    this.lensCameraManager.startCamera(
+        resolveContext(), this.pluginBinding.getTextureRegistry(), wantFront, result);
+  }
+
+  private void handleLensCaptureAndSearch(MethodCall call, MethodChannel.Result result) {
+    if (this.lensCameraManager == null) {
+      result.success(Collections.singletonMap("ok", false));
+      return;
+    }
+    double l = doubleArg(call, "cropLeft", 0.0);
+    double t = doubleArg(call, "cropTop", 0.0);
+    double r = doubleArg(call, "cropRight", 1.0);
+    double b = doubleArg(call, "cropBottom", 1.0);
+    String mode = call.argument("mode");
+    String query = call.argument("query");
+    String lang = call.argument("language");
+    this.lensCameraManager.captureAndUploadToLens(
+        l,
+        t,
+        r,
+        b,
+        mode != null ? mode : "search",
+        query != null ? query : "",
+        lang != null ? lang : Locale.getDefault().getLanguage(),
+        result);
+  }
+
+  private void handleLensPickGalleryImage(MethodChannel.Result result) {
+    Activity act = this.activity;
+    if (act == null) {
+      result.success(Collections.singletonMap("ok", false));
+      return;
+    }
+    this.pendingLensGalleryResult = result;
+    try {
+      Intent pick = new Intent(Intent.ACTION_GET_CONTENT);
+      pick.setType("image/*");
+      pick.addCategory(Intent.CATEGORY_OPENABLE);
+      act.startActivityForResult(
+          Intent.createChooser(pick, "Choose Image for Heaven Lens"),
+          LENS_GALLERY_PICK_REQUEST_CODE);
+    } catch (Throwable e) {
+      this.pendingLensGalleryResult = null;
+      result.success(Collections.singletonMap("ok", false));
+    }
+  }
+
+  private void handleLensSearchImageBytes(MethodCall call, MethodChannel.Result result) {
+    if (this.lensCameraManager == null) {
+      result.success(Collections.singletonMap("ok", false));
+      return;
+    }
+    String b64 = call.argument("base64Jpeg");
+    double l = doubleArg(call, "cropLeft", 0.0);
+    double t = doubleArg(call, "cropTop", 0.0);
+    double r = doubleArg(call, "cropRight", 1.0);
+    double b = doubleArg(call, "cropBottom", 1.0);
+    String mode = call.argument("mode");
+    String query = call.argument("query");
+    String lang = call.argument("language");
+    this.lensCameraManager.searchBase64ImageWithLens(
+        b64,
+        l,
+        t,
+        r,
+        b,
+        mode != null ? mode : "search",
+        query != null ? query : "",
+        lang != null ? lang : Locale.getDefault().getLanguage(),
+        result);
+  }
+
+  private static double doubleArg(MethodCall call, String key, double def) {
+    Object v = call.argument(key);
+    return (v instanceof Number) ? ((Number) v).doubleValue() : def;
   }
 }

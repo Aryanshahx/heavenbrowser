@@ -1279,6 +1279,15 @@ public final class HeavenShieldEngine {
               + "  }catch(_){return null;}"
               + "  return origOpen?origOpen.apply(window,arguments):null;"
               + "};"
+              + "var untrustedPushCount=0;"
+              + "var origPush=History.prototype.pushState;"
+              + "if(origPush){History.prototype.pushState=function(){"
+              + "  if(Date.now()-lastTap>1500){"
+              + "    untrustedPushCount++;"
+              + "    if(untrustedPushCount>2)return;"
+              + "  }else{untrustedPushCount=0;}"
+              + "  return origPush.apply(this,arguments);"
+              + "};}"
               + "})();");
     }
 

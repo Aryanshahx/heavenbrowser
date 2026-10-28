@@ -11,6 +11,7 @@ import '../../../../core/widgets/site_logo.dart';
 import '../../../news/interest_news_service.dart';
 import '../../../search/heaven_search_service.dart';
 import '../../../settings/browser_settings.dart';
+import '../../../shield/native_shield_bridge.dart';
 
 class StartPage extends StatefulWidget {
   const StartPage({
@@ -404,6 +405,12 @@ class _StartPageState extends State<StartPage> {
               textInputAction: TextInputAction.search,
               keyboardType: TextInputType.url,
               autocorrect: false,
+              onTap: () {
+                unawaited(
+                  SystemChannels.textInput.invokeMethod<void>('TextInput.show'),
+                );
+                unawaited(NativeShieldBridge.instance.showSoftKeyboard());
+              },
               onChanged: _onHomeSearchChanged,
               onSubmitted: _submitHomeSearch,
               style: const TextStyle(fontSize: 15),

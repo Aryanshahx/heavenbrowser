@@ -83,6 +83,7 @@ class NativeShieldBridge {
   NativeDownloadStartedCallback? onDownloadStarted;
   NativeTtsEventCallback? onTtsEvent;
   NativeExternalLaunchCallback? onExternalLaunchAction;
+  NativePullRefreshCallback? onWindowFocusedForKeyboard;
   NativeWebContextMenuCallback? onGlobalWebContextMenu;
 
   Future<dynamic> _handleNativeCall(MethodCall call) async {
@@ -168,6 +169,8 @@ class NativeShieldBridge {
           if (e.key != null) e.key.toString(): e.value,
       };
       onExternalLaunchAction?.call(action);
+    } else if (call.method == 'onWindowFocusedForKeyboard') {
+      onWindowFocusedForKeyboard?.call();
     }
     return null;
   }
@@ -1252,6 +1255,225 @@ class NativeShieldBridge {
       return false;
     } on PlatformException {
       return false;
+    }
+  }
+
+  Future<void> showSoftKeyboard() async {
+    try {
+      await _channel.invokeMethod<bool>('showSoftKeyboard');
+    } on MissingPluginException {
+      // Expected in unit/widget tests
+    } on PlatformException {
+      // Ignore
+    }
+  }
+
+  Future<void> recordWebUrlCommit({
+    required int? webViewId,
+    required String url,
+  }) async {
+    if (webViewId == null || url.isEmpty) return;
+    try {
+      await _channel.invokeMethod<bool>('recordWebUrlCommit', <String, Object>{
+        'webViewId': webViewId,
+        'url': url,
+      });
+    } on MissingPluginException {
+      // Expected in unit/widget tests
+    } on PlatformException {
+      // Ignore
+    }
+  }
+
+  Future<Map<String, Object?>> smartGoBack({
+    int? webViewId,
+    bool skipPredecessor = false,
+  }) async {
+    try {
+      final Map<Object?, Object?>? raw = await _channel
+          .invokeMethod<Map<Object?, Object?>>(
+            'smartGoBack',
+            <String, Object?>{
+              'webViewId': webViewId,
+              'skipPredecessor': skipPredecessor,
+            },
+          );
+      if (raw == null) {
+        return const <String, Object?>{'navigated': false};
+      }
+      return <String, Object?>{
+        for (final MapEntry<Object?, Object?> e in raw.entries)
+          if (e.key != null) e.key.toString(): e.value,
+      };
+    } on MissingPluginException {
+      return const <String, Object?>{'navigated': false};
+    } on PlatformException {
+      return const <String, Object?>{'navigated': false};
+    }
+  }
+
+  Future<Map<String, Object?>> lensStartCamera({String facing = 'back'}) async {
+    try {
+      final Map<Object?, Object?>? raw = await _channel
+          .invokeMethod<Map<Object?, Object?>>(
+            'lensStartCamera',
+            <String, Object>{'facing': facing},
+          );
+      if (raw == null) {
+        return const <String, Object?>{'ok': false};
+      }
+      return <String, Object?>{
+        for (final MapEntry<Object?, Object?> e in raw.entries)
+          if (e.key != null) e.key.toString(): e.value,
+      };
+    } on MissingPluginException {
+      return const <String, Object?>{'ok': false};
+    } on PlatformException catch (e) {
+      return <String, Object?>{'ok': false, 'error': e.message};
+    }
+  }
+
+  Future<void> lensStopCamera({bool release = true}) async {
+    try {
+      await _channel.invokeMethod<bool>('lensStopCamera', <String, Object>{
+        'release': release,
+      });
+    } on MissingPluginException {
+      // Expected in unit/widget tests
+    } on PlatformException {
+      // Ignore
+    }
+  }
+
+  Future<bool> lensSetTorch({required bool enabled}) async {
+    try {
+      return await _channel.invokeMethod<bool>('lensSetTorch', <String, Object>{
+            'enabled': enabled,
+          }) ??
+          false;
+    } on MissingPluginException {
+      return false;
+    } on PlatformException {
+      return false;
+    }
+  }
+
+  Future<void> lensSetZoom(double zoom) async {
+    try {
+      await _channel.invokeMethod<bool>('lensSetZoom', <String, Object>{
+        'zoom': zoom,
+      });
+    } on MissingPluginException {
+      // Expected in unit/widget tests
+    } on PlatformException {
+      // Ignore
+    }
+  }
+
+  Future<void> lensFocusPoint(double x, double y) async {
+    try {
+      await _channel.invokeMethod<bool>('lensFocusPoint', <String, Object>{
+        'x': x,
+        'y': y,
+      });
+    } on MissingPluginException {
+      // Expected in unit/widget tests
+    } on PlatformException {
+      // Ignore
+    }
+  }
+
+  Future<Map<String, Object?>> lensCaptureAndSearch({
+    double cropLeft = 0.0,
+    double cropTop = 0.0,
+    double cropRight = 1.0,
+    double cropBottom = 1.0,
+    String mode = 'search',
+    String query = '',
+    String language = 'en',
+  }) async {
+    try {
+      final Map<Object?, Object?>? raw = await _channel
+          .invokeMethod<Map<Object?, Object?>>(
+            'lensCaptureAndSearch',
+            <String, Object>{
+              'cropLeft': cropLeft,
+              'cropTop': cropTop,
+              'cropRight': cropRight,
+              'cropBottom': cropBottom,
+              'mode': mode,
+              'query': query,
+              'language': language,
+            },
+          );
+      if (raw == null) {
+        return const <String, Object?>{'ok': false};
+      }
+      return <String, Object?>{
+        for (final MapEntry<Object?, Object?> e in raw.entries)
+          if (e.key != null) e.key.toString(): e.value,
+      };
+    } on MissingPluginException {
+      return const <String, Object?>{'ok': false};
+    } on PlatformException catch (e) {
+      return <String, Object?>{'ok': false, 'error': e.message};
+    }
+  }
+
+  Future<Map<String, Object?>> lensPickGalleryImage() async {
+    try {
+      final Map<Object?, Object?>? raw = await _channel
+          .invokeMethod<Map<Object?, Object?>>('lensPickGalleryImage');
+      if (raw == null) {
+        return const <String, Object?>{'ok': false};
+      }
+      return <String, Object?>{
+        for (final MapEntry<Object?, Object?> e in raw.entries)
+          if (e.key != null) e.key.toString(): e.value,
+      };
+    } on MissingPluginException {
+      return const <String, Object?>{'ok': false};
+    } on PlatformException catch (e) {
+      return <String, Object?>{'ok': false, 'error': e.message};
+    }
+  }
+
+  Future<Map<String, Object?>> lensSearchImageBytes({
+    required String base64Jpeg,
+    double cropLeft = 0.0,
+    double cropTop = 0.0,
+    double cropRight = 1.0,
+    double cropBottom = 1.0,
+    String mode = 'search',
+    String query = '',
+    String language = 'en',
+  }) async {
+    try {
+      final Map<Object?, Object?>? raw = await _channel
+          .invokeMethod<Map<Object?, Object?>>(
+            'lensSearchImageBytes',
+            <String, Object>{
+              'base64Jpeg': base64Jpeg,
+              'cropLeft': cropLeft,
+              'cropTop': cropTop,
+              'cropRight': cropRight,
+              'cropBottom': cropBottom,
+              'mode': mode,
+              'query': query,
+              'language': language,
+            },
+          );
+      if (raw == null) {
+        return const <String, Object?>{'ok': false};
+      }
+      return <String, Object?>{
+        for (final MapEntry<Object?, Object?> e in raw.entries)
+          if (e.key != null) e.key.toString(): e.value,
+      };
+    } on MissingPluginException {
+      return const <String, Object?>{'ok': false};
+    } on PlatformException catch (e) {
+      return <String, Object?>{'ok': false, 'error': e.message};
     }
   }
 }
