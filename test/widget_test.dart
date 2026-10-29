@@ -3383,6 +3383,26 @@ void main() {
             findsNothing,
           );
 
+          // Top row is pure Google-Lens style: [X] [Add to your search]
+          // [search icon] [flashlight] [flip camera] — the "Heaven Lens"
+          // title text is GONE and the buttons sit AFTER the search icon!
+          expect(find.text('Heaven Lens'), findsNothing);
+          expect(
+            find.byKey(const Key('lens_multimodal_search_button')),
+            findsOneWidget,
+          );
+          final double queryFieldRight = tester.getTopRight(
+            find.byKey(const Key('lens_multimodal_query_field')),
+          ).dx;
+          final double torchLeft = tester.getTopLeft(
+            find.byKey(const Key('lens_torch_button')),
+          ).dx;
+          final double flipLeft = tester.getTopLeft(
+            find.byKey(const Key('lens_flip_camera_button')),
+          ).dx;
+          expect(torchLeft, greaterThan(queryFieldRight));
+          expect(flipLeft, greaterThan(torchLeft));
+
           // "Add to your search" lives at the TOP, and while the soft
           // keyboard is open the ENTIRE bottom dock (mode selector + shutter
           // + gallery) hides — nothing can ever overlap the ask bar!
@@ -3645,6 +3665,14 @@ void main() {
           // theme-dependent)!
           expect(sheet, contains('color ?? const Color(0xFF2563EB)'));
 
+          // The in-app search-bar camera icon renders at the EXACT same
+          // 22dp box as the widget camera (36dp widget button - 2x7dp
+          // padding) — identical geometry scale AND stroke weight!
+          final String startPage = File(
+            'lib/features/browser/presentation/widgets/start_page.dart',
+          ).readAsStringSync();
+          expect(startPage, contains('size: 22'));
+
           // The widget picker preview draws the camera with the EXACT scaled
           // geometry of ic_widget_camera.xml in the same hardcoded blue!
           final String preview = File(
@@ -3816,6 +3844,54 @@ void main() {
           downloads.dispose();
           interests.dispose();
           settings.dispose();
+        },
+      );
+    },
+  );
+
+  group(
+    'Step 34: Crisp Discover Covers & Google-Lens Top Search Row', () {
+      test(
+        'Discover feed always picks the highest-resolution cover image (BBC ichef small variants upgraded to 800px)', () {
+          const String xml = '''
+      <rss xmlns:media="http://search.yahoo.com/mrss/"><channel>
+        <item>
+          <title>BBC Story One</title>
+          <link>https://www.bbc.example.com/story-one</link>
+          <pubDate>Thu, 22 Oct 2026 09:00:00 GMT</pubDate>
+          <media:thumbnail url="https://ichef.bbci.co.uk/news/240/cpsprodpb/111.jpg" width="240" height="135" />
+          <media:content url="https://ichef.bbci.co.uk/news/976/cpsprodpb/111.jpg" width="976" height="549" />
+        </item>
+        <item>
+          <title>BBC Story Two</title>
+          <link>https://www.bbc.example.com/story-two</link>
+          <pubDate>Thu, 22 Oct 2026 08:00:00 GMT</pubDate>
+          <media:thumbnail url="https://ichef.bbci.co.uk/news/240/cpsprodpb/222.jpg" width="240" height="135" />
+        </item>
+      </channel></rss>
+      ''';
+          final List<PersonalizedNewsItem> items =
+              HeavenNewsFeedService.parseRichFeedXml(xml);
+          expect(items.length, 2);
+
+          // The BIGGEST media image wins (976 > 240) — and the 976 variant
+          // is never downgraded!
+          expect(
+            items[0].imageUrl,
+            'https://ichef.bbci.co.uk/news/976/cpsprodpb/111.jpg',
+          );
+          // A tiny 240px BBC thumbnail is upgraded to the crisp 800px one!
+          expect(
+            items[1].imageUrl,
+            'https://ichef.bbci.co.uk/news/800/cpsprodpb/222.jpg',
+          );
+
+          // The Discover cover images render with mipmapped filtering
+          // instead of the blurry default bilinear "low" quality!
+          final String startPage = File(
+            'lib/features/browser/presentation/widgets/start_page.dart',
+          ).readAsStringSync();
+          expect(startPage, contains('filterQuality: FilterQuality.medium'));
         },
       );
     },

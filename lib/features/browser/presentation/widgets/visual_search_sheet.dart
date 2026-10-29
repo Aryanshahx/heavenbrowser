@@ -483,9 +483,6 @@ class _HeavenLensCameraScreenState extends State<HeavenLensCameraScreen>
             child: Column(
               children: <Widget>[
                 _buildTopBar(context),
-                // "Add to your search" lives at the TOP (right under the top
-                // bar) so the soft keyboard can NEVER overlap it while typing!
-                _buildMultimodalAskBar(),
                 if (_hasCustomCrop || _editingGalleryCrop)
                   Padding(
                     padding: const EdgeInsets.only(top: 6),
@@ -716,9 +713,12 @@ class _HeavenLensCameraScreenState extends State<HeavenLensCameraScreen>
     ];
   }
 
+  /// Google-Lens style top bar: [Close X] [Add to your search field] [Search
+  /// icon] [Flashlight] [Flip camera] — one clean row, no "Heaven Lens"
+  /// title, and the ask area can NEVER be overlapped by anything!
   Widget _buildTopBar(BuildContext context) {
     return Padding(
-      padding: const EdgeInsets.fromLTRB(12, 8, 12, 4),
+      padding: const EdgeInsets.fromLTRB(10, 8, 10, 4),
       child: Row(
         children: <Widget>[
           _GlassCircleIconButton(
@@ -727,37 +727,10 @@ class _HeavenLensCameraScreenState extends State<HeavenLensCameraScreen>
             tooltip: 'Close',
             onTap: () => Navigator.of(context).pop(),
           ),
-          const Spacer(),
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 7),
-            decoration: BoxDecoration(
-              color: Colors.black.withValues(alpha: 0.46),
-              borderRadius: BorderRadius.circular(20),
-              border: Border.all(color: Colors.white.withValues(alpha: 0.16)),
-            ),
-            child: const Row(
-              mainAxisSize: MainAxisSize.min,
-              children: <Widget>[
-                Icon(
-                  Icons.center_focus_strong_rounded,
-                  size: 16,
-                  color: AppTheme.heavenAccent,
-                ),
-                SizedBox(width: 7),
-                Text(
-                  'Heaven Lens',
-                  style: TextStyle(
-                    color: Colors.white,
-                    fontSize: 13.5,
-                    fontWeight: FontWeight.w800,
-                    letterSpacing: -0.2,
-                  ),
-                ),
-              ],
-            ),
-          ),
-          const Spacer(),
+          const SizedBox(width: 8),
+          Expanded(child: _buildMultimodalAskBar()),
           if (_hasFlash && _frozenImageBytes == null) ...<Widget>[
+            const SizedBox(width: 8),
             _GlassCircleIconButton(
               buttonKey: const Key('lens_torch_button'),
               icon: _torchEnabled
@@ -767,8 +740,8 @@ class _HeavenLensCameraScreenState extends State<HeavenLensCameraScreen>
               tooltip: 'Flash',
               onTap: _toggleTorch,
             ),
-            const SizedBox(width: 8),
           ],
+          const SizedBox(width: 8),
           _GlassCircleIconButton(
             buttonKey: const Key('lens_flip_camera_button'),
             icon: Icons.cameraswitch_rounded,
@@ -780,59 +753,69 @@ class _HeavenLensCameraScreenState extends State<HeavenLensCameraScreen>
     );
   }
 
+  /// Runs the visual search with the typed query (live frame, or the frozen
+  /// gallery/captured photo when one is on screen).
+  void _submitQuerySearch() {
+    if (_queryController.text.trim().isEmpty) {
+      _queryFocusNode.requestFocus();
+      return;
+    }
+    _captureAndSearchLiveFrame();
+  }
+
   Widget _buildMultimodalAskBar() {
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(18, 0, 18, 0),
-      child: ConstrainedBox(
-        constraints: const BoxConstraints(maxWidth: 460),
-        child: Container(
-          height: 42,
-          padding: const EdgeInsets.symmetric(horizontal: 14),
-          decoration: BoxDecoration(
-            color: const Color(0xCC0F172A),
-            borderRadius: BorderRadius.circular(22),
-            border: Border.all(color: Colors.white.withValues(alpha: 0.18)),
+    return Container(
+      height: 42,
+      padding: const EdgeInsets.symmetric(horizontal: 12),
+      decoration: BoxDecoration(
+        color: const Color(0xCC0F172A),
+        borderRadius: BorderRadius.circular(22),
+        border: Border.all(color: Colors.white.withValues(alpha: 0.18)),
+      ),
+      child: Row(
+        children: <Widget>[
+          GestureDetector(
+            key: const Key('lens_multimodal_search_button'),
+            behavior: HitTestBehavior.opaque,
+            onTap: _submitQuerySearch,
+            child: const Icon(
+              Icons.manage_search_rounded,
+              size: 20,
+              color: Colors.white70,
+            ),
           ),
-          child: Row(
-            children: <Widget>[
-              const Icon(
-                Icons.manage_search_rounded,
-                size: 19,
-                color: Colors.white70,
+          const SizedBox(width: 8),
+          Expanded(
+            child: TextField(
+              key: const Key('lens_multimodal_query_field'),
+              controller: _queryController,
+              focusNode: _queryFocusNode,
+              style: const TextStyle(color: Colors.white, fontSize: 13.5),
+              textInputAction: TextInputAction.search,
+              onSubmitted: (String _) => _submitQuerySearch(),
+              decoration: const InputDecoration(
+                hintText: 'Add to your search...',
+                hintStyle: TextStyle(color: Colors.white54, fontSize: 13),
+                border: InputBorder.none,
+                isDense: true,
               ),
-              const SizedBox(width: 8),
-              Expanded(
-                child: TextField(
-                  key: const Key('lens_multimodal_query_field'),
-                  controller: _queryController,
-                  focusNode: _queryFocusNode,
-                  style: const TextStyle(color: Colors.white, fontSize: 13.5),
-                  textInputAction: TextInputAction.done,
-                  decoration: const InputDecoration(
-                    hintText: 'Add to your search (optional)...',
-                    hintStyle: TextStyle(color: Colors.white54, fontSize: 13),
-                    border: InputBorder.none,
-                    isDense: true,
-                  ),
+            ),
+          ),
+          ValueListenableBuilder<TextEditingValue>(
+            valueListenable: _queryController,
+            builder: (BuildContext context, TextEditingValue v, _) {
+              if (v.text.isEmpty) return const SizedBox.shrink();
+              return GestureDetector(
+                onTap: _queryController.clear,
+                child: const Icon(
+                  Icons.cancel_rounded,
+                  size: 17,
+                  color: Colors.white60,
                 ),
-              ),
-              ValueListenableBuilder<TextEditingValue>(
-                valueListenable: _queryController,
-                builder: (BuildContext context, TextEditingValue v, _) {
-                  if (v.text.isEmpty) return const SizedBox.shrink();
-                  return GestureDetector(
-                    onTap: _queryController.clear,
-                    child: const Icon(
-                      Icons.cancel_rounded,
-                      size: 17,
-                      color: Colors.white60,
-                    ),
-                  );
-                },
-              ),
-            ],
+              );
+            },
           ),
-        ),
+        ],
       ),
     );
   }

@@ -1071,10 +1071,14 @@ class HeavenNewsFeedService {
       r'<News:Image>([\s\S]*?)</News:Image>',
       caseSensitive: false,
     );
-    final RegExp mediaUrlExp = RegExp(
-      r'<(?:media:content|media:thumbnail|enclosure)[^>]*\burl="([^"]+)"',
+    // Some feeds list a tiny 240px media:thumbnail BEFORE a large
+    // media:content of the same story — always pick the BIGGEST cover!
+    final RegExp mediaTagExp = RegExp(
+      r'<(media:content|media:thumbnail|enclosure)\b[^>]*>',
       caseSensitive: false,
     );
+    final RegExp tagUrlExp = RegExp(r'\burl="([^"]+)"');
+    final RegExp tagWidthExp = RegExp(r'\bwidth="(\d+)"');
     final RegExp storyImgExp = RegExp(
       r'<StoryImage>([\s\S]*?)</StoryImage>',
       caseSensitive: false,
@@ -1119,9 +1123,28 @@ class HeavenNewsFeedService {
         continue;
       }
 
+      // Pick the highest-resolution media image available in the item.
+      String? bestMediaUrl;
+      int bestMediaWidth = -1;
+      for (final RegExpMatch tagMatch in mediaTagExp.allMatches(block)) {
+        final String tag = tagMatch.group(0) ?? '';
+        final String? u = tagUrlExp.firstMatch(tag)?.group(1);
+        if (u == null || u.isEmpty) continue;
+        final int w = int.tryParse(
+              tagWidthExp.firstMatch(tag)?.group(1) ?? '',
+            ) ??
+            0;
+        if (w > bestMediaWidth) {
+          bestMediaWidth = w;
+          bestMediaUrl = u;
+        } else {
+          bestMediaUrl ??= u;
+        }
+      }
+
       final String rawImgCandidate = _unescapeXml(
         bingImgExp.firstMatch(block)?.group(1) ??
-            mediaUrlExp.firstMatch(block)?.group(1) ??
+            bestMediaUrl ??
             storyImgExp.firstMatch(block)?.group(1) ??
             inlineImgExp.firstMatch(_unescapeXml(block))?.group(1) ??
             '',
@@ -1188,6 +1211,28 @@ class HeavenNewsFeedService {
     }
 
     url = url.replaceFirst('/standard/240/', '/standard/800/');
+
+    // BBC ichef images come in fixed sizes (240/320/480/624/800/1024) with
+    // the SAME asset path — upgrade any SMALL variant to the crisp 800px one
+    // (never downgrade an already-large 976/1024 variant)!
+    if (url.contains('ichef.bbci.co.uk')) {
+      final RegExp newsSizeExp = RegExp(r'/news/(\d+)/');
+      final RegExpMatch? newsMatch = newsSizeExp.firstMatch(url);
+      final int? newsW = newsMatch == null
+          ? null
+          : int.tryParse(newsMatch.group(1) ?? '');
+      if (newsW != null && newsW < 800) {
+        url = url.replaceFirst(newsSizeExp, '/news/800/');
+      }
+      final RegExp aceSizeExp = RegExp(r'/ace/standard/(\d+)/');
+      final RegExpMatch? aceMatch = aceSizeExp.firstMatch(url);
+      final int? aceW = aceMatch == null
+          ? null
+          : int.tryParse(aceMatch.group(1) ?? '');
+      if (aceW != null && aceW < 800) {
+        url = url.replaceFirst(aceSizeExp, '/ace/standard/800/');
+      }
+    }
 
     if (url.contains('bing.com/th?')) {
       if (RegExp(r'[?&]w=\d+').hasMatch(url)) {

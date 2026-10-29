@@ -458,9 +458,10 @@ class _StartPageState extends State<StartPage> {
               key: const Key('home_camera_lens_button'),
               onPressed: widget.onCameraSearch,
               icon: ModernHeavenCameraIcon(
-                // Hardcoded Heaven blue #2563EB — EXACTLY the same color as
-                // the Home Screen Widget camera icon (never theme-dependent)!
-                size: 21,
+                // size 22 = the EXACT render box of the Home Screen Widget
+                // camera icon (24-unit vector in a 22dp box) — identical
+                // geometry scale AND stroke weight, pixel-for-pixel!
+                size: 22,
               ),
               tooltip: 'Camera Search',
               style: IconButton.styleFrom(
@@ -1198,6 +1199,9 @@ class _DiscoverCoverImageState extends State<_DiscoverCoverImage> {
     final Widget imageWidget = Image.network(
       widget.imageUrl,
       fit: BoxFit.cover,
+      // medium = mipmapped filtering: crisp on any screen scale instead of
+      // the default bilinear "low" that makes feed covers look blurry!
+      filterQuality: FilterQuality.medium,
       width: double.infinity,
       height: widget.fillParent ? double.infinity : null,
       loadingBuilder:
