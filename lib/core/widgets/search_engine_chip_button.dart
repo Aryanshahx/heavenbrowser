@@ -160,39 +160,9 @@ class SearchEngineChipButton extends StatelessWidget {
             ),
           );
         }
-        if (onOpenEngineSettings != null) {
-          entries.add(const PopupMenuDivider(height: 8));
-          entries.add(
-            PopupMenuItem<_SearchEngineMenuAction>(
-              key: const Key('popup_current_engine_settings_item'),
-              value: _SearchEngineMenuAction(
-                engine: currentEngine,
-                openOwnSettings: true,
-              ),
-              child: Row(
-                children: <Widget>[
-                  Icon(Icons.settings_outlined, size: 19, color: colors.primary),
-                  const SizedBox(width: 10),
-                  Expanded(
-                    child: Text(
-                      '${currentEngine.label} Settings',
-                      style: TextStyle(
-                        fontSize: 13,
-                        fontWeight: FontWeight.w700,
-                        color: colors.primary,
-                      ),
-                    ),
-                  ),
-                  Icon(
-                    Icons.open_in_new_rounded,
-                    size: 15,
-                    color: colors.onSurfaceVariant,
-                  ),
-                ],
-              ),
-            ),
-          );
-        }
+        // NOTE: the old bottom "X Settings" entry was removed — per-engine
+        // gears (popup_engine_settings_<name>) are the only settings access
+        // in this picker now.
         return entries;
       },
       child: Container(

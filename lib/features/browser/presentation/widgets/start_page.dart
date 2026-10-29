@@ -398,6 +398,10 @@ class _StartPageState extends State<StartPage> {
                 _submitHomeSearch(typed);
               }
             },
+            onOpenEngineSettings: (SearchEngine engine) async {
+              await widget.settings.setSearchEngine(engine);
+              widget.onSelectUrl(engine.settingsUrl);
+            },
           ),
           const SizedBox(width: 10),
           Expanded(
@@ -454,8 +458,9 @@ class _StartPageState extends State<StartPage> {
               key: const Key('home_camera_lens_button'),
               onPressed: widget.onCameraSearch,
               icon: ModernHeavenCameraIcon(
+                // Hardcoded Heaven blue #2563EB — EXACTLY the same color as
+                // the Home Screen Widget camera icon (never theme-dependent)!
                 size: 21,
-                color: colors.primary,
               ),
               tooltip: 'Camera Search',
               style: IconButton.styleFrom(

@@ -228,11 +228,17 @@ class _BrowserScreenState extends State<BrowserScreen>
     }
   }
 
-  /// Every Home Screen Widget interaction (search bar / voice / camera) opens
-  /// a brand-new tab — the user's current website is never disturbed — and
-  /// the requested function starts immediately inside that new tab.
+  /// Every Home Screen Widget interaction runs on a FRESH tab — the user's
+  /// current website is never disturbed — but a tab is only opened when the
+  /// current one is actually in use (web page / downloads). A fresh StartPage
+  /// tab is simply reused, so repeated widget taps NEVER pile up empty tabs!
   Future<void> _runOnFreshWidgetTab(VoidCallback action) async {
-    await widget.tabManager.openNewTab(incognito: false, switchTo: true);
+    final BrowserEngine engine = _activeEngine;
+    final bool currentTabInUse =
+        engine.isShowingWebPage || engine.isShowingDownloadsPage;
+    if (currentTabInUse) {
+      await widget.tabManager.openNewTab(incognito: false, switchTo: true);
+    }
     if (!mounted) return;
     action();
   }
@@ -1763,6 +1769,8 @@ class _BrowserScreenState extends State<BrowserScreen>
           currentEngine: widget.settings.searchEngine,
           onSelected: (SearchEngine sel) =>
               _handleSearchEngineChanged(sel, engine),
+          onOpenEngineSettings: (SearchEngine sel) =>
+              _openSearchEngineOwnSettings(sel, engine),
         ),
         const SizedBox(width: 6),
         Expanded(
@@ -1842,6 +1850,8 @@ class _BrowserScreenState extends State<BrowserScreen>
                 currentEngine: widget.settings.searchEngine,
                 onSelected: (SearchEngine sel) =>
                     _handleSearchEngineChanged(sel, engine),
+                onOpenEngineSettings: (SearchEngine sel) =>
+                    _openSearchEngineOwnSettings(sel, engine),
               ),
             ),
           ),
@@ -1919,6 +1929,17 @@ class _BrowserScreenState extends State<BrowserScreen>
         await engine.loadUri(selected.buildSearchUri(query));
       }
     }
+  }
+
+  Future<void> _openSearchEngineOwnSettings(
+    SearchEngine selected,
+    BrowserEngine engine,
+  ) async {
+    await widget.settings.setSearchEngine(selected);
+    if (_isEditingOmnibox || _showLinkActionsCard) {
+      _closeOmniboxOverlay();
+    }
+    await engine.loadUri(Uri.parse(selected.settingsUrl));
   }
 
   Widget _buildActiveListenMiniBar(

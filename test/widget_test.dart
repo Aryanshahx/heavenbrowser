@@ -958,7 +958,8 @@ void main() {
       await tester.pumpAndSettle();
 
       // 4b. Top bar has ZERO Heaven Shield icon, and the Search Engine picker
-      // from the search bar is a CLEAN engine list (no settings entries)!
+      // from the search bar is a CLEAN engine list: the bottom "X Settings"
+      // entry is GONE but every engine keeps its per-engine settings GEAR!
       expect(find.byKey(const Key('top_bar_shield_button')), findsNothing);
       await tester.tap(find.byKey(const Key('tiny_search_engine_switcher')).first);
       await tester.pumpAndSettle();
@@ -968,9 +969,21 @@ void main() {
       );
       expect(
         find.byKey(const Key('popup_engine_settings_google')),
-        findsNothing,
+        findsOneWidget,
+      );
+      // Tapping the per-engine gear opens that engine's own settings page!
+      await tester.tap(
+        find.byKey(const Key('popup_engine_settings_google')),
+      );
+      await tester.pumpAndSettle();
+      expect(settings.searchEngine, SearchEngine.google);
+      expect(
+        tabManager.activeEngine.currentUrl,
+        'https://www.google.com/preferences',
       );
       // Selecting an engine from the clean picker just switches engines!
+      await tester.tap(find.byKey(const Key('tiny_search_engine_switcher')).first);
+      await tester.pumpAndSettle();
       await tester.tap(
         find.byKey(const Key('popup_search_engine_bing')),
       );
@@ -2583,12 +2596,13 @@ void main() {
         await tester.pumpAndSettle();
         expect(tabManager.activeEngine.isShowingStartPage, isTrue);
 
-        // User opens Website A (2 tabs total: the Heaven Search Widget tap
-        // earlier opened its own fresh new tab!)
+        // User opens Website A (still 1 tab: the Heaven Search Widget tap
+        // earlier found a fresh StartPage tab and simply REUSED it — no
+        // empty-tab pile-up!)
         await tabManager.activeEngine.loadUserEntry('https://site-a.com/news');
         await tester.pumpAndSettle();
         expect(tabManager.activeEngine.currentUrl, 'https://site-a.com/news');
-        expect(tabManager.totalTabCount, 2);
+        expect(tabManager.totalTabCount, 1);
 
         // Website A redirects via intermediate hop -> Website B inside the SAME tab!
         tabManager.activeEngine.recordHeadlessWebsiteRedirect(
@@ -2604,7 +2618,7 @@ void main() {
           tabManager.activeEngine.currentUrl,
           'https://site-b.org/final-article',
         );
-        expect(tabManager.totalTabCount, 2);
+        expect(tabManager.totalTabCount, 1);
         expect(tabManager.activeEngine.canGoBack, isTrue);
 
         // First Back -> skips intermediate redirect hop and lands cleanly back on Website A!
@@ -2768,29 +2782,48 @@ void main() {
             findsOneWidget,
           );
 
-          // 3. Home Screen search engine chip is a CLEAN picker (settings
-          // entries removed from the bottom picker) and switches engines
-          // instantly!
+          // 3. Home Screen search engine chip picker: bottom "X Settings"
+          // entry removed, but the per-engine GEAR is there — tapping it
+          // opens that engine's own settings page!
           await tester.tap(
             find.byKey(const Key('tiny_search_engine_switcher')).last,
           );
           await tester.pumpAndSettle();
           expect(
-            find.byKey(const Key('popup_engine_settings_duckDuckGo')),
-            findsNothing,
-          );
-          expect(
             find.byKey(const Key('popup_current_engine_settings_item')),
             findsNothing,
           );
+          expect(
+            find.byKey(const Key('popup_engine_settings_duckDuckGo')),
+            findsOneWidget,
+          );
           await tester.tap(
-            find.byKey(const Key('popup_search_engine_duckDuckGo')),
+            find.byKey(const Key('popup_engine_settings_duckDuckGo')),
           );
           await tester.pumpAndSettle();
 
           final TabManagerController tabManager = tester
               .widget<BrowserScreen>(find.byType(BrowserScreen))
               .tabManager;
+          expect(settings.searchEngine, SearchEngine.duckDuckGo);
+          expect(
+            tabManager.activeEngine.currentUrl,
+            'https://duckduckgo.com/settings',
+          );
+
+          // Going Home and switching engines from the plain picker rows
+          // keeps the StartPage (instant switch, no navigation)!
+          await tabManager.activeEngine.goHome();
+          await tester.pumpAndSettle();
+          expect(tabManager.activeEngine.isShowingStartPage, isTrue);
+          await tester.tap(
+            find.byKey(const Key('tiny_search_engine_switcher')).last,
+          );
+          await tester.pumpAndSettle();
+          await tester.tap(
+            find.byKey(const Key('popup_search_engine_duckDuckGo')),
+          );
+          await tester.pumpAndSettle();
           expect(settings.searchEngine, SearchEngine.duckDuckGo);
           expect(tabManager.activeEngine.isShowingStartPage, isTrue);
 
@@ -3350,20 +3383,32 @@ void main() {
             findsNothing,
           );
 
-          // "Add to your search" now lives at the TOP — the soft keyboard can
-          // NEVER overlap it, and it stays above the mode/shutter dock!
+          // "Add to your search" lives at the TOP, and while the soft
+          // keyboard is open the ENTIRE bottom dock (mode selector + shutter
+          // + gallery) hides — nothing can ever overlap the ask bar!
           tester.view.viewInsets = FakeViewPadding(bottom: 300);
           await tester.pump(const Duration(milliseconds: 200));
           final double askBarTop = tester.getTopLeft(
             find.byKey(const Key('lens_multimodal_query_field')),
           ).dy;
-          final double shutterTop = tester.getTopLeft(
-            find.byKey(const Key('lens_shutter_capture_button')),
-          ).dy;
           expect(askBarTop, lessThan(200));
-          expect(askBarTop, lessThan(shutterTop - 100));
+          expect(
+            find.byKey(const Key('lens_shutter_capture_button')),
+            findsNothing,
+          );
+          expect(find.byKey(const Key('lens_mode_search')), findsNothing);
+          expect(
+            find.byKey(const Key('lens_pick_gallery_button')),
+            findsNothing,
+          );
+          // Keyboard closed -> the full dock returns instantly!
           tester.view.viewInsets = FakeViewPadding.zero;
           await tester.pump(const Duration(milliseconds: 200));
+          expect(
+            find.byKey(const Key('lens_shutter_capture_button')),
+            findsOneWidget,
+          );
+          expect(find.byKey(const Key('lens_mode_search')), findsOneWidget);
 
           tabManager.dispose();
           settings.dispose();
@@ -3583,6 +3628,32 @@ void main() {
           expect(widgetIcon, contains('M18.2,3.4'));
           expect(widgetIcon, contains('3.5,3.5'));
           expect(widgetIcon, contains('M12,8.5a3.5,3.5'));
+          // The widget camera icon color is HARDCODED Heaven blue — it never
+          // changes with the launcher's day/night mode, so it is ALWAYS the
+          // exact same color as the in-app camera icon!
+          expect(widgetIcon, contains('#FF2563EB'));
+          expect(widgetIcon, isNot(contains('@color/heaven_widget_accent')));
+
+          // The widget mic icon uses the very same hardcoded Heaven blue!
+          final String widgetMic = File(
+            'android/app/src/main/res/drawable/ic_widget_mic.xml',
+          ).readAsStringSync();
+          expect(widgetMic, contains('#FF2563EB'));
+          expect(widgetMic, isNot(contains('@color/heaven_widget_accent')));
+
+          // The in-app painter defaults to the identical #2563EB (never
+          // theme-dependent)!
+          expect(sheet, contains('color ?? const Color(0xFF2563EB)'));
+
+          // The widget picker preview draws the camera with the EXACT scaled
+          // geometry of ic_widget_camera.xml in the same hardcoded blue!
+          final String preview = File(
+            'android/app/src/main/res/drawable/heaven_widget_preview.xml',
+          ).readAsStringSync();
+          expect(preview, contains('M289,26.25a1.75,1.75'));
+          expect(preview, contains('M284.75,26.3'));
+          expect(preview, contains('M292.1,23.7'));
+          expect(preview, isNot(contains('#FF60A5FA')));
 
           // The widget logo + camera drawables are still wired into the widget.
           final String layoutXml = File(
@@ -3594,7 +3665,7 @@ void main() {
       );
 
       testWidgets(
-        'Home Screen Widget taps open a fresh NEW TAB ready for typing / camera, keeping the current website untouched',
+        'Home Screen Widget taps never disturb the current website and never pile up empty StartPage tabs',
         (WidgetTester tester) async {
           tester.view.physicalSize = const Size(412, 915);
           tester.view.devicePixelRatio = 1.0;
@@ -3710,20 +3781,22 @@ void main() {
           await tester.tap(find.byTooltip('Cancel'));
           await tester.pumpAndSettle();
 
-          // 2. Widget camera tap -> ANOTHER new tab + Heaven Lens camera opens in it!
+          // 2. Widget camera tap while the current tab is a FRESH StartPage:
+          // the tab is simply REUSED — no empty-tab pile-up!
           NativeShieldBridge.instance.onExternalLaunchAction?.call(
             const <String, Object?>{'type': 'camera'},
           );
           await tester.pump();
           await tester.pump(const Duration(milliseconds: 500));
           // NOTE: no pumpAndSettle here — the Lens scan animation runs forever!
-          expect(tabManager.totalTabCount, 3);
+          expect(tabManager.totalTabCount, 2);
+          expect(tabManager.activeTab.id, isNot(websiteTabId));
           expect(tabManager.activeEngine.isShowingStartPage, isTrue);
           expect(find.byType(HeavenLensCameraScreen), findsOneWidget);
           expect(lensStartCalls, 1);
 
-          // 3. Every widget tap ALWAYS opens its own fresh new tab — ready
-          // for typing instantly!
+          // 3. Another widget search tap after closing Lens — still the SAME
+          // fresh tab, ready for typing instantly (2 tabs total, NOT 4)!
           await tester.tap(find.byKey(const Key('lens_close_button')));
           await tester.pumpAndSettle();
           NativeShieldBridge.instance.onExternalLaunchAction?.call(
@@ -3732,7 +3805,7 @@ void main() {
           await tester.pump();
           await tester.pump(const Duration(milliseconds: 500));
           await tester.pumpAndSettle();
-          expect(tabManager.totalTabCount, 4);
+          expect(tabManager.totalTabCount, 2);
           expect(
             find.byKey(const Key('top_omnibox_textfield')),
             findsOneWidget,

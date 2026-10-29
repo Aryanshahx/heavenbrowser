@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="320dp"
+    android:height="56dp"
+    android:viewportWidth="320"
+    android:viewportHeight="56">
+    <!-- Pill background -->
+    <path
+        android:fillColor="#FFF1F5F9"
+        android:strokeColor="#FFD8E2EE"
+        android:strokeWidth="1.2"
+        android:pathData="M28,4L292,4A24,24 0 0,1 316,28L316,28A24,24 0 0,1 292,52L28,52A24,24 0 0,1 4,28L4,28A24,24 0 0,1 28,4z" />
+    <!-- Heaven Brand Globe -->
+    <path
+        android:fillColor="#FF1D4ED8"
+        android:pathData="M28,15A13,13 0 1,1 28,41A13,13 0 1,1 28,15z" />
+    <!-- Heaven Wing + Orbital Ring Emblem -->
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M22,28c1.5,-5 6.5,-8.5 11.5,-9.5c-1.2,3.5 -3.5,6 -6.8,7.2c2.2,-0.2 4.1,-0.9 5.5,-2c-1.2,2.6 -3.6,4.5 -6.8,5.2z" />
+    <path
+        android:strokeColor="#FF93C5FD"
+        android:strokeWidth="1.8"
+        android:strokeLineCap="round"
+        android:pathData="M16.5,31.5C19.5,34.2 31.5,31.8 39.2,25.2" />
+    <!-- Hint placeholder bar -->
+    <path
+        android:fillColor="#FF94A3B8"
+        android:pathData="M52,25L182,25A3,3 0 0,1 185,28L185,28A3,3 0 0,1 182,31L52,31A3,3 0 0,1 49,28L49,28A3,3 0 0,1 52,25z" />
+    <!-- Mic icon -->
+    <path
+        android:fillColor="#FF2563EB"
+        android:pathData="M260,21a2.5,2.5 0 0,1 2.5,2.5v4.5a2.5,2.5 0 0,1 -5,0v-4.5A2.5,2.5 0 0,1 260,21zM264.5,28a4.5,4.5 0 0,1 -9,0h-1.5a6,6 0 0,0 5.25,5.95v2.05h1.5v-2.05A6,6 0 0,0 266,28h-1.5z" />
+    <!-- Modern Heaven Lens Camera Icon -->
+    <path
+        android:strokeColor="#FF2563EB"
+        android:strokeWidth="1.7"
+        android:strokeLineCap="round"
+        android:pathData="M282.5,25.5V23.8C282.5,22.5 283.5,21.5 284.8,21.5H286.5M282.5,30.5v1.7c0,1.3 1,2.3 2.3,2.3h1.7M291.5,34.5h1.7c1.3,0 2.3,-1 2.3,-2.3v-1.7M289,25.3a2.7,2.7 0 1,1 0,5.4a2.7,2.7 0 1,1 0,-5.4z" />
+    <path
+        android:fillColor="#FF2563EB"
+        android:pathData="M294,21.5l0.5,1.2l1.2,0.5l-1.2,0.5l-0.5,1.2l-0.5,-1.2l-1.2,-0.5l1.2,-0.5z" />
+</vector>

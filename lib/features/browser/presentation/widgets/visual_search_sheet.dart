@@ -375,6 +375,8 @@ class _HeavenLensCameraScreenState extends State<HeavenLensCameraScreen>
 
   @override
   Widget build(BuildContext context) {
+    // Keyboard open => the bottom dock is hidden entirely (ask bar at top).
+    final bool keyboardOpen = MediaQuery.viewInsetsOf(context).bottom > 12;
     return Scaffold(
       key: const Key('heaven_lens_camera_screen'),
       backgroundColor: const Color(0xFF060B14),
@@ -587,10 +589,16 @@ class _HeavenLensCameraScreenState extends State<HeavenLensCameraScreen>
                       ],
                     ),
                   ),
-                _buildModeSelectorRow(),
-                const SizedBox(height: 14),
-                _buildBottomShutterAndGalleryDock(),
-                const SizedBox(height: 12),
+                // While the soft keyboard is open the whole bottom dock
+                // (mode selector + shutter + gallery) HIDES completely —
+                // the "Add to your search" bar at the top can NEVER overlap
+                // anything, and the dock returns as soon as typing ends!
+                if (!keyboardOpen) ...<Widget>[
+                  _buildModeSelectorRow(),
+                  const SizedBox(height: 14),
+                  _buildBottomShutterAndGalleryDock(),
+                  const SizedBox(height: 12),
+                ],
               ],
             ),
           ),

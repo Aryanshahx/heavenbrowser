@@ -31,13 +31,20 @@
     <path
         android:fillColor="#FF2563EB"
         android:pathData="M260,21a2.5,2.5 0 0,1 2.5,2.5v4.5a2.5,2.5 0 0,1 -5,0v-4.5A2.5,2.5 0 0,1 260,21zM264.5,28a4.5,4.5 0 0,1 -9,0h-1.5a6,6 0 0,0 5.25,5.95v2.05h1.5v-2.05A6,6 0 0,0 266,28h-1.5z" />
-    <!-- Modern Heaven Lens Camera Icon -->
+    <!-- Modern Heaven Lens Camera Icon — EXACT 0.5x scale of
+         ic_widget_camera.xml (24x24 viewport, centered at 289,28) so the
+         widget picker preview matches the real widget pixel-perfectly! -->
     <path
         android:strokeColor="#FF2563EB"
-        android:strokeWidth="1.7"
+        android:strokeWidth="1.03"
         android:strokeLineCap="round"
-        android:pathData="M282.5,25.5V23.8C282.5,22.5 283.5,21.5 284.8,21.5H286.5M282.5,30.5v1.7c0,1.3 1,2.3 2.3,2.3h1.7M291.5,34.5h1.7c1.3,0 2.3,-1 2.3,-2.3v-1.7M289,25.3a2.7,2.7 0 1,1 0,5.4a2.7,2.7 0 1,1 0,-5.4z" />
+        android:strokeLineJoin="round"
+        android:pathData="M284.75,26.3V25.35C284.75,24.47 285.47,23.75 286.35,23.75H287.3M284.75,29.7v0.95c0,0.88 0.72,1.6 1.6,1.6h0.95M290.7,32.25h0.95c0.88,0 1.6,-0.72 1.6,-1.6v-0.95" />
+    <path
+        android:strokeColor="#FF2563EB"
+        android:strokeWidth="1.0"
+        android:pathData="M289,26.25a1.75,1.75 0 1,1 0,3.5a1.75,1.75 0 1,1 0,-3.5z" />
     <path
         android:fillColor="#FF2563EB"
-        android:pathData="M294,21.5l0.5,1.2l1.2,0.5l-1.2,0.5l-0.5,1.2l-0.5,-1.2l-1.2,-0.5l1.2,-0.5z" />
+        android:pathData="M292.1,23.7l0.33,0.78l0.77,0.32l-0.77,0.33l-0.33,0.77l-0.32,-0.77l-0.78,-0.33l0.78,-0.32z" />
 </vector>
